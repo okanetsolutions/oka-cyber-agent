@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
@@ -187,17 +188,39 @@ func TestGoBinariesOnlyWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stdlib, yaml := false, false
+	selfInfo, ok := debug.ReadBuildInfo()
+	if !ok {
+		t.Skip("the test binary has no build information")
+	}
+	want := map[string]bool{"stdlib": true}
+	for _, dep := range selfInfo.Deps {
+		want[dep.Path] = true
+	}
+	got := map[string]bool{}
 	for _, p := range on.Packages {
 		if p.ManifestPath != "/opt/tool/bin/tool" || p.Ecosystem != "Go" {
 			t.Fatalf("unexpected package %+v", p)
 		}
-		stdlib = stdlib || (p.Name == "stdlib" && "go"+p.Version == strings.Fields(runtime.Version())[0])
-		yaml = yaml || p.Name == "go.yaml.in/yaml/v3"
+		if p.Name == "stdlib" && "go"+p.Version != strings.Fields(runtime.Version())[0] {
+			t.Fatalf("stdlib = %s, want %s", p.Version, runtime.Version())
+		}
+		got[p.Name] = true
 	}
-	if !stdlib || !yaml {
-		t.Fatalf("packages = %+v, want stdlib %s and go.yaml.in/yaml/v3", on.Packages, runtime.Version())
+	if !mapsEqualBool(got, want) {
+		t.Fatalf("modules = %v, want %v", got, want)
 	}
+}
+
+func mapsEqualBool(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestDefaultsIncludeDependenciesOnlyWhenConfigured(t *testing.T) {
