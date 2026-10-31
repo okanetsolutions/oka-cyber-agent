@@ -10,13 +10,19 @@ The product epic is okanetsolutions/oka-core#3705. The server side of the protoc
 
 These are product promises written in the README. A change that breaks one is a blocking finding, whatever else it fixes.
 
-- Read only. The agent never writes outside `/etc/oka-cyber-agent`, `/var/lib/oka-cyber-agent` and, during install or uninstall only, the binary and the systemd unit. It never changes packages, services, firewall rules or users at runtime.
+- Read only. The agent never writes outside `/etc/oka-cyber-agent`, `/var/lib/oka-cyber-agent` and, during install or uninstall only, the binary, the systemd unit and the `oka-cyber` system user. It never changes packages, services, firewall rules or users at runtime.
 - No remote control. The server can only tune what the agent already supports (report interval, which built in log sources are on). It can never send a command, a file path, a glob or a regular expression for the agent to act on. File paths come only from the local config file.
-- Never collected: file contents (other than the listed package databases, dependency lock files and log files), secrets, environment variables, shell history, users' data, process arguments.
-- Dependency discovery opens only the documented lock file names and never follows symlinks out of the scan roots.
+- Never collected: file contents (other than the listed package databases, dependency lock files, the Go build info embedded in executables in the scan roots and log files), secrets, environment variables, shell history, users' data, process arguments.
+- Dependency discovery opens only the documented lock file names and, when `collect_go_binaries` is on, executables in the scan roots, from which it reads only the Go build info (`debug/buildinfo`). It never follows symlinks out of the scan roots.
 - Log events are redacted on the host before they reach the spool (see okanetsolutions/oka-cyber-agent#7). Never send a raw line that has not been through redaction.
 - Never log, print or include in an error the enrollment token or the agent token. Error messages from the API client must not echo request bodies.
 - HTTPS only. `http://` is rejected unless the explicit `--insecure-dev` flag is set for local testing.
+- Install footprint. `install.sh` and the .deb/.rpm maintainer scripts (`postinstall`, `preremove`, `postremove`) make these changes and nothing else:
+  - Install the binary (`/usr/local/bin/oka-cyber-agent` from `install.sh`, `/usr/bin/oka-cyber-agent` from a package) and the systemd unit (`/etc/systemd/system/oka-cyber-agent.service` or `/usr/lib/systemd/system/oka-cyber-agent.service`).
+  - Create the `oka-cyber` system user (nologin shell, home directory not created) with its own `oka-cyber` group, and add it to the `adm` and `systemd-journal` groups where they exist so it can read auth logs and the journal (okanetsolutions/oka-cyber-agent#7).
+  - Create `/etc/oka-cyber-agent` (through `enroll`) and set the owner and mode of its `token` file. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
+  - Reload systemd and enable, start, stop or disable `oka-cyber-agent.service` only.
+  - On purge only, delete both directories, the `oka-cyber` user and its group.
 
 ## Repository Layout
 
