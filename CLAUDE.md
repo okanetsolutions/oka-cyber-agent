@@ -22,7 +22,7 @@ These are product promises written in the README. A change that breaks one is a 
   - Create the `oka-cyber` system user (nologin shell, home directory not created) with its own `oka-cyber` group, and add it to the `adm` and `systemd-journal` groups where they exist so it can read auth logs and the journal (okanetsolutions/oka-cyber-agent#7).
   - Create `/etc/oka-cyber-agent` (through `enroll`) and set the owner and mode of its `token` file. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
   - Reload systemd and enable, start, stop or disable `oka-cyber-agent.service` only.
-  - On purge only, delete both directories, the `oka-cyber` user and its group.
+  - On deb purge or rpm erase only (`rpm -e` or `dnf remove`, not an upgrade), delete both directories, the `oka-cyber` user and its group. A deb `remove` keeps them.
 
 ## Repository Layout
 
