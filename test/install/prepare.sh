@@ -13,7 +13,7 @@ cp "$work/files/good/oka-cyber-agent_linux_amd64" "$work/files/bad/"
 printf '0000000000000000000000000000000000000000000000000000000000000000  oka-cyber-agent_linux_amd64\n' >"$work/files/bad/checksums.txt"
 
 go build -o "$work/faketenant" ./test/faketenant
-"$work/faketenant" -files "$work/files" >"$work/faketenant.log" 2>&1 &
+"$work/faketenant" -files "$work/files" -log-sources "${LOG_SOURCES:-auth}" >"$work/faketenant.log" 2>&1 &
 echo $! >"$work/faketenant.pid"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
 	if curl -fsS http://127.0.0.1:8090/stats >/dev/null 2>&1; then

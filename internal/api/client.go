@@ -151,6 +151,11 @@ func (c *Client) PutInventory(ctx context.Context, snapshot json.RawMessage) (In
 	return resp, c.do(ctx, http.MethodPut, "/inventory", snapshot, true, &resp)
 }
 
+func (c *Client) PostLogs(ctx context.Context, batch LogBatchRequest) (LogBatchResponse, error) {
+	var resp LogBatchResponse
+	return resp, c.do(ctx, http.MethodPost, "/logs", batch, true, &resp)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, payload any, idempotent bool, out any) error {
 	body, err := encodeBody(payload)
 	if err != nil {
