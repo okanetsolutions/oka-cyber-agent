@@ -41,6 +41,7 @@ type Tailer struct {
 	startAtEnd   bool
 	missingSince time.Time
 	removed      bool
+	seen         bool
 }
 
 // NewTailer starts at resume when it still points at the same file, at the end of the current file when
@@ -76,10 +77,12 @@ func (t *Tailer) Poll() PollResult {
 			r.Lines = t.drain()
 			t.Close()
 		}
+		// A recreated file may get the deleted file's inode number back, so the position is forgotten.
+		t.inode, t.offset, t.skipping = 0, 0, false
 		if t.missingSince.IsZero() {
 			t.missingSince = t.Now()
 		}
-		if !t.removed && t.inode != 0 && t.Now().Sub(t.missingSince) >= RemovedAfter {
+		if !t.removed && t.seen && t.Now().Sub(t.missingSince) >= RemovedAfter {
 			t.removed = true
 			r.Removed = true
 		}
@@ -134,6 +137,7 @@ func (t *Tailer) open(inode uint64, size int64) error {
 	t.resume = nil
 	t.startAtEnd = false
 	t.inode = inode
+	t.seen = true
 	t.skipping = false
 	return nil
 }
