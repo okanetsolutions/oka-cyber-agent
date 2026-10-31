@@ -4,6 +4,7 @@ package collect
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 )
@@ -14,6 +15,10 @@ const (
 	MaxSkippedFiles = 1000
 	MaxServices     = 4096
 )
+
+// ErrTooManyOSPackages means the OS packages alone exceed MaxPackages. They have no manifest path to record as
+// skipped, and the server deletes every stored package missing from a snapshot, so the inventory fails instead.
+var ErrTooManyOSPackages = errors.New("more OS packages than the server accepts")
 
 const (
 	ReasonUnsupportedDistribution = "unsupported_distribution"
@@ -59,7 +64,6 @@ type Service struct {
 	Address  string `json:"address"`
 	Port     int    `json:"port"`
 	Process  string `json:"process,omitempty"`
-	PID      int    `json:"pid,omitempty"`
 }
 
 type Collector interface {
@@ -98,7 +102,9 @@ func Run(ctx context.Context, collectors ...Collector) (*Inventory, error) {
 			return nil, fmt.Errorf("%s collector: %w", c.Name(), err)
 		}
 	}
-	inv.Normalize()
+	if err := inv.Normalize(); err != nil {
+		return nil, err
+	}
 	return inv, nil
 }
 
@@ -107,7 +113,9 @@ func (inv *Inventory) Skip(path, reason string) {
 }
 
 // Normalize dedupes and sorts the inventory and applies the server limits, so an unchanged host always produces the same snapshot.
-func (inv *Inventory) Normalize() {
+// Above MaxPackages it keeps every OS package and cuts dependency packages by manifest path, recording each manifest
+// it cuts as skipped so the server keeps what it stored for it.
+func (inv *Inventory) Normalize() error {
 	seen := make(map[packageIdentity]bool, len(inv.Packages))
 	packages := make([]Package, 0, len(inv.Packages))
 	for _, p := range inv.Packages {
@@ -119,10 +127,14 @@ func (inv *Inventory) Normalize() {
 		packages = append(packages, p)
 	}
 	if len(packages) > MaxPackages {
-		limited := map[string]bool{}
-		for _, p := range packages[MaxPackages:] {
-			if p.ManifestPath != "" && !limited[p.ManifestPath] {
-				limited[p.ManifestPath] = true
+		slices.SortFunc(packages, func(a, b Package) int {
+			return cmp.Or(cmp.Compare(a.ManifestPath, b.ManifestPath), a.identity().compare(b.identity()))
+		})
+		if packages[MaxPackages].ManifestPath == "" {
+			return fmt.Errorf("%w: limit %d", ErrTooManyOSPackages, MaxPackages)
+		}
+		for i, p := range packages[MaxPackages:] {
+			if i == 0 || p.ManifestPath != packages[MaxPackages+i-1].ManifestPath {
 				inv.Skip(p.ManifestPath, ReasonPackageLimit)
 			}
 		}
@@ -146,6 +158,7 @@ func (inv *Inventory) Normalize() {
 	if len(inv.Services) > MaxServices {
 		inv.Services = inv.Services[:MaxServices]
 	}
+	return nil
 }
 
 func compareServices(a, b Service) int {
@@ -153,7 +166,6 @@ func compareServices(a, b Service) int {
 		cmp.Compare(a.Protocol, b.Protocol),
 		cmp.Compare(a.Address, b.Address),
 		cmp.Compare(a.Port, b.Port),
-		cmp.Compare(a.PID, b.PID),
 		cmp.Compare(a.Process, b.Process),
 	)
 }

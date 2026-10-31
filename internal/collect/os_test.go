@@ -12,8 +12,9 @@ func TestOSCollectorPerDistribution(t *testing.T) {
 	}{
 		{"debian-12", FamilyDebian, "Debian GNU/Linux", "12", "Debian:12"},
 		{"debian-sid", FamilyDebian, "Debian GNU/Linux", "", ""},
-		{"ubuntu-22.04", FamilyDebian, "Ubuntu", "22.04", "Ubuntu:22.04"},
-		{"ubuntu-24.04", FamilyDebian, "Ubuntu", "24.04", "Ubuntu:24.04"},
+		{"ubuntu-22.04", FamilyDebian, "Ubuntu", "22.04", "Ubuntu:22.04:LTS"},
+		{"ubuntu-24.04", FamilyDebian, "Ubuntu", "24.04", "Ubuntu:24.04:LTS"},
+		{"ubuntu-25.10", FamilyDebian, "Ubuntu", "25.10", "Ubuntu:25.10"},
 		{"alpine-3.20", FamilyAlpine, "Alpine Linux", "3.20.10", "Alpine:v3.20"},
 		{"rocky-9", FamilyRHEL, "Rocky Linux", "9.8", "Rocky Linux:9"},
 		{"almalinux-9", FamilyRHEL, "AlmaLinux", "9.8", "AlmaLinux:9"},

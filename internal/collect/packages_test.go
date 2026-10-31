@@ -34,7 +34,7 @@ func TestDpkgUbuntu2204(t *testing.T) {
 		t.Fatalf("packages = %d, want 101", len(inv.Packages))
 	}
 	ssl := findPackage(t, inv, "libssl3")
-	if ssl.Ecosystem != "Ubuntu:22.04" || ssl.Version != "3.0.2-0ubuntu1.30" || ssl.SourcePackage != "openssl" {
+	if ssl.Ecosystem != "Ubuntu:22.04:LTS" || ssl.Version != "3.0.2-0ubuntu1.30" || ssl.SourcePackage != "openssl" {
 		t.Fatalf("libssl3 = %+v", ssl)
 	}
 }
@@ -111,7 +111,7 @@ func TestRPMRocky9(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(gotArgs, []string{"rpm", "-qa", "--queryformat", rpmQueryFormat}) {
+	if !slices.Equal(gotArgs, []string{"rpm", "--root", root, "-qa", "--queryformat", rpmQueryFormat}) {
 		t.Fatalf("command = %q", gotArgs)
 	}
 	if len(inv.Packages) != 146 {

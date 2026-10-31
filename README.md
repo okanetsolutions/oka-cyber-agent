@@ -11,7 +11,7 @@ It is a single static binary with no runtime dependencies. This repository is pu
 - OS facts: hostname, OS family, name and version, kernel version, CPU architecture.
 - Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine).
 - Application dependencies: name and resolved version of the libraries listed in common lock files (`composer.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `Gemfile.lock`, `go.sum`, `Cargo.lock` and others), with the path of the file each one came from. You can turn this off.
-- Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. You can turn this off.
+- Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. The process ID is not sent, so restarting a service does not count as an inventory change. You can turn this off.
 - Security log events, only when an admin turns log collection on for that server in the dashboard: SSH logins, sudo and su use, account and cron changes, suspicious web requests and application errors. Lines are redacted on your server before they are sent, and normal web traffic is only sent as counts per IP and minute.
 
 To see exactly what the agent would report from a server, without sending anything:

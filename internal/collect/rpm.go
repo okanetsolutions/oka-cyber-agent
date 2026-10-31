@@ -46,7 +46,7 @@ func (c RPMCollector) Collect(ctx context.Context, inv *Inventory) error {
 	if run == nil {
 		run = runCommand
 	}
-	output, err := run(ctx, "rpm", "-qa", "--queryformat", rpmQueryFormat)
+	output, err := run(ctx, "rpm", "--root", c.Root, "-qa", "--queryformat", rpmQueryFormat)
 	if err != nil {
 		return fmt.Errorf("rpm -qa: %w", err)
 	}

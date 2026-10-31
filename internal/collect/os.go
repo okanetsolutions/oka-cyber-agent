@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -52,7 +53,7 @@ func (c OSCollector) Collect(_ context.Context, inv *Inventory) error {
 		Version:      release["VERSION_ID"],
 		Kernel:       u.Release,
 		Architecture: u.Machine,
-		OSVEcosystem: OSVEcosystem(release["ID"], release["VERSION_ID"]),
+		OSVEcosystem: OSVEcosystem(release),
 	}
 	return nil
 }
@@ -116,8 +117,10 @@ func osFamily(id string, idLike []string) string {
 	return id
 }
 
-// OSVEcosystem returns the OSV.dev ecosystem of the distribution's packages, or "" when OSV has no data for it.
-func OSVEcosystem(id, versionID string) string {
+// OSVEcosystem returns the OSV.dev ecosystem of the distribution's packages, given its os-release values, or ""
+// when OSV has no data for it. Oka Core compares it byte for byte with the ecosystems in OSV advisories.
+func OSVEcosystem(release map[string]string) string {
+	id, versionID := release["ID"], release["VERSION_ID"]
 	if versionID == "" {
 		return ""
 	}
@@ -127,6 +130,10 @@ func OSVEcosystem(id, versionID string) string {
 	case "debian":
 		return "Debian:" + major
 	case "ubuntu":
+		// OSV names LTS releases "Ubuntu:22.04:LTS" and interim releases "Ubuntu:25.10".
+		if slices.Contains(strings.Fields(release["VERSION"]), "LTS") {
+			return "Ubuntu:" + versionID + ":LTS"
+		}
 		return "Ubuntu:" + versionID
 	case "alpine":
 		if len(parts) < 2 {
