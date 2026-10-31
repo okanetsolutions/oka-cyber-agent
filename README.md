@@ -44,7 +44,46 @@ Nothing is sent to any other host. There is no telemetry.
 
 ## Install
 
-The signed release, the one line installer and the systemd service are tracked in [#4](https://github.com/okanetsolutions/oka-cyber-agent/issues/4). To build from source:
+Create an enrollment token in your Oka Cyber dashboard (Server agents) and run the install command it shows:
+
+```bash
+curl -fsSL https://github.com/okanetsolutions/oka-cyber-agent/releases/latest/download/install.sh | sudo sh -s -- --url https://<your tenant> --token <enrollment token>
+```
+
+The [install script](install.sh) is short; read it first if you like. It:
+
+1. resolves one release and downloads the binary for your architecture (x86_64 or aarch64) and `checksums.txt` from it,
+2. verifies the binary's SHA-256 against `checksums.txt`, and the cosign signature of `checksums.txt` when `cosign` is installed,
+3. installs `/usr/local/bin/oka-cyber-agent` and creates the `oka-cyber` system user,
+4. writes a hardened systemd unit (`/etc/systemd/system/oka-cyber-agent.service`),
+5. enrolls the server and starts the service.
+
+Rerunning it upgrades the agent and keeps the enrollment. Pass `--version v1.2.3` to install a specific release.
+
+The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It can only write its state directory, `/var/lib/oka-cyber-agent`. The agent token stays root only (mode 0600) and systemd hands it to the service with `LoadCredential`. On systemd older than 247 (the RHEL 8 family) the installer makes the token readable by the `oka-cyber` group instead.
+
+### Packages
+
+Every release also ships `.deb` and `.rpm` packages, which install `/usr/bin/oka-cyber-agent`, the same systemd unit and the `oka-cyber` user. Then enroll and start it:
+
+```bash
+sudo apt install ./oka-cyber-agent_<version>_amd64.deb        # or: sudo dnf install ./oka-cyber-agent-<version>.x86_64.rpm
+sudo oka-cyber-agent enroll --url https://<your tenant> --token <enrollment token>
+sudo systemctl enable --now oka-cyber-agent
+```
+
+### Verify a release
+
+Releases are built by GitHub Actions and `checksums.txt` is signed keylessly with [cosign](https://github.com/sigstore/cosign). Each binary also has an SPDX SBOM.
+
+```bash
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity "https://github.com/okanetsolutions/oka-cyber-agent/.github/workflows/release.yml@refs/tags/<version>" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+sha256sum --ignore-missing -c checksums.txt
+```
+
+### Build from source
 
 ```bash
 make build        # bin/oka-cyber-agent for this machine
@@ -77,11 +116,17 @@ Unknown keys are rejected, so a typo cannot silently turn an option off. The age
 
 ## Uninstall
 
+If you used the install script:
+
 ```bash
 sudo oka-cyber-agent uninstall
 ```
 
-This stops and removes the service, its configuration (`/etc/oka-cyber-agent`), its state (`/var/lib/oka-cyber-agent`) and the binary. Then revoke the server in your Oka Cyber dashboard so its token stops working.
+This stops and disables the service and removes the unit, `/etc/oka-cyber-agent` (configuration and token), `/var/lib/oka-cyber-agent` (state), the `oka-cyber` user and `/usr/local/bin/oka-cyber-agent`.
+
+If you installed a package, remove it with the package manager instead: `sudo apt purge oka-cyber-agent` or `sudo dnf remove oka-cyber-agent`. Both remove the same files and the user (`apt remove` without purge keeps the enrollment).
+
+Then revoke the server in your Oka Cyber dashboard so its token stops working. Both uninstall paths are tested in CI on Ubuntu, Debian and Rocky Linux.
 
 ## Development
 

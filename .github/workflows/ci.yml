@@ -28,6 +28,10 @@ jobs:
         run: go vet ./...
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+      - name: shellcheck
+        run: shellcheck -s sh install.sh packaging/*.sh test/install/*.sh
+      - name: install.sh unit matches packaging/oka-cyber-agent.service
+        run: sh test/install/check-unit.sh
 
   test:
     runs-on: ubuntu-latest
@@ -63,3 +67,50 @@ jobs:
           name: oka-cyber-agent-linux-${{ matrix.goarch }}
           path: oka-cyber-agent-linux-${{ matrix.goarch }}
           retention-days: 7
+
+  install:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [systemd-host, "ubuntu:24.04", "debian:12", "rockylinux/rockylinux:9"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the release files and start the fake tenant
+        run: sh test/install/prepare.sh /tmp/oka-install-test
+      - name: Install, rerun and uninstall on the runner with systemd
+        if: matrix.target == 'systemd-host'
+        run: sudo sh test/install/run.sh
+      - name: Install, rerun and uninstall in ${{ matrix.target }}
+        if: matrix.target != 'systemd-host'
+        run: docker run --rm --network host -v "$PWD:/src:ro" "${{ matrix.target }}" sh /src/test/install/run.sh
+      - name: Fake tenant log
+        if: failure()
+        run: cat /tmp/oka-install-test/faketenant.log
+
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=sign,sbom
+      - name: Start the fake tenant
+        run: sh test/install/prepare.sh /tmp/oka-install-test
+      - name: Install, enroll and remove the .deb and .rpm
+        run: |
+          for image in debian:12 ubuntu:24.04 rockylinux/rockylinux:9; do
+            echo "::group::$image"
+            docker run --rm --network host -v "$PWD/dist:/dist:ro" -v "$PWD:/src:ro" "$image" sh /src/test/install/packages.sh
+            echo "::endgroup::"
+          done

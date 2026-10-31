@@ -1,0 +1,43 @@
+[Unit]
+Description=Oka Cyber Agent
+Documentation=https://github.com/okanetsolutions/oka-cyber-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=oka-cyber
+Group=oka-cyber
+ExecStart=/usr/bin/oka-cyber-agent run
+LoadCredential=token:/etc/oka-cyber-agent/token
+StateDirectory=oka-cyber-agent
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=77
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

@@ -281,3 +281,12 @@ func TestUninstallRequiresRootAndConfirmation(t *testing.T) {
 		t.Fatalf("uninstall as non root = %+v, want a refusal", r)
 	}
 }
+
+func TestUninstallRefusesPackageInstalls(t *testing.T) {
+	previous := executablePath
+	executablePath = func() (string, error) { return packagedBinaryPath, nil }
+	t.Cleanup(func() { executablePath = previous })
+	if r := runCLI(t, "", "uninstall", "--yes"); r.code != exitFailure {
+		t.Fatalf("uninstall of a package install = %+v, want a refusal", r)
+	}
+}

@@ -31,6 +31,14 @@ func installedTree(t *testing.T) (Uninstaller, *[]string) {
 		calls = append(calls, strings.Join(args, " "))
 		return nil
 	}
+	users := map[string]bool{"oka-cyber": true}
+	u.User = "oka-cyber"
+	u.UserExists = func(name string) bool { return users[name] }
+	u.DeleteUser = func(_ context.Context, name string) error {
+		calls = append(calls, "userdel "+name)
+		delete(users, name)
+		return nil
+	}
 	return u, &calls
 }
 
@@ -40,7 +48,7 @@ func TestUninstallStopsServiceAndRemovesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(*calls, []string{"disable --now " + ServiceName, "daemon-reload"}) {
+	if !slices.Equal(*calls, []string{"disable --now " + ServiceName, "daemon-reload", "userdel oka-cyber"}) {
 		t.Fatalf("systemctl calls = %v", *calls)
 	}
 	for _, path := range []string{u.ConfigDir, u.StateDir, u.UnitPath, u.BinaryPath} {
@@ -50,6 +58,9 @@ func TestUninstallStopsServiceAndRemovesEverything(t *testing.T) {
 		if !slices.Contains(removed, path) {
 			t.Fatalf("removed = %v, missing %s", removed, path)
 		}
+	}
+	if !slices.Contains(removed, "user oka-cyber") {
+		t.Fatalf("removed = %v, missing the service user", removed)
 	}
 
 	*calls = nil
