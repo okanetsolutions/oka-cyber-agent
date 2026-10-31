@@ -27,7 +27,8 @@ These are product promises written in the README. A change that breaks one is a 
 ## Repository Layout
 
 - `cmd/oka-cyber-agent`: the CLI entry point and subcommand wiring only. No business logic.
-- `internal/collect`: collectors (OS facts, package databases, listening services, dependency files). Each collector implements the collector interface and is tested against fixture files.
+- `internal/collect`: collectors (OS facts, package databases, listening services, dependency file discovery). Each collector implements the collector interface and is tested against fixture files.
+- `internal/collect/lockfile`: one parser per dependency file format, pure functions from bytes to resolved versions. Fixtures under its `testdata` were produced by the real tools (composer, npm, yarn, pnpm, poetry, pipenv, uv, bundler, go, cargo, gradle, dotnet).
 - `internal/api`: the HTTP client for the Oka Cyber agent API and the wire types.
 - `internal/config`: the local configuration file and token storage.
 - `internal/agent`: the run loop (heartbeat, inventory, log shipping) and its persisted state.

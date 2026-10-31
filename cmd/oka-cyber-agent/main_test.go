@@ -257,7 +257,7 @@ func TestRunAndStatusWithoutEnrollment(t *testing.T) {
 
 func TestInventoryPrintsTheSnapshotAsJSON(t *testing.T) {
 	useFixtureHost(t)
-	r := runCLI(t, "", "inventory", "--services=false", "--config-dir", t.TempDir())
+	r := runCLI(t, "", "inventory", "--services=false", "--dependencies=false", "--config-dir", t.TempDir())
 	if r.code != exitOK {
 		t.Fatalf("inventory = %+v", r)
 	}
@@ -289,4 +289,52 @@ func TestUninstallRefusesPackageInstalls(t *testing.T) {
 	if r := runCLI(t, "", "uninstall", "--yes"); r.code != exitFailure {
 		t.Fatalf("uninstall of a package install = %+v, want a refusal", r)
 	}
+}
+
+func TestInventoryIncludesDependencyFilesFromConfiguredScanPaths(t *testing.T) {
+	root := t.TempDir()
+	useRoot(t, root)
+	for src, dst := range map[string]string{
+		filepath.Join("..", "..", "internal", "collect", "testdata", "hosts", "debian-12", "etc", "os-release"): "etc/os-release",
+		filepath.Join("..", "..", "internal", "collect", "lockfile", "testdata", "composer", "composer.lock"):   "data/shop/composer.lock",
+		filepath.Join("..", "..", "internal", "collect", "lockfile", "testdata", "cargo", "Cargo.lock"):         "srv/rust/Cargo.lock",
+	} {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, dst)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dst), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configDir, config.FileName), []byte("scan_paths: [/data]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runCLI(t, "", "inventory", "--services=false", "--config-dir", configDir)
+	if r.code != exitOK {
+		t.Fatalf("inventory = %+v", r)
+	}
+	var inv collect.Inventory
+	if err := json.Unmarshal([]byte(r.stdout), &inv); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range inv.Packages {
+		if p.ManifestPath != "/data/shop/composer.lock" || p.Ecosystem != "Packagist" {
+			t.Fatalf("package %+v, want only the composer.lock under the configured scan path", p)
+		}
+	}
+	if len(inv.Packages) != 7 {
+		t.Fatalf("packages = %d, want 7", len(inv.Packages))
+	}
+}
+
+func useRoot(t *testing.T, root string) {
+	t.Helper()
+	previous := collectRoot
+	collectRoot = root
+	t.Cleanup(func() { collectRoot = previous })
 }

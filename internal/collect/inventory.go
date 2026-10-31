@@ -4,8 +4,12 @@ package collect
 import (
 	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
+	"unicode/utf8"
 )
 
 // Server side limits from InventorySnapshotValidator in Oka Core: a snapshot above them is rejected whole.
@@ -19,6 +23,7 @@ const (
 	ReasonUnsupportedDistribution = "unsupported_distribution"
 	ReasonPermissionDenied        = "permission_denied"
 	ReasonPackageLimit            = "package_limit"
+	ReasonInvalidEntries          = "invalid_entries"
 )
 
 type Inventory struct {
@@ -70,6 +75,8 @@ type Collector interface {
 type Options struct {
 	Root            string
 	CollectServices bool
+	// Dependencies enables the dependency file collector when not nil.
+	Dependencies *DependencyOptions
 }
 
 // Defaults returns the collectors in the order they must run: package collectors read the OS facts the first one fills in.
@@ -80,6 +87,9 @@ func Defaults(o Options) []Collector {
 		DpkgCollector{Root: root},
 		RPMCollector{Root: root},
 		APKCollector{Root: root},
+	}
+	if o.Dependencies != nil {
+		collectors = append(collectors, DependencyCollector{Root: root, Options: *o.Dependencies})
 	}
 	if o.CollectServices {
 		collectors = append(collectors, ServicesCollector{Root: root})
@@ -111,6 +121,12 @@ func (inv *Inventory) Normalize() {
 	seen := make(map[packageIdentity]bool, len(inv.Packages))
 	packages := make([]Package, 0, len(inv.Packages))
 	for _, p := range inv.Packages {
+		if !p.valid() {
+			if validPath(p.ManifestPath) {
+				inv.Skip(p.ManifestPath, ReasonInvalidEntries)
+			}
+			continue
+		}
 		id := p.identity()
 		if seen[id] {
 			continue
@@ -131,6 +147,7 @@ func (inv *Inventory) Normalize() {
 	slices.SortFunc(packages, func(a, b Package) int { return a.identity().compare(b.identity()) })
 	inv.Packages = packages
 
+	inv.SkippedFiles = slices.DeleteFunc(inv.SkippedFiles, func(f SkippedFile) bool { return !validPath(f.Path) || f.Reason == "" })
 	slices.SortFunc(inv.SkippedFiles, func(a, b SkippedFile) int {
 		return cmp.Or(cmp.Compare(a.Path, b.Path), cmp.Compare(a.Reason, b.Reason))
 	})
@@ -158,6 +175,32 @@ func compareServices(a, b Service) int {
 	)
 }
 
+// valid applies the server's per package rules, so one odd entry in a lock file cannot get the whole
+// snapshot rejected.
+func (p Package) valid() bool {
+	return p.Ecosystem != "" && len(p.Ecosystem) <= 255 && validToken(p.Name) == nil && validToken(p.Version) == nil &&
+		len(p.Architecture) <= 255 && len(p.SourcePackage) <= 255 && len(p.SourceVersion) <= 255 &&
+		(p.ManifestPath == "" || validPath(p.ManifestPath))
+}
+
+var errInvalidToken = errors.New("invalid")
+
+func validToken(s string) error {
+	if s == "" || len(s) > 255 || !utf8.ValidString(s) {
+		return errInvalidToken
+	}
+	for _, r := range s {
+		if r <= 0x20 || r == 0x7f {
+			return errInvalidToken
+		}
+	}
+	return nil
+}
+
+func validPath(p string) bool {
+	return strings.HasPrefix(p, "/") && len(p) <= 1024 && utf8.ValidString(p) && !strings.ContainsAny(p, "\x00\r\n")
+}
+
 type packageIdentity struct {
 	ecosystem, name, architecture, manifestPath string
 }
@@ -174,4 +217,37 @@ func (a packageIdentity) compare(b packageIdentity) int {
 		cmp.Compare(a.architecture, b.architecture),
 		cmp.Compare(a.manifestPath, b.manifestPath),
 	)
+}
+
+// Marshal encodes the inventory for upload. When it is larger than limit bytes, the dependency files with
+// the most packages are left out one at a time and recorded as skipped (package_limit) until it fits.
+func (inv *Inventory) Marshal(limit int) ([]byte, error) {
+	for {
+		data, err := json.Marshal(inv)
+		if err != nil || len(data) <= limit {
+			return data, err
+		}
+		largest := largestManifest(inv.Packages)
+		if largest == "" {
+			return nil, fmt.Errorf("inventory is %d bytes, over the %d byte limit, without dependency files to leave out", len(data), limit)
+		}
+		inv.Packages = slices.DeleteFunc(inv.Packages, func(p Package) bool { return p.ManifestPath == largest })
+		inv.Skip(largest, ReasonPackageLimit)
+		inv.Normalize()
+	}
+}
+
+func largestManifest(packages []Package) string {
+	counts := map[string]int{}
+	var largest string
+	for _, p := range packages {
+		if p.ManifestPath == "" {
+			continue
+		}
+		counts[p.ManifestPath]++
+		if c := counts[p.ManifestPath]; c > counts[largest] || (c == counts[largest] && p.ManifestPath < largest) {
+			largest = p.ManifestPath
+		}
+	}
+	return largest
 }
