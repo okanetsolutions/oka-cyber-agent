@@ -14,6 +14,12 @@ It is a single static binary with no runtime dependencies. This repository is pu
 - Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. You can turn this off.
 - Security log events, only when an admin turns log collection on for that server in the dashboard: SSH logins, sudo and su use, account and cron changes, suspicious web requests and application errors. Lines are redacted on your server before they are sent, and normal web traffic is only sent as counts per IP and minute.
 
+To see exactly what the agent would report from a server, without sending anything:
+
+```bash
+oka-cyber-agent inventory
+```
+
 ## What it never collects
 
 - The contents of your files, other than the package databases, the dependency lock files and the log files listed above.
