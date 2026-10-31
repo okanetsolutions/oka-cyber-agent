@@ -10,7 +10,7 @@ It is a single static binary with no runtime dependencies. This repository is pu
 
 - OS facts: hostname, OS family, name and version, kernel version, CPU architecture.
 - Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine).
-- Application dependencies: name and resolved version of the libraries listed in common lock files (`composer.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `Gemfile.lock`, `go.sum`, `Cargo.lock` and others), with the path of the file each one came from. You can turn this off.
+- Application dependencies: name and resolved version of the libraries listed in common lock files, with the path of the file each one came from (see [Dependency files](#dependency-files)). You can turn this off.
 - Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. You can turn this off.
 - Security log events, only when an admin turns log collection on for that server in the dashboard: SSH logins, sudo and su use, account and cron changes, suspicious web requests and application errors. Lines are redacted on your server before they are sent, and normal web traffic is only sent as counts per IP and minute.
 
@@ -112,7 +112,37 @@ report_interval_seconds: 300     # the server may change it, between 60 and 8640
 collect_services: true           # set to false to stop reporting listening services
 ```
 
+Dependency file options, with their defaults:
+
+```yaml
+collect_dependency_files: true                 # set to false to stop scanning for lock files
+scan_paths: [/var/www, /srv, /opt, /home]       # where to look
+exclude_paths: []                              # absolute paths to leave out
+max_depth: 6                                   # path components below a scan path, like find -maxdepth
+max_file_size: 20971520                        # bytes; larger lock files are skipped
+collect_go_binaries: false                     # also read module lists from Go executables
+```
+
 Unknown keys are rejected, so a typo cannot silently turn an option off. The agent token lives in `/etc/oka-cyber-agent/token` (mode 0600, owned by root) and is never written to the configuration file or the logs. Restart the service after editing the file.
+
+## Dependency files
+
+The agent looks for these files under `scan_paths` and reports the resolved versions they list:
+
+| File | Ecosystem |
+| --- | --- |
+| `composer.lock` | Packagist |
+| `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` (v1 and berry), `pnpm-lock.yaml` (5.x, 6.x, 9.x) | npm |
+| `requirements.txt` (pinned `==` only), `poetry.lock`, `Pipfile.lock`, `uv.lock` | PyPI |
+| `Gemfile.lock` | RubyGems |
+| `go.mod`, plus Go executables when `collect_go_binaries` is on | Go |
+| `Cargo.lock` | crates.io |
+| `gradle.lockfile`, `pom.xml` (literal versions only) | Maven |
+| `packages.lock.json` | NuGet |
+
+It opens only those file names (and executables, when `collect_go_binaries` is on). It skips installed dependency trees (`node_modules`, `vendor`, `site-packages` and similar), hidden directories (`.git` and package manager caches such as `.npm` or `.cargo`), the Go module cache, `/proc`, `/sys` and `/dev`, and it never follows a symlink out of the scan path it started from.
+
+Versions are never guessed. A file it cannot use is reported to the dashboard with a reason instead: `unresolved_versions` (for example unpinned `requirements.txt` lines), `no_lock_file` (a `package.json`, `composer.json`, `Gemfile`, `Pipfile` or `Cargo.toml` without its lock file), `too_large`, `parse_error`, `permission_denied` or `symlink_outside_scan_root`. When one name appears in several versions in one lock file, the top level (hoisted) version is reported.
 
 ## Uninstall
 

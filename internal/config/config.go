@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -24,7 +25,14 @@ const (
 	DefaultReportIntervalSeconds = 300
 	MinReportIntervalSeconds     = 60
 	MaxReportIntervalSeconds     = 86400
+
+	DefaultMaxDepth    = 6
+	MaxMaxDepth        = 32
+	DefaultMaxFileSize = 20 << 20
+	MaxMaxFileSize     = 512 << 20
 )
+
+var DefaultScanPaths = []string{"/var/www", "/srv", "/opt", "/home"}
 
 var ErrNotEnrolled = errors.New("not enrolled: run oka-cyber-agent enroll --url <tenant URL> --token <enrollment token>")
 
@@ -34,12 +42,24 @@ type Config struct {
 	ReportIntervalSeconds int    `yaml:"report_interval_seconds"`
 	InsecureDev           bool   `yaml:"insecure_dev,omitempty"`
 	CollectServices       bool   `yaml:"collect_services"`
+
+	CollectDependencyFiles bool     `yaml:"collect_dependency_files"`
+	ScanPaths              []string `yaml:"scan_paths"`
+	ExcludePaths           []string `yaml:"exclude_paths"`
+	MaxDepth               int      `yaml:"max_depth"`
+	MaxFileSize            int64    `yaml:"max_file_size"`
+	CollectGoBinaries      bool     `yaml:"collect_go_binaries"`
 }
 
 func Default() Config {
 	return Config{
-		ReportIntervalSeconds: DefaultReportIntervalSeconds,
-		CollectServices:       true,
+		ReportIntervalSeconds:  DefaultReportIntervalSeconds,
+		CollectServices:        true,
+		CollectDependencyFiles: true,
+		ScanPaths:              slices.Clone(DefaultScanPaths),
+		ExcludePaths:           []string{},
+		MaxDepth:               DefaultMaxDepth,
+		MaxFileSize:            DefaultMaxFileSize,
 	}
 }
 
@@ -60,13 +80,35 @@ func Load(dir string) (Config, error) {
 }
 
 func Parse(data []byte) (Config, error) {
+	cfg, err := ParseOptions(data)
+	if err != nil {
+		return Config{}, err
+	}
+	return cfg, cfg.Validate()
+}
+
+// ParseOptions reads the file without requiring an enrollment, for commands such as inventory that only
+// need the collection options.
+func ParseOptions(data []byte) (Config, error) {
 	cfg := Default()
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return Config{}, err
 	}
-	return cfg, cfg.Validate()
+	return cfg, cfg.validateOptions()
+}
+
+// LoadOptions returns the collection options from the configuration file, or the defaults when there is none.
+func LoadOptions(dir string) (Config, error) {
+	data, err := os.ReadFile(filepath.Join(dir, FileName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return Default(), nil
+	}
+	if err != nil {
+		return Config{}, err
+	}
+	return ParseOptions(data)
 }
 
 func (c Config) Validate() error {
@@ -78,6 +120,23 @@ func (c Config) Validate() error {
 	}
 	if c.ReportIntervalSeconds < MinReportIntervalSeconds || c.ReportIntervalSeconds > MaxReportIntervalSeconds {
 		return fmt.Errorf("report_interval_seconds must be between %d and %d", MinReportIntervalSeconds, MaxReportIntervalSeconds)
+	}
+	return c.validateOptions()
+}
+
+func (c Config) validateOptions() error {
+	for _, list := range [][]string{c.ScanPaths, c.ExcludePaths} {
+		for _, p := range list {
+			if !filepath.IsAbs(p) {
+				return fmt.Errorf("scan_paths and exclude_paths must be absolute: %q", p)
+			}
+		}
+	}
+	if c.MaxDepth < 1 || c.MaxDepth > MaxMaxDepth {
+		return fmt.Errorf("max_depth must be between 1 and %d", MaxMaxDepth)
+	}
+	if c.MaxFileSize < 1 || c.MaxFileSize > MaxMaxFileSize {
+		return fmt.Errorf("max_file_size must be between 1 and %d bytes", MaxMaxFileSize)
 	}
 	return nil
 }

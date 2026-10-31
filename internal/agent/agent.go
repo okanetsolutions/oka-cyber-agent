@@ -121,9 +121,9 @@ func (a *Agent) inventory(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("collect inventory: %w", err)
 	}
-	snapshot, err := json.Marshal(inv)
+	snapshot, err := inv.Marshal(api.MaxBodyBytes)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode inventory: %w", err)
 	}
 	sum := sha256.Sum256(snapshot)
 	hash := hex.EncodeToString(sum[:])

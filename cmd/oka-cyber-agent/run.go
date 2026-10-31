@@ -52,7 +52,7 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 		Client:   client,
 		Logger:   logger,
 		Collect: func(ctx context.Context) (*collect.Inventory, error) {
-			return collect.Run(ctx, collect.Defaults(collect.Options{Root: collectRoot, CollectServices: cfg.CollectServices})...)
+			return collect.Run(ctx, collect.Defaults(collectOptions(cfg))...)
 		},
 	}
 
@@ -71,4 +71,18 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 		return exitFailure
 	}
 	return exitOK
+}
+
+func collectOptions(cfg config.Config) collect.Options {
+	o := collect.Options{Root: collectRoot, CollectServices: cfg.CollectServices}
+	if cfg.CollectDependencyFiles {
+		o.Dependencies = &collect.DependencyOptions{
+			ScanPaths:    cfg.ScanPaths,
+			ExcludePaths: cfg.ExcludePaths,
+			MaxDepth:     cfg.MaxDepth,
+			MaxFileSize:  cfg.MaxFileSize,
+			GoBinaries:   cfg.CollectGoBinaries,
+		}
+	}
+	return o
 }

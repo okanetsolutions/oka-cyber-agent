@@ -1,0 +1,48 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    base64 (0.3.0)
+    mustermann (3.1.1)
+    nokogiri (1.16.4-aarch64-linux)
+      racc (~> 1.4)
+    nokogiri (1.16.4-arm-linux)
+      racc (~> 1.4)
+    nokogiri (1.16.4-arm64-darwin)
+      racc (~> 1.4)
+    nokogiri (1.16.4-x86-linux)
+      racc (~> 1.4)
+    nokogiri (1.16.4-x86_64-darwin)
+      racc (~> 1.4)
+    nokogiri (1.16.4-x86_64-linux)
+      racc (~> 1.4)
+    racc (1.8.1)
+    rack (3.0.10)
+    rack-protection (4.0.0)
+      base64 (>= 0.1.0)
+      rack (>= 3.0.0, < 4)
+    rack-session (2.1.2)
+      base64 (>= 0.1.0)
+      rack (>= 3.0.0)
+    sinatra (4.0.0)
+      mustermann (~> 3.0)
+      rack (>= 3.0.0, < 4)
+      rack-protection (= 4.0.0)
+      rack-session (>= 2.0.0, < 3)
+      tilt (~> 2.0)
+    tilt (2.9.0)
+
+PLATFORMS
+  aarch64-linux
+  arm-linux
+  arm64-darwin
+  x86-linux
+  x86_64-darwin
+  x86_64-linux
+
+DEPENDENCIES
+  nokogiri (= 1.16.4)
+  rack (= 3.0.10)
+  sinatra (= 4.0.0)
+
+BUNDLED WITH
+   2.5.22

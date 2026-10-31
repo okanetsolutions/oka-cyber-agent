@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -26,7 +28,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded != cfg {
+	if !reflect.DeepEqual(loaded, cfg) {
 		t.Fatalf("loaded = %+v, want %+v", loaded, cfg)
 	}
 	info, err := os.Stat(filepath.Join(dir, FileName))
@@ -43,8 +45,11 @@ func TestParseAppliesDefaultsForMissingKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ReportIntervalSeconds != DefaultReportIntervalSeconds || !cfg.CollectServices {
+	if cfg.ReportIntervalSeconds != DefaultReportIntervalSeconds || !cfg.CollectServices || !cfg.CollectDependencyFiles || cfg.CollectGoBinaries {
 		t.Fatalf("cfg = %+v, want defaults", cfg)
+	}
+	if !slices.Equal(cfg.ScanPaths, DefaultScanPaths) || cfg.MaxDepth != 6 || cfg.MaxFileSize != 20<<20 {
+		t.Fatalf("cfg = %+v, want the default dependency scan", cfg)
 	}
 }
 
@@ -54,6 +59,10 @@ func TestParseRejectsUnknownKeysAndBadValues(t *testing.T) {
 		"http url":           "url: http://a.example\nserver_id: \"1\"\n",
 		"missing server id":  "url: https://a.example\n",
 		"interval too short": "url: https://a.example\nserver_id: \"1\"\nreport_interval_seconds: 5\n",
+		"relative scan path": "url: https://a.example\nserver_id: \"1\"\nscan_paths: [srv]\n",
+		"relative exclusion": "url: https://a.example\nserver_id: \"1\"\nexclude_paths: [tmp]\n",
+		"depth zero":         "url: https://a.example\nserver_id: \"1\"\nmax_depth: 0\n",
+		"file size too big":  "url: https://a.example\nserver_id: \"1\"\nmax_file_size: 999999999999\n",
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -138,5 +147,20 @@ func TestSavedConfigNeverContainsTheToken(t *testing.T) {
 	}
 	if strings.Contains(string(data), "agent-secret") {
 		t.Fatal("config.yaml must not contain the token")
+	}
+}
+
+func TestLoadOptionsWithoutEnrollment(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := LoadOptions(dir)
+	if err != nil || !reflect.DeepEqual(cfg, Default()) {
+		t.Fatalf("LoadOptions without a file = %+v, %v; want the defaults", cfg, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("collect_dependency_files: false\nscan_paths: [/data]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadOptions(dir)
+	if err != nil || cfg.CollectDependencyFiles || !slices.Equal(cfg.ScanPaths, []string{"/data"}) {
+		t.Fatalf("LoadOptions = %+v, %v", cfg, err)
 	}
 }

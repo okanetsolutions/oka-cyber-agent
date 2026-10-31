@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -132,7 +133,7 @@ func TestNormalizeDedupesSortsAndCapsPackages(t *testing.T) {
 
 	big := &Inventory{}
 	for i := range MaxPackages + 5 {
-		big.Packages = append(big.Packages, Package{Ecosystem: "npm", Name: "p" + string(rune('a'+i%26)) + strings.Repeat("x", i/26), Version: "1", ManifestPath: "/srv/app/package-lock.json"})
+		big.Packages = append(big.Packages, Package{Ecosystem: "npm", Name: fmt.Sprintf("p%d", i), Version: "1", ManifestPath: "/srv/app/package-lock.json"})
 	}
 	big.Normalize()
 	if len(big.Packages) != MaxPackages {
@@ -162,5 +163,55 @@ func TestNormalizeDedupesServicesAndSkippedFiles(t *testing.T) {
 	}
 	if !slices.Equal(inv.SkippedFiles, []SkippedFile{{"/a", "x"}, {"/b", "x"}}) {
 		t.Fatalf("skipped = %v", inv.SkippedFiles)
+	}
+}
+
+func TestNormalizeDropsEntriesTheServerWouldReject(t *testing.T) {
+	inv := &Inventory{Packages: []Package{
+		{Ecosystem: "Rocky Linux:9", Name: "bash", Version: "5.1.8-9.el9"},
+		{Ecosystem: "npm", Name: "has space", Version: "1.0.0", ManifestPath: "/srv/app/package-lock.json"},
+		{Ecosystem: "npm", Name: "ok", Version: "1.0.0\n", ManifestPath: "/srv/app/package-lock.json"},
+		{Ecosystem: "npm", Name: strings.Repeat("a", 256), Version: "1.0.0"},
+		{Ecosystem: "npm", Name: "fine", Version: "1.0.0", ManifestPath: "/srv/app/package-lock.json"},
+	}, SkippedFiles: []SkippedFile{{Path: "relative/path", Reason: "x"}}}
+	inv.Normalize()
+	if len(inv.Packages) != 2 {
+		t.Fatalf("packages = %+v, want bash and fine", inv.Packages)
+	}
+	want := []SkippedFile{{Path: "/srv/app/package-lock.json", Reason: ReasonInvalidEntries}}
+	if !slices.Equal(inv.SkippedFiles, want) {
+		t.Fatalf("skipped = %v, want %v", inv.SkippedFiles, want)
+	}
+}
+
+func TestMarshalLeavesOutLargestDependencyFilesToFitTheLimit(t *testing.T) {
+	inv := &Inventory{Packages: []Package{}, SkippedFiles: []SkippedFile{}, Services: []Service{}}
+	for i := range 50 {
+		inv.Packages = append(inv.Packages, Package{Ecosystem: "Debian:12", Name: fmt.Sprintf("deb%d", i), Version: "1"})
+	}
+	for i := range 300 {
+		inv.Packages = append(inv.Packages, Package{Ecosystem: "npm", Name: fmt.Sprintf("big%d", i), Version: "1", ManifestPath: "/srv/big/package-lock.json"})
+	}
+	for i := range 100 {
+		inv.Packages = append(inv.Packages, Package{Ecosystem: "npm", Name: fmt.Sprintf("small%d", i), Version: "1", ManifestPath: "/srv/small/package-lock.json"})
+	}
+	inv.Normalize()
+	full, err := json.Marshal(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := inv.Marshal(len(full) - 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) >= len(full) || len(inv.Packages) != 150 {
+		t.Fatalf("packages = %d, want the 300 package manifest left out", len(inv.Packages))
+	}
+	if !slices.Contains(inv.SkippedFiles, SkippedFile{Path: "/srv/big/package-lock.json", Reason: ReasonPackageLimit}) {
+		t.Fatalf("skipped = %v", inv.SkippedFiles)
+	}
+
+	if _, err := inv.Marshal(10); err == nil {
+		t.Fatal("OS packages alone over the limit must be an error")
 	}
 }
