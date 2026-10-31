@@ -38,7 +38,7 @@ The agent talks to `https://<tenant host>/cyber-agent/v1`. The source of truth i
 - `PUT /inventory`: bearer agent token, full snapshot `{os, packages, skipped_files, services}`; validated by `InventorySnapshotValidator`.
 - `POST /logs` (okanetsolutions/oka-core#3779): batches of normalized log events.
 
-Server limits the agent must respect, because a violation rejects the whole request: 5 MB request body measured both compressed and decompressed, 20 000 packages, 1000 `skipped_files`, 4096 `services`, unique `(ecosystem, name, architecture, manifest_path)` per snapshot, no whitespace or control characters in package names and versions, absolute `manifest_path` up to 1024 characters. A 401 means the server was revoked: stop, do not retry.
+Server limits the agent must respect, because a violation rejects the whole request: 5 MB request body measured both compressed and decompressed, 20 000 packages, 1000 `skipped_files`, 4096 `services`, unique `(ecosystem, name, architecture, manifest_path)` per snapshot, no whitespace or control characters in package names and versions, absolute `manifest_path` up to 1024 characters. A 401 from the bearer authenticated endpoints (`/heartbeat`, `/inventory`, `/logs`) means the server was revoked: stop, do not retry. A 401 from `POST /enroll` means the enrollment token was rejected (invalid or expired): report that clearly to the user and do not treat it as a revocation.
 
 ## Go Conventions
 
