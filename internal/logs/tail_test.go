@@ -193,3 +193,16 @@ func TestTailerReportsUnreadableFile(t *testing.T) {
 		t.Fatal("want a permission error")
 	}
 }
+
+func TestTailerRecreatedFileWithReusedInodeIsReadFromStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.log")
+	appendTo(t, path, "old line\n")
+	tail, _ := newTestTailer(path, nil, false)
+	tail.Poll()
+	os.Remove(path)
+	tail.Poll()
+	appendTo(t, path, "new line\n")
+	if got := lines(tail.Poll()); !slices.Equal(got, []string{"new line"}) {
+		t.Fatalf("lines = %q", got)
+	}
+}
