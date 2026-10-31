@@ -12,6 +12,7 @@ import (
 	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/collect"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/config"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/logs"
 )
 
 var collectRoot = "/"
@@ -59,6 +60,12 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 	if *once {
 		err = a.Cycle(ctx)
 	} else {
+		logsClient, clientErr := api.New(cfg.URL, api.Options{Token: api.Secret(token), InsecureDev: cfg.InsecureDev, AgentVersion: agent.Version, MaxAttempts: 1})
+		if clientErr != nil {
+			logger.Error("cannot start", "error", clientErr)
+			return exitFailure
+		}
+		a.Logs = agent.NewLogShipper(logsClient, *stateDir, logs.Options{Root: collectRoot, AppPaths: cfg.LogPaths}, logger)
 		logger.Info("agent started", "version", agent.Version, "url", cfg.URL, "server_id", cfg.ServerID)
 		err = a.Run(ctx)
 	}

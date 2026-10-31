@@ -5,6 +5,12 @@ if ! getent passwd oka-cyber >/dev/null 2>&1; then
 	useradd --system --user-group --no-create-home --home-dir /var/lib/oka-cyber-agent --shell /usr/sbin/nologin oka-cyber
 fi
 
+for group in adm systemd-journal; do
+	if getent group "$group" >/dev/null 2>&1; then
+		usermod -a -G "$group" oka-cyber >/dev/null 2>&1 || true
+	fi
+done
+
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload >/dev/null 2>&1 || true
 	if [ -f /etc/oka-cyber-agent/token ]; then

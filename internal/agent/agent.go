@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
@@ -31,6 +33,7 @@ type Agent struct {
 	StateDir string
 	Client   Client
 	Collect  func(ctx context.Context) (*collect.Inventory, error)
+	Logs     *LogShipper
 	Logger   *slog.Logger
 	Now      func() time.Time
 	Wait     func(ctx context.Context, d time.Duration) error
@@ -39,16 +42,38 @@ type Agent struct {
 	loaded bool
 }
 
-// Run reports until the context is cancelled or the server revokes the agent.
+// Run reports until the context is cancelled or the server revokes the agent. Log shipping, when the agent
+// has a LogShipper, runs alongside and stops the agent too when the server rejects the token.
 func (a *Agent) Run(ctx context.Context) error {
 	if err := a.init(); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var revoked atomic.Bool
+	var shipping sync.WaitGroup
+	if a.Logs != nil {
+		shipping.Go(func() {
+			if err := a.Logs.Run(ctx); errors.Is(err, ErrRevoked) {
+				revoked.Store(true)
+				cancel()
+			}
+		})
+	}
+	defer shipping.Wait()
 	for {
 		if err := a.Cycle(ctx); err != nil {
+			cancel()
 			return err
 		}
 		if err := a.Wait(ctx, a.nextDelay()); err != nil {
+			cancel()
+			shipping.Wait()
+			if revoked.Load() {
+				a.recordError(ErrRevoked)
+				a.save()
+				return ErrRevoked
+			}
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
@@ -113,6 +138,9 @@ func (a *Agent) heartbeat(ctx context.Context) error {
 	}
 	a.state.LastHeartbeatAt = a.Now().UTC()
 	a.setInterval(resp.ReportIntervalSeconds)
+	if a.Logs != nil && resp.LogCollection != nil {
+		a.Logs.Configure(*resp.LogCollection)
+	}
 	return nil
 }
 

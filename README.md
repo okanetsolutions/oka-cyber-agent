@@ -38,7 +38,7 @@ Only to the Oka Cyber tenant URL you enroll it with, over HTTPS, authenticated w
 | `POST /enroll` | Once, when you enroll the server. |
 | `POST /heartbeat` | Every report interval (5 minutes by default). |
 | `PUT /inventory` | When the inventory changed, and at least once a day. |
-| `POST /logs` | Only while log collection is enabled. |
+| `POST /logs` | Every 30 seconds while log collection is enabled, plus an empty batch at least every 5 minutes. |
 
 Nothing is sent to any other host. There is no telemetry.
 
@@ -143,6 +143,32 @@ The agent looks for these files under `scan_paths` and reports the resolved vers
 It opens only those file names (and executables, when `collect_go_binaries` is on). It skips installed dependency trees (`node_modules`, `vendor`, `site-packages` and similar), hidden directories (`.git` and package manager caches such as `.npm` or `.cargo`), the Go module cache, `/proc`, `/sys` and `/dev`, and it never follows a symlink out of the scan path it started from.
 
 Versions are never guessed. A file it cannot use is reported to the dashboard with a reason instead: `unresolved_versions` (for example unpinned `requirements.txt` lines), `no_lock_file` (a `package.json`, `composer.json`, `Gemfile`, `Pipfile` or `Cargo.toml` without its lock file), `too_large`, `parse_error`, `permission_denied` or `symlink_outside_scan_root`. When one name appears in several versions in one lock file, the top level (hoisted) version is reported.
+
+## Log collection
+
+Log collection is off until an admin enables it for the server in the dashboard, per built in source. The agent learns the choice from each heartbeat; the dashboard can only switch these sources on and off and never sends a file path.
+
+| Source | What it reads |
+| --- | --- |
+| `auth` | journald when `journalctl` is available (identifiers `sshd`, `sshd-session`, `sudo`, `su`, `useradd`, `usermod`, `groupadd`, `gpasswd`, `passwd`, `chpasswd`, `crontab`); otherwise `/var/log/auth.log`, `/var/log/secure` or `/var/log/messages`, plus the cron log |
+| `web` | nginx and Apache access logs in combined format (`/var/log/nginx/*access*.log`, `/var/log/apache2/*access*.log`, `/var/log/httpd/*access_log`) |
+| `app` | only the files you list under `log_paths` in `config.yaml` (at most 10 absolute paths or glob patterns); Monolog entries at `ERROR` or above |
+
+```yaml
+log_paths:
+  - /var/www/shop/storage/logs/laravel-*.log
+```
+
+On the server, before anything is stored or sent:
+
+- Lines are parsed into security events (SSH logins, sudo, su, account and group changes, password changes, crontab changes, web requests, application errors). Every other line is discarded.
+- Secrets are redacted: values of query parameters whose name contains `pass`, `pwd`, `secret`, `token`, `key`, `auth`, `session`, `sessid`, `sig`, `code`, `jwt`, `mail`, `phone`, `user` or `login`; JWT shaped strings and email addresses anywhere; password arguments of sudo commands (`-p`, `--password`, `PASSWORD=`, `TOKEN=`, `SECRET=`); and SSH user names on failed logins that are not valid user names, since people type passwords into the user prompt.
+- Noise is condensed: failed SSH logins are counted per IP, user name and minute, and ordinary web requests per IP and minute. A web request is sent in full only when it looks suspicious (status 400 or more, an unusual method, a URI over 512 characters, or a token from [the list](internal/logs/testdata/suspicious_tokens.txt) such as `..`, `${`, `union`, `wp-` or a scanner name).
+- Messages are cut to 2000 characters.
+
+Events wait in a spool under `/var/lib/oka-cyber-agent/spool` (at most 100 MB; when full, the oldest events are dropped and counted) and are sent in order every 30 seconds. Read positions are saved only after the server acknowledged a batch, so nothing is lost when the server is unreachable. When collection is enabled the agent starts at the current end of every log: no history is uploaded. Turning every source off stops the readers and deletes the spool.
+
+The installer adds the `oka-cyber` user to the `adm` and `systemd-journal` groups when they exist, so logs are readable without root. On the RHEL family `/var/log/secure` is readable by root only, so the agent reads the journal there.
 
 ## Uninstall
 

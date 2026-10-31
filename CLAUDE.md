@@ -29,10 +29,10 @@ These are product promises written in the README. A change that breaks one is a 
 - `cmd/oka-cyber-agent`: the CLI entry point and subcommand wiring only. No business logic.
 - `internal/collect`: collectors (OS facts, package databases, listening services, dependency file discovery). Each collector implements the collector interface and is tested against fixture files.
 - `internal/collect/lockfile`: one parser per dependency file format, pure functions from bytes to resolved versions. Fixtures under its `testdata` were produced by the real tools (composer, npm, yarn, pnpm, poetry, pipenv, uv, bundler, go, cargo, gradle, dotnet).
-- `internal/logs`: log sources (journald through `journalctl`, auth and cron log files, nginx and Apache access logs, configured application logs), the polling file tailer and the parsers that turn lines into the event kinds of okanetsolutions/oka-core#3779. Parsers are tested against real lines captured per distribution under `testdata`.
+- `internal/logs`: log sources (journald through `journalctl`, auth and cron log files, nginx and Apache access logs, configured application logs), the polling file tailer and the parsers that turn lines into the event kinds of okanetsolutions/oka-core#3779. Parsers are tested against real lines captured per distribution under `testdata`. It also holds redaction (`redact.go`, every rule with before and after tests), aggregation and the suspicious web request tokens (`testdata/suspicious_tokens.txt`, embedded in the binary), and the on disk spool.
 - `internal/api`: the HTTP client for the Oka Cyber agent API and the wire types.
 - `internal/config`: the local configuration file and token storage.
-- `internal/agent`: the run loop (heartbeat, inventory, log shipping) and its persisted state.
+- `internal/agent`: the run loop (heartbeat, inventory), the log shipper (collect, redact, aggregate, spool, upload in order, commit positions after the server's ack) and their persisted state.
 - `testdata` directories next to the code they feed: real sample files, never generated at test time.
 - `install.sh`: the one line installer (POSIX `sh`, it runs as `curl ... | sudo sh -s --`). It embeds the systemd unit, which must stay identical to `packaging/oka-cyber-agent.service` apart from the binary path (`test/install/check-unit.sh` enforces it).
 - `packaging`: the systemd unit and the `.deb`/`.rpm` maintainer scripts used by `.goreleaser.yaml`.

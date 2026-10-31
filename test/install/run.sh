@@ -55,6 +55,21 @@ if has_systemd; then
 	[ "$(stat_of heartbeats)" -ge 1 ] || fail "no heartbeat from the service"
 	[ "$(stat_of inventories)" -ge 1 ] || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "no inventory from the service"; }
 	[ "$(stat_of last_inventory_packages)" -gt 0 ] || fail "the service sent an inventory without packages"
+	id -nG oka-cyber | tr ' ' '\n' | grep -qx systemd-journal || fail "oka-cyber is not in the systemd-journal group"
+
+	echo "== an auth event reaches the tenant through journald, redacted"
+	sleep 3
+	logger -t sshd "Failed password for invalid user Typed-Pa55word! from 203.0.113.77 port 40000 ssh2"
+	for _ in $(seq 1 30); do
+		curl -fsS "$TENANT/log-events" | grep -q '203.0.113.77' && break
+		sleep 2
+	done
+	events=$(curl -fsS "$TENANT/log-events")
+	echo "$events" | grep -q '"kind":"ssh_login_failed"' || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "the failed SSH login was not shipped"; }
+	echo "$events" | grep -q '203.0.113.77' || fail "the event has no source IP"
+	if echo "$events" | grep -q 'Typed-Pa55word'; then
+		fail "a password typed as a user name was shipped"
+	fi
 else
 	echo "== no systemd: one report as root"
 	/usr/local/bin/oka-cyber-agent run --once

@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/logs"
 )
 
 type recordedRequest struct {
@@ -339,5 +341,39 @@ func TestBackoffStaysWithinCeiling(t *testing.T) {
 				t.Fatalf("backoff(%d) = %v, want (0, %v]", attempt, d, ceiling)
 			}
 		}
+	}
+}
+
+func TestPostLogsSendsTheBatchAndReadsTheConfiguration(t *testing.T) {
+	srv, requests := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusOK, `{"accepted":1,"log_collection":{"sources":["auth"],"flush_interval_seconds":30}}`)
+	})
+	batch := LogBatchRequest{
+		BatchID:        "0b8f5d0e-3c1a-4c55-9f43-2f1d0f0b6a11",
+		Events:         []logs.Event{{Source: "auth", Kind: "sudo_command", Count: 1, Message: "m"}},
+		SkippedSources: []logs.SkippedSource{{Source: "web", Path: "/var/log/nginx", Reason: "not_found"}},
+		DroppedEvents:  3,
+	}
+	resp, err := newClient(t, srv, "agent-secret", &sleeps{}).PostLogs(context.Background(), batch)
+	if err != nil || resp.Accepted != 1 || resp.LogCollection == nil || resp.LogCollection.Sources[0] != "auth" {
+		t.Fatalf("resp = %+v, err = %v", resp, err)
+	}
+	r := requests.all()[0]
+	var sent map[string]any
+	if err := json.Unmarshal(r.body, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if r.method != http.MethodPost || r.path != "/cyber-agent/v1/logs" || sent["batch_id"] != batch.BatchID || sent["dropped_events"] != float64(3) || len(sent["events"].([]any)) != 1 || len(sent["skipped_sources"].([]any)) != 1 {
+		t.Fatalf("request = %s %s %s", r.method, r.path, r.body)
+	}
+}
+
+func TestHeartbeatReadsLogCollection(t *testing.T) {
+	srv, _ := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusOK, `{"report_interval_seconds":300,"log_collection":{"sources":[],"flush_interval_seconds":30}}`)
+	})
+	resp, err := newClient(t, srv, "agent-secret", &sleeps{}).Heartbeat(context.Background(), HeartbeatRequest{})
+	if err != nil || resp.LogCollection == nil || len(resp.LogCollection.Sources) != 0 {
+		t.Fatalf("resp = %+v, err = %v", resp, err)
 	}
 }
