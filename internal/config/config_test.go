@@ -61,6 +61,8 @@ func TestParseRejectsUnknownKeysAndBadValues(t *testing.T) {
 		"interval too short": "url: https://a.example\nserver_id: \"1\"\nreport_interval_seconds: 5\n",
 		"relative scan path": "url: https://a.example\nserver_id: \"1\"\nscan_paths: [srv]\n",
 		"relative exclusion": "url: https://a.example\nserver_id: \"1\"\nexclude_paths: [tmp]\n",
+		"relative log path":  "url: https://a.example\nserver_id: \"1\"\nlog_paths: [storage/logs/laravel.log]\n",
+		"too many log paths": "url: https://a.example\nserver_id: \"1\"\nlog_paths: [/1, /2, /3, /4, /5, /6, /7, /8, /9, /10, /11]\n",
 		"depth zero":         "url: https://a.example\nserver_id: \"1\"\nmax_depth: 0\n",
 		"file size too big":  "url: https://a.example\nserver_id: \"1\"\nmax_file_size: 999999999999\n",
 	}
@@ -162,5 +164,15 @@ func TestLoadOptionsWithoutEnrollment(t *testing.T) {
 	cfg, err = LoadOptions(dir)
 	if err != nil || cfg.CollectDependencyFiles || !slices.Equal(cfg.ScanPaths, []string{"/data"}) {
 		t.Fatalf("LoadOptions = %+v, %v", cfg, err)
+	}
+}
+
+func TestLogPathsAreRead(t *testing.T) {
+	cfg, err := Parse([]byte("url: https://a.example\nserver_id: \"1\"\nlog_paths:\n  - /var/www/shop/storage/logs/laravel-*.log\n"))
+	if err != nil || !slices.Equal(cfg.LogPaths, []string{"/var/www/shop/storage/logs/laravel-*.log"}) {
+		t.Fatalf("cfg = %+v, err = %v", cfg.LogPaths, err)
+	}
+	if !slices.Equal(Default().LogPaths, []string{}) {
+		t.Fatal("no application logs are read by default")
 	}
 }
