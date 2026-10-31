@@ -51,6 +51,30 @@ make build        # bin/oka-cyber-agent for this machine
 make build-all    # static Linux amd64 and arm64 binaries in bin/
 ```
 
+## Usage
+
+```bash
+sudo oka-cyber-agent enroll --url https://<your tenant> --token <enrollment token>
+oka-cyber-agent status       # enrollment, service state, last heartbeat and inventory, last error
+oka-cyber-agent inventory    # what would be reported, as JSON; sends nothing
+oka-cyber-agent run --once   # one heartbeat and inventory report, then exit
+```
+
+`enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
+
+## Configuration
+
+`enroll` writes `/etc/oka-cyber-agent/config.yaml`:
+
+```yaml
+url: https://acme.oka.example   # your tenant, https only
+server_id: "42"                  # assigned at enrollment
+report_interval_seconds: 300     # the server may change it, between 60 and 86400
+collect_services: true           # set to false to stop reporting listening services
+```
+
+Unknown keys are rejected, so a typo cannot silently turn an option off. The agent token lives in `/etc/oka-cyber-agent/token` (mode 0600, owned by root) and is never written to the configuration file or the logs. Restart the service after editing the file.
+
 ## Uninstall
 
 ```bash

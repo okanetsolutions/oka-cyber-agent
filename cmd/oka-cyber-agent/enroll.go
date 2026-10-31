@@ -1,0 +1,96 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/collect"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/config"
+)
+
+const enrollmentTokenEnv = "OKA_CYBER_ENROLLMENT_TOKEN"
+
+func enrollCommand(ctx context.Context, args []string, io streams) int {
+	flags := flag.NewFlagSet("enroll", flag.ContinueOnError)
+	flags.SetOutput(io.stderr)
+	tenantURL := flags.String("url", "", "your Oka Cyber tenant URL, for example https://acme.oka.example")
+	token := flags.String("token", "", "enrollment token from the dashboard (or set "+enrollmentTokenEnv+")")
+	insecureDev := flags.Bool("insecure-dev", false, "allow a plain http URL, for local development only")
+	force := flags.Bool("force", false, "enroll again even if this server is already enrolled")
+	configDir := flags.String("config-dir", config.DefaultDir, "configuration directory")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	if *token == "" {
+		*token = os.Getenv(enrollmentTokenEnv)
+	}
+	if *tenantURL == "" || *token == "" {
+		fmt.Fprintln(io.stderr, "enroll: --url and --token are required")
+		flags.Usage()
+		return exitUsage
+	}
+	if err := config.ValidateURL(*tenantURL, *insecureDev); err != nil {
+		fmt.Fprintf(io.stderr, "enroll: %v\n", err)
+		return exitUsage
+	}
+
+	existing, existingErr := config.Load(*configDir)
+	if _, err := config.LoadToken(*configDir); err == nil && !*force {
+		fmt.Fprintf(io.stdout, "Already enrolled as server %s at %s. Use --force to enroll again.\n", existing.ServerID, existing.URL)
+		return exitOK
+	}
+
+	host, err := collect.Run(ctx, collect.OSCollector{Root: collectRoot})
+	if err != nil {
+		fmt.Fprintf(io.stderr, "enroll: %v\n", err)
+		return exitFailure
+	}
+	client, err := api.New(*tenantURL, api.Options{InsecureDev: *insecureDev, AgentVersion: agent.Version})
+	if err != nil {
+		fmt.Fprintf(io.stderr, "enroll: %v\n", err)
+		return exitUsage
+	}
+	resp, err := client.Enroll(ctx, api.EnrollRequest{
+		EnrollmentToken: api.Secret(*token),
+		Hostname:        host.OS.Hostname,
+		OSFamily:        host.OS.Family,
+		OSName:          host.OS.Name,
+		OSVersion:       host.OS.Version,
+		Kernel:          host.OS.Kernel,
+		Architecture:    host.OS.Architecture,
+		AgentVersion:    agent.Version,
+	})
+	if err != nil {
+		fmt.Fprintf(io.stderr, "enroll: %v\n", err)
+		return exitFailure
+	}
+
+	cfg := config.Default()
+	if existingErr == nil {
+		cfg = existing
+	} else if !errors.Is(existingErr, config.ErrNotEnrolled) {
+		fmt.Fprintf(io.stderr, "enroll: ignoring the unreadable previous configuration: %v\n", existingErr)
+	}
+	cfg.URL = strings.TrimRight(*tenantURL, "/")
+	cfg.ServerID = string(resp.ServerID)
+	cfg.InsecureDev = *insecureDev
+	if resp.ReportIntervalSeconds > 0 {
+		cfg.ReportIntervalSeconds = min(max(resp.ReportIntervalSeconds, config.MinReportIntervalSeconds), config.MaxReportIntervalSeconds)
+	}
+	if err := config.SaveToken(*configDir, string(resp.AgentToken)); err != nil {
+		fmt.Fprintf(io.stderr, "enroll: save agent token: %v\n", err)
+		return exitFailure
+	}
+	if err := config.Save(*configDir, cfg); err != nil {
+		fmt.Fprintf(io.stderr, "enroll: save configuration: %v\n", err)
+		return exitFailure
+	}
+	fmt.Fprintf(io.stdout, "Enrolled as server %s. Start reporting with: systemctl enable --now oka-cyber-agent\n", cfg.ServerID)
+	return exitOK
+}
