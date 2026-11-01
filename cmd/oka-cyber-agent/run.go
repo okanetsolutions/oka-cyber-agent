@@ -52,7 +52,11 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 		Client:   client,
 		Logger:   logger,
 		Collect: func(ctx context.Context) (*collect.Inventory, error) {
-			return collect.Run(ctx, collect.Defaults(collect.Options{Root: collectRoot, CollectServices: cfg.CollectServices})...)
+			collectors, err := collect.Defaults(collect.Options{Root: collectRoot, CollectServices: cfg.CollectServices})
+			if err != nil {
+				return nil, err
+			}
+			return collect.Run(ctx, collectors...)
 		},
 	}
 

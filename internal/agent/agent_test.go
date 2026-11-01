@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -157,17 +158,42 @@ func TestFailedInventoryIsResentNextCycle(t *testing.T) {
 	}
 }
 
-func TestCollectFailureSendsNothing(t *testing.T) {
+func TestCollectFailureSendsNothingAndRetries(t *testing.T) {
 	client := &fakeClient{}
-	a, _ := newTestAgent(t, client, &[]collect.Package{})
-	a.Collect = func(context.Context) (*collect.Inventory, error) {
-		return nil, errors.New("dpkg status: permission denied")
+	packages := []collect.Package{{Ecosystem: "Debian:12", Name: "bash", Version: "1"}}
+	a, _ := newTestAgent(t, client, &packages)
+	collected := a.Collect
+	failures := []error{
+		errors.New("rpm collector: dnf history: permission denied"),
+		fmt.Errorf("normalize: %w", collect.ErrTooManyOSPackages),
 	}
-	if err := a.Cycle(context.Background()); err != nil {
-		t.Fatal(err)
+	a.Collect = func(ctx context.Context) (*collect.Inventory, error) {
+		if len(failures) > 0 {
+			err := failures[0]
+			failures = failures[1:]
+			return nil, err
+		}
+		return collected(ctx)
 	}
-	if len(client.inventories) != 0 {
-		t.Fatal("a failed collection must not send an inventory")
+	cycles := 0
+	a.Wait = func(context.Context, time.Duration) error {
+		cycles++
+		if len(client.inventories) != 0 {
+			return context.Canceled
+		}
+		if state, _ := LoadState(a.StateDir); state.LastError == "" {
+			t.Fatal("a failed collection must be visible in the status")
+		}
+		return nil
+	}
+	if err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run = %v, want the agent to keep running after a failed collection", err)
+	}
+	if cycles != 3 || len(client.inventories) != 1 {
+		t.Fatalf("cycles = %d, inventories = %d, want two failed cycles then one inventory", cycles, len(client.inventories))
+	}
+	if state, _ := LoadState(a.StateDir); state.LastError != "" {
+		t.Fatalf("LastError = %q, want it cleared by the successful cycle", state.LastError)
 	}
 }
 

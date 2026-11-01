@@ -23,7 +23,12 @@ func inventoryCommand(ctx context.Context, args []string, io streams) int {
 	if cfg, err := config.Load(*configDir); err == nil && !cfg.CollectServices {
 		collectServices = false
 	}
-	inv, err := collect.Run(ctx, collect.Defaults(collect.Options{Root: *root, CollectServices: collectServices})...)
+	collectors, err := collect.Defaults(collect.Options{Root: *root, CollectServices: collectServices})
+	if err != nil {
+		fmt.Fprintf(io.stderr, "inventory: %v\n", err)
+		return exitFailure
+	}
+	inv, err := collect.Run(ctx, collectors...)
 	if err != nil {
 		fmt.Fprintf(io.stderr, "inventory: %v\n", err)
 		return exitFailure
