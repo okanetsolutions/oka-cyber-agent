@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -11,34 +9,57 @@ import (
 	"syscall"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
-	"github.com/okanetsolutions/oka-cyber-agent/internal/collect"
 )
+
+const (
+	exitOK      = 0
+	exitFailure = 1
+	exitUsage   = 2
+	// exitRevoked tells systemd not to restart the agent (RestartPreventExitStatus) once the server revoked it.
+	exitRevoked = 77
+	// exitRestart is a failure status so that systemd (Restart=on-failure) starts the agent again after
+	// enroll --force or an edit, which also hands it the new token through LoadCredential.
+	exitRestart = 75
+)
+
+type streams struct {
+	stdin          io.Reader
+	stdout, stderr io.Writer
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	code := run(ctx, os.Args[1:], streams{os.Stdin, os.Stdout, os.Stderr})
 	stop()
 	os.Exit(code)
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func run(ctx context.Context, args []string, io streams) int {
 	if len(args) == 0 {
-		usage(stderr)
-		return 2
+		usage(io.stderr)
+		return exitUsage
 	}
 	switch args[0] {
-	case "version", "--version":
-		fmt.Fprintf(stdout, "oka-cyber-agent %s\n", agent.Version)
-		return 0
+	case "enroll":
+		return enrollCommand(ctx, args[1:], io)
+	case "run":
+		return runCommand(ctx, args[1:], io)
+	case "status":
+		return statusCommand(ctx, args[1:], io)
 	case "inventory":
-		return inventoryCommand(ctx, args[1:], stdout, stderr)
+		return inventoryCommand(ctx, args[1:], io)
+	case "uninstall":
+		return uninstallCommand(ctx, args[1:], io)
+	case "version", "--version":
+		fmt.Fprintf(io.stdout, "oka-cyber-agent %s\n", agent.Version)
+		return exitOK
 	case "help", "-h", "--help":
-		usage(stdout)
-		return 0
+		usage(io.stdout)
+		return exitOK
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
-		usage(stderr)
-		return 2
+		fmt.Fprintf(io.stderr, "unknown command %q\n\n", args[0])
+		usage(io.stderr)
+		return exitUsage
 	}
 }
 
@@ -46,37 +67,15 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `Usage: oka-cyber-agent <command> [flags]
 
 Commands:
+  enroll     Enroll this server: oka-cyber-agent enroll --url <tenant URL> --token <enrollment token>
+  run        Report to Oka Cyber every interval (what the systemd service runs).
+  status     Show enrollment and the last report.
   inventory  Print the inventory this server would report, as JSON. Sends nothing.
+  uninstall  Stop the service and remove the agent, its configuration and its state.
   version    Print the agent version.
   help       Show this help.
 
+Run "oka-cyber-agent <command> -h" for the flags of a command.
 Source and documentation: https://github.com/okanetsolutions/oka-cyber-agent
 `)
-}
-
-func inventoryCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("inventory", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	services := flags.Bool("services", true, "include listening services")
-	root := flags.String("root", "/", "read the host from this directory instead of /")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-	collectors, err := collect.Defaults(collect.Options{Root: *root, CollectServices: *services})
-	if err != nil {
-		fmt.Fprintf(stderr, "inventory: %v\n", err)
-		return 1
-	}
-	inv, err := collect.Run(ctx, collectors...)
-	if err != nil {
-		fmt.Fprintf(stderr, "inventory: %v\n", err)
-		return 1
-	}
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(inv); err != nil {
-		fmt.Fprintf(stderr, "inventory: %v\n", err)
-		return 1
-	}
-	return 0
 }
