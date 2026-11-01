@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 )
 
@@ -81,8 +82,12 @@ type Options struct {
 }
 
 // Defaults returns the collectors in the order they must run: package collectors read the OS facts the first one fills in.
-func Defaults(o Options) []Collector {
-	root := cmp.Or(o.Root, "/")
+// The root is made absolute because rpm rejects a relative --root.
+func Defaults(o Options) ([]Collector, error) {
+	root, err := filepath.Abs(cmp.Or(o.Root, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("root %q: %w", o.Root, err)
+	}
 	collectors := []Collector{
 		OSCollector{Root: root},
 		DpkgCollector{Root: root},
@@ -92,7 +97,7 @@ func Defaults(o Options) []Collector {
 	if o.CollectServices {
 		collectors = append(collectors, ServicesCollector{Root: root})
 	}
-	return collectors
+	return collectors, nil
 }
 
 // Run fails as a whole when one collector fails, so a partial package list is never reported as the full inventory.

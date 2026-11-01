@@ -70,19 +70,95 @@ func TestRunStopsWhenContextIsCancelled(t *testing.T) {
 }
 
 func TestDefaultsRunOSFirstAndHonourCollectServices(t *testing.T) {
-	names := func(cs []Collector) []string {
+	names := func(o Options) []string {
+		cs, err := Defaults(o)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var out []string
 		for _, c := range cs {
 			out = append(out, c.Name())
 		}
 		return out
 	}
-	with := names(Defaults(Options{CollectServices: true}))
+	with := names(Options{CollectServices: true})
 	if with[0] != "os" || !slices.Contains(with, "services") {
 		t.Fatalf("collectors = %v, want os first and services included", with)
 	}
-	if without := names(Defaults(Options{})); slices.Contains(without, "services") {
+	if without := names(Options{}); slices.Contains(without, "services") {
 		t.Fatalf("collectors = %v, want no services collector", without)
+	}
+}
+
+// defaultsWithFakes builds the default collectors for root with a fixed uname and the given rpm runner.
+func defaultsWithFakes(t *testing.T, root string, rpm CommandRunner) []Collector {
+	t.Helper()
+	collectors, err := Defaults(Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range collectors {
+		switch c := c.(type) {
+		case OSCollector:
+			c.Uname = fixedUname
+			collectors[i] = c
+		case RPMCollector:
+			c.Run = rpm
+			collectors[i] = c
+		}
+	}
+	return collectors
+}
+
+func TestDefaultsPassAnAbsoluteRootToRPM(t *testing.T) {
+	relative := "./" + hostRoot("rocky-9") + "/"
+	want, err := filepath.Abs(hostRoot("rocky-9"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotRoot string
+	collectors := defaultsWithFakes(t, relative, func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		gotRoot = args[slices.Index(args, "--root")+1]
+		return os.ReadFile(filepath.Join("testdata", "rpm", "rocky-9.txt"))
+	})
+	inv, err := Run(context.Background(), collectors...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != want {
+		t.Fatalf("rpm --root = %q, want %q", gotRoot, want)
+	}
+	if len(inv.Packages) != 146 {
+		t.Fatalf("packages = %d, want 146", len(inv.Packages))
+	}
+}
+
+func TestDefaultsReadDpkgAndAPKFromARelativeRoot(t *testing.T) {
+	noRPM := func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("rpm must not run on this host")
+	}
+	for host, want := range map[string]int{"debian-12": 88, "alpine-3.20": 14} {
+		inv, err := Run(context.Background(), defaultsWithFakes(t, hostRoot(host), noRPM)...)
+		if err != nil {
+			t.Fatalf("%s: %v", host, err)
+		}
+		if len(inv.Packages) != want {
+			t.Fatalf("%s: packages = %d, want %d", host, len(inv.Packages), want)
+		}
+	}
+}
+
+func TestDefaultsFailWhenTheRootCannotBeMadeAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filepath.Abs("rootfs"); err == nil {
+		t.Skip("the working directory still resolves after removal on this platform")
+	}
+	if collectors, err := Defaults(Options{Root: "rootfs"}); err == nil || collectors != nil {
+		t.Fatalf("Defaults = %v, %v; want an error", collectors, err)
 	}
 }
 

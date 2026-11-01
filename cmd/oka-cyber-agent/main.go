@@ -62,7 +62,12 @@ func inventoryCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	inv, err := collect.Run(ctx, collect.Defaults(collect.Options{Root: *root, CollectServices: *services})...)
+	collectors, err := collect.Defaults(collect.Options{Root: *root, CollectServices: *services})
+	if err != nil {
+		fmt.Fprintf(stderr, "inventory: %v\n", err)
+		return 1
+	}
+	inv, err := collect.Run(ctx, collectors...)
 	if err != nil {
 		fmt.Fprintf(stderr, "inventory: %v\n", err)
 		return 1
