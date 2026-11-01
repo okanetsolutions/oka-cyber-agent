@@ -17,11 +17,12 @@ These are product promises written in the README. A change that breaks one is a 
 - Log events are redacted on the host before they reach the spool (see okanetsolutions/oka-cyber-agent#7). Never send a raw line that has not been through redaction.
 - Never log, print or include in an error the enrollment token or the agent token. Error messages from the API client must not echo request bodies.
 - HTTPS only. `http://` is rejected unless the explicit `--insecure-dev` flag is set for local testing.
-- Install footprint. `install.sh` and the .deb/.rpm maintainer scripts (`postinstall`, `preremove`, `postremove`) make these changes and nothing else:
+- Install footprint. `install.sh` and the .deb/.rpm maintainer scripts (`preinstall`, `postinstall`, `preremove`, `postremove`) make these changes and nothing else:
   - Install the binary (`/usr/local/bin/oka-cyber-agent` from `install.sh`, `/usr/bin/oka-cyber-agent` from a package) and the systemd unit (`/etc/systemd/system/oka-cyber-agent.service` or `/usr/lib/systemd/system/oka-cyber-agent.service`).
   - Create the `oka-cyber` system user (nologin shell, home directory not created) with its own `oka-cyber` group, and add it to the `adm` and `systemd-journal` groups where they exist so it can read auth logs and the journal (okanetsolutions/oka-cyber-agent#7).
-  - Create `/etc/oka-cyber-agent` (through `enroll`) and set the owner and mode of its `token` file. A deb `remove` of an enabled service leaves the empty marker `/etc/oka-cyber-agent/package-removed`, which the next install deletes. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
+  - Create `/etc/oka-cyber-agent` (through `enroll`, mode 0755 whatever the umask) and set the owner and mode of its `token` file. A deb `remove` of an enabled service leaves the empty marker `/etc/oka-cyber-agent/package-removed`, which the next install deletes. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
   - Reload systemd and enable, start, restart, stop or disable `oka-cyber-agent.service` only (rerunning `install.sh` and upgrading the package restart it on the new binary, and an upgrade never enables it; a first install of the package on an enrolled host, or a reinstall after a deb `remove` of an enabled service, enables and starts it).
+  - Never both kinds of install on one host: `install.sh` refuses to run when the package is installed (or removed but not purged), and `preinstall` refuses the package when `install.sh` installed the agent, before anything is unpacked.
   - On deb purge or rpm erase only (`rpm -e` or `dnf remove`, not an upgrade), delete both directories, the `oka-cyber` user and its group. A deb `remove` keeps them.
 
 ## Repository Layout

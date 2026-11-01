@@ -23,9 +23,14 @@ has_systemd() {
 	[ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
 }
 
-# enroll keeps the token root only and lets systemd pass it with LoadCredential, except on systemd older
-# than 247 (RHEL 8 family), which has no LoadCredential: there the oka-cyber group may read it.
-check_token_access() {
+# The service user must reach config.yaml whatever the umask enroll ran under. enroll keeps the token root only
+# and lets systemd pass it with LoadCredential, except on systemd older than 247 (RHEL 8 family), which has no
+# LoadCredential: there the oka-cyber group may read it.
+check_enrollment_files() {
+	got=$(stat -c '%a %U %G' /etc/oka-cyber-agent)
+	[ "$got" = "755 root root" ] || fail "/etc/oka-cyber-agent is $got, want 755 root root"
+	got=$(stat -c '%a %U %G' /etc/oka-cyber-agent/config.yaml)
+	[ "$got" = "644 root root" ] || fail "config.yaml is $got, want 644 root root"
 	version=$(systemctl --version 2>/dev/null | awk 'NR == 1 { print $2 }')
 	want="600 root root"
 	if [ -n "$version" ] && [ "$version" -lt 247 ]; then

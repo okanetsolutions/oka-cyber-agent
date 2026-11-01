@@ -58,7 +58,7 @@ The [install script](install.sh) is short; read it first if you like. It:
 4. writes a hardened systemd unit (`/etc/systemd/system/oka-cyber-agent.service`),
 5. enrolls the server and starts the service.
 
-Rerunning it upgrades the agent, keeps the enrollment and restarts the service on the new binary. A service you disabled stays disabled. Pass `--version v1.2.3` to install a specific release.
+Rerunning it upgrades the agent, keeps the enrollment and restarts the service on the new binary. A service you disabled stays disabled. Pass `--version v1.2.3` to install a specific release. It refuses to run on a server where the agent was installed from a package: upgrade that one with your package manager.
 
 The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It can only write its state directory, `/var/lib/oka-cyber-agent`. The agent token stays root only (mode 0600) and systemd hands it to the service with `LoadCredential`. systemd older than 247 (the RHEL 8 family) has no `LoadCredential`, so there `enroll` makes the token readable by the `oka-cyber` group only (mode 0640), for the install script and the packages alike.
 
@@ -73,6 +73,8 @@ sudo systemctl enable --now oka-cyber-agent
 ```
 
 Upgrading the package restarts the service on the new binary, and leaves it disabled if you disabled it. Installing the package on a server that is already enrolled enables and starts the service. After `apt remove`, which keeps the enrollment, installing it again starts the service only if it was enabled before the removal.
+
+The package does not install over an agent installed by the install script, whose unit would take precedence over the package's. Run `sudo /usr/local/bin/oka-cyber-agent uninstall` first, which also deletes the enrollment. To keep the enrollment instead, run `sudo systemctl disable --now oka-cyber-agent` and delete `/usr/local/bin/oka-cyber-agent` and `/etc/systemd/system/oka-cyber-agent.service`: the package then enables and starts the service on its first install.
 
 ### Verify a release
 

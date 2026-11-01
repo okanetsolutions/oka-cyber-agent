@@ -65,6 +65,25 @@ require_root() {
 	[ "$(id -u)" -eq 0 ] || fail "run as root, for example: curl -fsSL ... | sudo sh -s -- --url ... --token ..."
 }
 
+# A package install has its unit in /usr/lib/systemd/system, which the unit this script writes to /etc/systemd/system
+# would shadow, so the package's own binary would never run again. A deb removed but not purged still owns the
+# enrollment and its purge would delete it under this script's install.
+refuse_package_install() {
+	package=""
+	if [ -e /usr/bin/oka-cyber-agent ]; then
+		package="/usr/bin/oka-cyber-agent"
+	elif command -v dpkg-query >/dev/null 2>&1; then
+		case "$(dpkg-query -W -f='${Status}' oka-cyber-agent 2>/dev/null || true)" in
+			"" | *" not-installed") ;;
+			*) package="the oka-cyber-agent deb package" ;;
+		esac
+	fi
+	if [ -z "$package" ] && command -v rpm >/dev/null 2>&1 && rpm -q oka-cyber-agent >/dev/null 2>&1; then
+		package="the oka-cyber-agent rpm package"
+	fi
+	[ -z "$package" ] || fail "this server already has the agent from a package ($package). Upgrade it with your package manager (apt install --only-upgrade oka-cyber-agent, or dnf upgrade oka-cyber-agent), or remove it completely (apt purge oka-cyber-agent, or dnf remove oka-cyber-agent) before you use install.sh"
+}
+
 detect_arch() {
 	[ "$(uname -s)" = "Linux" ] || fail "only Linux is supported"
 	case "$(uname -m)" in
@@ -284,6 +303,7 @@ cleanup() {
 main() {
 	parse_args "$@"
 	require_root
+	refuse_package_install
 	detect_arch
 	resolve_release_url
 	WORK_DIR=$(mktemp -d)

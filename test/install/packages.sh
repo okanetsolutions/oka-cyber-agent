@@ -2,15 +2,31 @@
 # Installs the .deb or .rpm built by GoReleaser and enrolls against the fake tenant, then checks how the
 # maintainer scripts treat the service: a first install on an enrolled host enables and starts it, an upgrade
 # restarts it but keeps it disabled when the admin disabled it, and on deb a reinstall after "remove" enables
-# it again only if it was enabled. Finally it erases the package and checks nothing is left behind. Runs as root
-# in a disposable container or host with the packages in $DIST; the service checks need systemd.
+# it again only if it was enabled. It also checks that install.sh and the package refuse to install over each
+# other, and that a script install can be replaced by the package keeping its enrollment. Finally it erases the
+# package and checks nothing is left behind. Runs as root in a disposable container or host with the packages in
+# $DIST and this repository's install.sh; the service checks need systemd.
 set -eu
 
 TENANT="${TENANT:-http://127.0.0.1:8090}"
 DIST="${DIST:-/dist}"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # shellcheck disable=SC1091
-. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+. "$REPO/test/install/lib.sh"
+
+script_install() {
+	OKA_CYBER_AGENT_DOWNLOAD_URL="$TENANT/files/good" sh "$REPO/install.sh" --url "$TENANT" --token test-enrollment-token --insecure-dev
+}
+
+refuses_script_install() {
+	if script_install; then
+		fail "install.sh installed over the package $1"
+	fi
+	for path in /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service; do
+		[ ! -e "$path" ] || fail "install.sh created $path over the package $1"
+	done
+}
 
 # The service only runs under systemd; without it (and without curl) the counts are not needed.
 stat_of_systemd() {
@@ -62,9 +78,8 @@ else
 	erase_package() { dnf remove -y -q oka-cyber-agent >/dev/null; }
 fi
 
-if has_systemd; then
-	ensure_curl
-fi
+# install.sh needs curl or wget.
+ensure_curl
 
 echo "== first install on a host that is not enrolled"
 install_package
@@ -73,20 +88,23 @@ install_package
 getent passwd oka-cyber >/dev/null || fail "the oka-cyber user was not created"
 check_disabled "before enroll"
 
-echo "== enroll"
-OKA_CYBER_ENROLLMENT_TOKEN=test-enrollment-token oka-cyber-agent enroll --url "$TENANT" --insecure-dev
+echo "== enroll under umask 077 (a hardened host)"
+(umask 077 && OKA_CYBER_ENROLLMENT_TOKEN=test-enrollment-token oka-cyber-agent enroll --url "$TENANT" --insecure-dev)
 [ -f /etc/oka-cyber-agent/token ] || fail "token missing after enroll"
-check_token_access
+check_enrollment_files
 if oka-cyber-agent uninstall --yes; then
 	fail "uninstall must point package installs to the package manager"
 fi
 echo "== the service reports as the oka-cyber user"
 admin_enable
 
+echo "== install.sh refuses to install over the package"
+refuses_script_install "install"
+
 echo "== upgrade restarts an enabled service"
 before=$(stat_of_systemd heartbeats)
 upgrade_package
-check_token_access
+check_enrollment_files
 check_enabled_and_reporting "$before" "after an upgrade"
 
 echo "== upgrade keeps a service the admin disabled disabled"
@@ -101,10 +119,11 @@ if command -v apt-get >/dev/null 2>&1; then
 	[ -f /etc/oka-cyber-agent/token ] || fail "remove deleted the token"
 	[ ! -e /usr/bin/oka-cyber-agent ] || fail "remove kept the binary"
 	check_disabled "after remove"
+	refuses_script_install "removed but not purged"
 	before=$(stat_of_systemd heartbeats)
 	install_package
 	[ ! -e /etc/oka-cyber-agent/package-removed ] || fail "reinstall kept the remove marker"
-	check_token_access
+	check_enrollment_files
 	check_enabled_and_reporting "$before" "after a reinstall"
 
 	echo "== remove and reinstall keep a service the admin disabled disabled"
@@ -122,16 +141,41 @@ erase_keeping_enrollment
 [ -f /etc/oka-cyber-agent/token ] || fail "token missing before the first install"
 before=$(stat_of_systemd heartbeats)
 install_package
-check_token_access
+check_enrollment_files
 check_enabled_and_reporting "$before" "after a first install on an enrolled host"
+
+check_erased() {
+	for path in /usr/bin/oka-cyber-agent /usr/lib/systemd/system/oka-cyber-agent.service /etc/oka-cyber-agent /var/lib/oka-cyber-agent /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service; do
+		[ ! -e "$path" ] || fail "$path still exists after erasing the package"
+	done
+	! getent passwd oka-cyber >/dev/null || fail "the oka-cyber user still exists after erasing the package"
+	if has_systemd; then
+		! systemctl is-active --quiet oka-cyber-agent || fail "the service still runs after erasing the package"
+	fi
+}
 
 echo "== erase the package"
 erase_package
-for path in /usr/bin/oka-cyber-agent /usr/lib/systemd/system/oka-cyber-agent.service /etc/oka-cyber-agent /var/lib/oka-cyber-agent; do
-	[ ! -e "$path" ] || fail "$path still exists after erasing the package"
-done
-! getent passwd oka-cyber >/dev/null || fail "the oka-cyber user still exists after erasing the package"
-if has_systemd; then
-	! systemctl is-active --quiet oka-cyber-agent || fail "the service still runs after erasing the package"
+check_erased
+
+echo "== the package refuses to install over a script install"
+script_install
+if install_package; then
+	fail "the package installed over a script install"
 fi
+[ ! -e /usr/bin/oka-cyber-agent ] || fail "the refused package left /usr/bin/oka-cyber-agent"
+[ -x /usr/local/bin/oka-cyber-agent ] || fail "the refused package removed the script install"
+
+echo "== the package replaces a script install whose binary and unit were removed, keeping the enrollment"
+admin_disable
+rm -f /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service
+before=$(stat_of_systemd heartbeats)
+install_package
+check_enrollment_files
+check_enabled_and_reporting "$before" "after replacing a script install"
+if has_systemd; then
+	[ "$(systemctl show -p FragmentPath --value oka-cyber-agent)" = /usr/lib/systemd/system/oka-cyber-agent.service ] || fail "the service does not run from the package unit"
+fi
+erase_package
+check_erased
 echo "PASS"

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -21,6 +22,9 @@ const (
 	DefaultStateDir = "/var/lib/oka-cyber-agent"
 	FileName        = "config.yaml"
 	TokenFileName   = "token"
+
+	// DirMode lets the unprivileged service user reach config.yaml; the token file has its own mode.
+	DirMode fs.FileMode = 0o755
 
 	DefaultReportIntervalSeconds = 300
 	MinReportIntervalSeconds     = 60
@@ -117,6 +121,9 @@ func Save(dir string, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	if err := makeDir(dir); err != nil {
+		return err
+	}
 	return WriteFileAtomic(filepath.Join(dir, FileName), append([]byte(fileHeader), data...), 0o644, nil)
 }
 
@@ -191,13 +198,16 @@ func ParseSystemdVersion(out string) int {
 
 // SaveToken writes the agent token with the owner and mode of access.
 func SaveToken(dir, token string, access TokenAccess) error {
+	if err := makeDir(dir); err != nil {
+		return err
+	}
 	return WriteFileAtomic(filepath.Join(dir, TokenFileName), []byte(token+"\n"), access.Mode, access.Owner)
 }
 
 // CheckWritable fails when the agent token and configuration could not be saved in dir, so enroll stops
 // before it spends an enrollment token. It creates dir when missing, then creates and removes a probe file.
 func CheckWritable(dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := makeDir(dir); err != nil {
 		return err
 	}
 	probe, err := os.CreateTemp(dir, ".write-check.*")
@@ -209,6 +219,40 @@ func CheckWritable(dir string) error {
 		return err
 	}
 	return os.Remove(probe.Name())
+}
+
+// makeDir creates dir and its missing parents with DirMode. mkdir narrows the mode by the umask, and a hardened
+// root umask (027 or 077) would leave a root only directory the service user cannot enter, so the mode of each
+// directory it creates is set again through the open directory, never by name. A directory that already exists
+// keeps the mode the admin gave it.
+func makeDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err == nil {
+		if !info.IsDir() {
+			return &fs.PathError{Op: "mkdir", Path: dir, Err: syscall.ENOTDIR}
+		}
+		return nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if parent := filepath.Dir(dir); parent != dir {
+		if err := makeDir(parent); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(dir, DirMode); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return nil
+		}
+		return err
+	}
+	d, err := openDir(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Chmod(DirMode)
 }
 
 // Owner is the owner WriteFileAtomic gives a file.

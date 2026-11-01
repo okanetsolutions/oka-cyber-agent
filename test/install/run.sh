@@ -1,6 +1,6 @@
 #!/bin/sh
-# End to end test of install.sh, reruns with the service enabled and disabled, a rerun after a failed enrollment
-# and the uninstall command. Runs as root on a disposable host or container with the fake tenant from prepare.sh
+# End to end test of install.sh, reruns with the service enabled and disabled, a rerun after a failed enrollment,
+# an install under a hardened umask, the refusal to install over a package and the uninstall command. Runs as root on a disposable host or container with the fake tenant from prepare.sh
 # reachable at $TENANT.
 set -eu
 
@@ -55,7 +55,7 @@ install_agent "$TOKEN"
 getent passwd oka-cyber >/dev/null || fail "the oka-cyber user was not created"
 [ -f /etc/systemd/system/oka-cyber-agent.service ] || fail "the systemd unit was not written"
 grep -q '^server_id:' /etc/oka-cyber-agent/config.yaml || fail "config.yaml has no server_id"
-check_token_access
+check_enrollment_files
 [ "$(stat_of enrollments)" -eq $((enrollments_before + 1)) ] || fail "expected exactly one enrollment"
 
 if has_systemd; then
@@ -110,4 +110,25 @@ if has_systemd; then
 	check_service_reports "$heartbeats_before"
 fi
 uninstall_agent
+
+echo "== an install under umask 077 (a hardened host) still lets the service read its configuration"
+heartbeats_before=$(stat_of heartbeats)
+(umask 077 && install_agent "$TOKEN")
+check_enrollment_files
+if has_systemd; then
+	check_enabled "after an install under umask 077"
+	check_service_reports "$heartbeats_before"
+fi
+uninstall_agent
+
+echo "== install.sh refuses to install over a package"
+mkdir -p /usr/bin
+printf '#!/bin/sh\nexit 0\n' >/usr/bin/oka-cyber-agent
+if install_agent "$TOKEN"; then
+	fail "install.sh installed over a package install"
+fi
+rm -f /usr/bin/oka-cyber-agent
+for path in /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service /etc/oka-cyber-agent; do
+	[ ! -e "$path" ] || fail "install.sh created $path although a package install was present"
+done
 echo "PASS"
