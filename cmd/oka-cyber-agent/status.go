@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -51,9 +52,16 @@ func statusCommand(ctx context.Context, args []string, io streams) int {
 	line("Agent token", tokenState(*configDir))
 	line("Service", serviceState(ctx))
 
-	state, err := agent.LoadState(*stateDir)
+	state, err := agent.LoadState(*stateDir, cfg.ServerID)
 	if err != nil {
+		// Printing the zero state here would show a healthy agent as one that never reported.
+		line("State", "unreadable")
 		fmt.Fprintf(io.stderr, "status: %v\n", err)
+		if errors.Is(err, fs.ErrPermission) {
+			fmt.Fprintln(io.stderr, "The state directory is readable by the service user only. Run status as root, for example: sudo oka-cyber-agent status")
+		}
+		writeHints(w, cfg)
+		return exitFailure
 	}
 	interval := state.ReportIntervalSeconds
 	if interval == 0 {

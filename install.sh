@@ -229,8 +229,9 @@ UNIT
 	mv -f "$UNIT_PATH.new" "$UNIT_PATH"
 }
 
+# A half written enrollment (only one of the two files) goes to enroll, which stops and asks for --force.
 enroll() {
-	if [ -f "$CONFIG_DIR/token" ]; then
+	if [ -f "$CONFIG_DIR/token" ] && [ -f "$CONFIG_DIR/config.yaml" ]; then
 		say "already enrolled, keeping the existing enrollment"
 		return
 	fi

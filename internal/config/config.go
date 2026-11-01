@@ -116,7 +116,7 @@ func Save(dir string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return WriteFileAtomic(filepath.Join(dir, FileName), append([]byte(fileHeader), data...), 0o644)
+	return WriteFileAtomic(filepath.Join(dir, FileName), append([]byte(fileHeader), data...), 0o644, nil)
 }
 
 // TokenPath returns where the agent token is read from. Under systemd the root owned token file is passed
@@ -149,17 +149,38 @@ func LoadToken(dir string) (string, error) {
 
 // SaveToken writes the agent token with mode 0600, owned by root when running as root.
 func SaveToken(dir, token string) error {
-	path := filepath.Join(dir, TokenFileName)
-	if err := WriteFileAtomic(path, []byte(token+"\n"), 0o600); err != nil {
-		return err
-	}
+	var owner *Owner
 	if os.Geteuid() == 0 {
-		return os.Chown(path, 0, 0)
+		owner = &Owner{UID: 0, GID: 0}
 	}
-	return nil
+	return WriteFileAtomic(filepath.Join(dir, TokenFileName), []byte(token+"\n"), 0o600, owner)
 }
 
-func WriteFileAtomic(path string, data []byte, mode fs.FileMode) error {
+// CheckWritable fails when the agent token and configuration could not be saved in dir, so enroll stops
+// before it spends an enrollment token. It creates dir when missing, then creates and removes a probe file.
+func CheckWritable(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	probe, err := os.CreateTemp(dir, ".write-check.*")
+	if err != nil {
+		return err
+	}
+	if err := probe.Close(); err != nil {
+		os.Remove(probe.Name())
+		return err
+	}
+	return os.Remove(probe.Name())
+}
+
+// Owner is the owner WriteFileAtomic gives a file.
+type Owner struct{ UID, GID int }
+
+// WriteFileAtomic replaces path with a new file that has data, mode and, when owner is not nil, that owner.
+// The owner and mode are set through the open temporary file before it is renamed over path, never on path
+// itself: when root writes into a directory another user can write to, that user could swap path for a
+// symlink, and a chown or chmod by name would then follow it to any file on the host.
+func WriteFileAtomic(path string, data []byte, mode fs.FileMode, owner *Owner) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -169,6 +190,12 @@ func WriteFileAtomic(path string, data []byte, mode fs.FileMode) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
+	if owner != nil {
+		if err := tmp.Chown(owner.UID, owner.GID); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return err

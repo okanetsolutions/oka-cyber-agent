@@ -12,7 +12,7 @@ These are product promises written in the README. A change that breaks one is a 
 
 - Read only. The agent never writes outside `/etc/oka-cyber-agent`, `/var/lib/oka-cyber-agent` and, during install or uninstall only, the binary, the systemd unit and the `oka-cyber` system user. It never changes packages, services, firewall rules or users at runtime.
 - No remote control. The server can only tune what the agent already supports (report interval, which built in log sources are on). It can never send a command, a file path, a glob or a regular expression for the agent to act on. File paths come only from the local config file.
-- Never collected: file contents (other than the listed package databases, dependency lock files, the Go build info embedded in executables in the scan roots and log files), secrets, environment variables, shell history, users' data, process arguments.
+- Never collected: file contents (other than the listed package databases, the `rpm`, `trans_item` and `repo` tables of the dnf history database `/var/lib/dnf/history.sqlite` on Red Hat Enterprise Linux, dependency lock files, the Go build info embedded in executables in the scan roots and log files), secrets, environment variables, shell history, users' data, process arguments.
 - Dependency discovery opens only the documented lock file names and, when `collect_go_binaries` is on, executables in the scan roots, from which it reads only the Go build info (`debug/buildinfo`). It never follows symlinks out of the scan roots.
 - Log events are redacted on the host before they reach the spool (see okanetsolutions/oka-cyber-agent#7). Never send a raw line that has not been through redaction.
 - Never log, print or include in an error the enrollment token or the agent token. Error messages from the API client must not echo request bodies.
@@ -21,7 +21,7 @@ These are product promises written in the README. A change that breaks one is a 
   - Install the binary (`/usr/local/bin/oka-cyber-agent` from `install.sh`, `/usr/bin/oka-cyber-agent` from a package) and the systemd unit (`/etc/systemd/system/oka-cyber-agent.service` or `/usr/lib/systemd/system/oka-cyber-agent.service`).
   - Create the `oka-cyber` system user (nologin shell, home directory not created) with its own `oka-cyber` group, and add it to the `adm` and `systemd-journal` groups where they exist so it can read auth logs and the journal (okanetsolutions/oka-cyber-agent#7).
   - Create `/etc/oka-cyber-agent` (through `enroll`) and set the owner and mode of its `token` file. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
-  - Reload systemd and enable, start, stop or disable `oka-cyber-agent.service` only.
+  - Reload systemd and enable, start, restart, stop or disable `oka-cyber-agent.service` only (rerunning `install.sh` and upgrading the package restart it on the new binary).
   - On deb purge or rpm erase only (`rpm -e` or `dnf remove`, not an upgrade), delete both directories, the `oka-cyber` user and its group. A deb `remove` keeps them.
 
 ## Repository Layout
@@ -30,6 +30,7 @@ These are product promises written in the README. A change that breaks one is a 
 - `internal/collect`: collectors (OS facts, package databases, listening services, dependency files). Each collector implements the collector interface and is tested against fixture files.
 - `internal/api`: the HTTP client for the Oka Cyber agent API and the wire types.
 - `internal/config`: the local configuration file and token storage.
+- `internal/sqlite`: a minimal read-only reader of SQLite database files, for the dnf history database (release builds have no cgo).
 - `internal/agent`: the run loop (heartbeat, inventory, log shipping) and its persisted state.
 - `testdata` directories next to the code they feed: real sample files, never generated at test time.
 - `install.sh`: the one line installer (POSIX `sh`, it runs as `curl ... | sudo sh -s --`). It embeds the systemd unit, which must stay identical to `packaging/oka-cyber-agent.service` apart from the binary path (`test/install/check-unit.sh` enforces it).
