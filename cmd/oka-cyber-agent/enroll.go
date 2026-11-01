@@ -105,6 +105,11 @@ func enrollCommand(ctx context.Context, args []string, io streams) int {
 			filepath.Join(*configDir, config.FileName), cfg.URL, cfg.ServerID, cfg.ServerID)
 		return exitFailure
 	}
-	fmt.Fprintf(io.stdout, "Enrolled as server %s. Start reporting with: systemctl enable --now oka-cyber-agent\n", cfg.ServerID)
+	fmt.Fprintf(io.stdout, "Enrolled as server %s.\n", cfg.ServerID)
+	if existingErr == nil {
+		fmt.Fprintln(io.stdout, "A running agent service restarts with this enrollment within about a minute. If the service is stopped, start it with: systemctl enable --now oka-cyber-agent")
+	} else {
+		fmt.Fprintln(io.stdout, "Start reporting with: systemctl enable --now oka-cyber-agent")
+	}
 	return exitOK
 }

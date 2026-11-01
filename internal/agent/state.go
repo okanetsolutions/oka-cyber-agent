@@ -24,12 +24,14 @@ type State struct {
 	LastErrorAt           time.Time `json:"last_error_at,omitzero"`
 }
 
-// LoadState returns the state saved for serverID. It returns an empty state when the file is missing, is
-// unreadable JSON (the worst outcome is one extra inventory upload) or belongs to another server: after
-// enroll --force the new server must get its first inventory at once and its own report interval.
+// LoadState returns the state saved for serverID, or an empty state when the file is missing or belongs to
+// another server: after enroll --force the new server must get its first inventory at once and its own
+// report interval. The state is only a cache (the worst outcome of losing it is one extra inventory upload),
+// so when the file cannot be read or parsed it also returns an empty state, with an error to warn about.
 func LoadState(dir, serverID string) (State, error) {
 	empty := State{ServerID: serverID}
-	data, err := os.ReadFile(filepath.Join(dir, stateFileName))
+	path := filepath.Join(dir, stateFileName)
+	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return empty, nil
 	}
@@ -37,16 +39,44 @@ func LoadState(dir, serverID string) (State, error) {
 		return empty, fmt.Errorf("read state: %w", err)
 	}
 	var s State
-	if json.Unmarshal(data, &s) != nil || s.ServerID != serverID {
+	if err := json.Unmarshal(data, &s); err != nil {
+		return empty, fmt.Errorf("parse state %s: %w", path, err)
+	}
+	if s.ServerID != serverID {
 		return empty, nil
 	}
 	return s, nil
 }
 
+// SaveState writes the state with mode 0600. When root saves it (sudo run --once), the file is given to the
+// owner of the state directory, so the unprivileged service can still read and replace it.
 func SaveState(dir string, s State) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return config.WriteFileAtomic(filepath.Join(dir, stateFileName), append(data, '\n'), 0o600)
+	path := filepath.Join(dir, stateFileName)
+	if err := config.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	if geteuid() != 0 {
+		return nil
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	uid, gid, ok := fileOwner(info)
+	if !ok || uid == 0 {
+		return nil
+	}
+	if err := chown(path, uid, gid); err != nil {
+		return fmt.Errorf("give state to the owner of %s: %w", dir, err)
+	}
+	return nil
 }
+
+var (
+	geteuid = os.Geteuid
+	chown   = os.Chown
+)

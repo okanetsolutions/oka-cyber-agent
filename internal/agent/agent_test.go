@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,9 +208,7 @@ func TestCollectFailureSendsNothingAndRetries(t *testing.T) {
 		}
 		return collected(ctx)
 	}
-	cycles := 0
 	a.Wait = func(context.Context, time.Duration) error {
-		cycles++
 		if len(client.inventories) != 0 {
 			return context.Canceled
 		}
@@ -219,8 +220,8 @@ func TestCollectFailureSendsNothingAndRetries(t *testing.T) {
 	if err := a.Run(context.Background()); err != nil {
 		t.Fatalf("Run = %v, want the agent to keep running after a failed collection", err)
 	}
-	if cycles != 3 || len(client.inventories) != 1 {
-		t.Fatalf("cycles = %d, inventories = %d, want two failed cycles then one inventory", cycles, len(client.inventories))
+	if client.heartbeats != 3 || len(client.inventories) != 1 {
+		t.Fatalf("cycles = %d, inventories = %d, want two failed cycles then one inventory", client.heartbeats, len(client.inventories))
 	}
 	if state, _ := LoadState(a.StateDir, a.Config.ServerID); state.LastError != "" {
 		t.Fatalf("LastError = %q, want it cleared by the successful cycle", state.LastError)
@@ -242,25 +243,115 @@ func TestRunWaitsTheServerIntervalAndStopsOnCancel(t *testing.T) {
 	client := &fakeClient{interval: 600}
 	a, _ := newTestAgent(t, client, &[]collect.Package{})
 	ctx, cancel := context.WithCancel(context.Background())
-	var waits []time.Duration
+	var waited time.Duration
 	a.Wait = func(_ context.Context, d time.Duration) error {
-		waits = append(waits, d)
-		if len(waits) == 2 {
+		if d > ConfigCheckEvery {
+			t.Fatalf("wait step = %v, want at most %v so a changed configuration is seen", d, ConfigCheckEvery)
+		}
+		if client.heartbeats == 2 {
 			cancel()
 			return context.Canceled
 		}
+		waited += d
 		return nil
 	}
 	if err := a.Run(ctx); err != nil {
 		t.Fatalf("Run = %v, want nil on cancel", err)
 	}
-	for _, d := range waits {
-		if d < 600*time.Second || d > 660*time.Second {
-			t.Fatalf("wait = %v, want the 600s server interval plus at most 10%% jitter", d)
-		}
+	if waited < 600*time.Second || waited > 660*time.Second {
+		t.Fatalf("wait between reports = %v, want the 600s server interval plus at most 10%% jitter", waited)
 	}
-	if client.heartbeats != 2 {
-		t.Fatalf("heartbeats = %d, want 2", client.heartbeats)
+}
+
+func TestRunStopsWhenTheConfigChanges(t *testing.T) {
+	client := &fakeClient{}
+	a, _ := newTestAgent(t, client, &[]collect.Package{})
+	a.Wait = func(context.Context, time.Duration) error { return nil }
+	checks := []struct {
+		changed bool
+		err     error
+	}{{false, nil}, {false, errors.New("config.yaml: server_id is required")}, {true, nil}}
+	a.ConfigChanged = func() (bool, error) {
+		check := checks[0]
+		checks = checks[1:]
+		return check.changed, check.err
+	}
+	if err := a.Run(context.Background()); !errors.Is(err, ErrConfigChanged) {
+		t.Fatalf("Run = %v, want ErrConfigChanged", err)
+	}
+	if len(checks) != 0 || client.heartbeats != 1 {
+		t.Fatalf("checks left = %d, heartbeats = %d; want a broken edit ignored and a stop at the next valid change", len(checks), client.heartbeats)
+	}
+}
+
+func TestUnreadableOrCorruptStateStartsFresh(t *testing.T) {
+	tests := map[string]func(path string) error{
+		"corrupt": func(path string) error { return os.WriteFile(path, []byte("{not json"), 0o600) },
+		"unreadable": func(path string) error {
+			if os.Geteuid() == 0 {
+				t.Skip("root can read a file with mode 0000")
+			}
+			if err := os.WriteFile(path, []byte(`{"server_id":"42"}`), 0o600); err != nil {
+				return err
+			}
+			return os.Chmod(path, 0)
+		},
+	}
+	for name, breakState := range tests {
+		t.Run(name, func(t *testing.T) {
+			client := &fakeClient{}
+			packages := []collect.Package{{Ecosystem: "Debian:12", Name: "bash", Version: "1"}}
+			a, _ := newTestAgent(t, client, &packages)
+			path := filepath.Join(a.StateDir, stateFileName)
+			if err := breakState(path); err != nil {
+				t.Fatal(err)
+			}
+			if state, err := LoadState(a.StateDir, "42"); err == nil || state != (State{ServerID: "42"}) {
+				t.Fatalf("LoadState = %+v, %v; want an empty state and an error to warn about", state, err)
+			}
+			if err := a.Cycle(context.Background()); err != nil {
+				t.Fatalf("Cycle = %v, want the agent to start from an empty state", err)
+			}
+			if len(client.inventories) != 1 {
+				t.Fatalf("inventories = %d, want 1", len(client.inventories))
+			}
+			if state, err := LoadState(a.StateDir, "42"); err != nil || state.LastInventoryAt.IsZero() {
+				t.Fatalf("state = %+v, err = %v; want the state file replaced", state, err)
+			}
+		})
+	}
+}
+
+func TestStateSavedByRootBelongsToTheStateDirOwner(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("file owners are read on Linux only")
+	}
+	dir := t.TempDir()
+	var chowned []string
+	previousEuid, previousChown := geteuid, chown
+	geteuid = func() int { return 0 }
+	chown = func(path string, uid, gid int) error {
+		chowned = append(chowned, fmt.Sprintf("%s %d:%d", path, uid, gid))
+		return nil
+	}
+	t.Cleanup(func() { geteuid, chown = previousEuid, previousChown })
+
+	if err := SaveState(dir, State{ServerID: "42"}); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("%s %d:%d", filepath.Join(dir, stateFileName), os.Getuid(), os.Getgid())
+	if os.Getuid() == 0 {
+		want = ""
+	}
+	if got := strings.Join(chowned, ","); got != want {
+		t.Fatalf("chown = %q, want %q", got, want)
+	}
+
+	chown = func(string, int, int) error { return fs.ErrPermission }
+	if os.Getuid() != 0 {
+		if err := SaveState(dir, State{ServerID: "42"}); !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("SaveState = %v, want the chown failure reported", err)
+		}
 	}
 }
 

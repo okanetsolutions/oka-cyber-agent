@@ -331,6 +331,61 @@ func TestRunExitsWithRevokedCodeOn401(t *testing.T) {
 	}
 }
 
+func TestRunRestartsAfterAForcedReenroll(t *testing.T) {
+	useFixtureHost(t)
+	tenant, srv := newFakeTenant(t)
+	configDir := t.TempDir()
+	enroll := []string{"enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir}
+	if r := runCLI(t, "", enroll...); r.code != exitOK || !strings.Contains(r.stdout, "systemctl enable --now") {
+		t.Fatalf("enroll = %+v, want the start hint", r)
+	}
+	var reenroll result
+	waits := 0
+	previous := reportWait
+	reportWait = func(context.Context, time.Duration) error {
+		waits++
+		switch {
+		case waits > 100:
+			return context.Canceled
+		case reenroll.stdout == "":
+			reenroll = runCLI(t, "", append(enroll, "--force")...)
+		}
+		return nil
+	}
+	t.Cleanup(func() { reportWait = previous })
+
+	if r := runCLI(t, "", "run", "--config-dir", configDir, "--state-dir", t.TempDir()); r.code != exitRestart {
+		t.Fatalf("run = %+v, want exit %d so systemd restarts it with the new enrollment", r, exitRestart)
+	}
+	if reenroll.code != exitOK || !strings.Contains(reenroll.stdout, "43") {
+		t.Fatalf("enroll --force = %+v", reenroll)
+	}
+	if got := strings.Count(strings.Join(tenant.requests(), ","), "heartbeat"); got != 1 {
+		t.Fatalf("heartbeats = %d, want the old enrollment to stop after the re-enroll", got)
+	}
+}
+
+func TestRunStartsWithAnUnreadableState(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a file with mode 0000")
+	}
+	useFixtureHost(t)
+	_, srv := newFakeTenant(t)
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	runCLI(t, "", "enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir)
+	// What a root run --once used to leave behind for the unprivileged service.
+	path := filepath.Join(stateDir, "state.json")
+	if err := os.WriteFile(path, []byte(`{"server_id":"42"}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if r := runCLI(t, "", "run", "--once", "--config-dir", configDir, "--state-dir", stateDir); r.code != exitOK || !strings.Contains(r.stderr, "level=WARN") {
+		t.Fatalf("run --once = %+v, want a warning and a successful report", r)
+	}
+	if state, err := agent.LoadState(stateDir, "42"); err != nil || state.LastInventoryAt.IsZero() {
+		t.Fatalf("state = %+v, err = %v; want the state file replaced", state, err)
+	}
+}
+
 func TestRunOnceFailsWhenTheReportFails(t *testing.T) {
 	useFixtureHost(t)
 	withoutRetryDelay(t)

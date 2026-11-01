@@ -60,7 +60,9 @@ oka-cyber-agent inventory    # what would be reported, as JSON; sends nothing
 oka-cyber-agent run --once   # one heartbeat and inventory report, then exit (non zero if it failed)
 ```
 
-`enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. It checks that it can write to `/etc/oka-cyber-agent` before it uses the enrollment token, so run it as root. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
+`enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. A running service notices the new enrollment within about a minute and exits, so systemd restarts it with the new token. It checks that it can write to `/etc/oka-cyber-agent` before it uses the enrollment token, so run it as root. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
+
+`run --once` reads the root owned agent token, so run it with sudo. A state file it writes as root is given to the owner of `/var/lib/oka-cyber-agent`, so the service can keep using it, and the agent starts from an empty state (with a warning) when its state file is unreadable or corrupt.
 
 ## Configuration
 
@@ -73,7 +75,7 @@ report_interval_seconds: 300     # the server may change it, between 60 and 8640
 collect_services: true           # set to false to stop reporting listening services
 ```
 
-Unknown keys are rejected, so a typo cannot silently turn an option off. The agent token lives in `/etc/oka-cyber-agent/token` (mode 0600, owned by root) and is never written to the configuration file or the logs. Restart the service after editing the file.
+Unknown keys are rejected, so a typo cannot silently turn an option off. The agent token lives in `/etc/oka-cyber-agent/token` (mode 0600, owned by root) and is never written to the configuration file or the logs. The running service checks the file and the token every 30 seconds and, when either changed, exits so systemd restarts it with the new settings. An edit that does not load is ignored with a warning in the journal, and the service keeps its current settings.
 
 ## Uninstall
 

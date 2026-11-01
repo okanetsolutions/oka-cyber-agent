@@ -20,6 +20,9 @@ var collectRoot = "/"
 // retrySleep is the API client's wait between retries; nil keeps the client's default.
 var retrySleep func(ctx context.Context, d time.Duration) error
 
+// reportWait is the agent's wait between reports; nil keeps the agent's default.
+var reportWait func(ctx context.Context, d time.Duration) error
+
 func runCommand(ctx context.Context, args []string, io streams) int {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(io.stderr)
@@ -31,6 +34,8 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 	}
 	logger := slog.New(slog.NewTextHandler(io.stderr, nil))
 
+	// Taken before reading the files, so a re-enroll that lands while the agent starts is not missed.
+	watcher := config.NewWatcher(*configDir)
 	cfg, err := config.Load(*configDir)
 	if err != nil {
 		logger.Error("cannot start", "error", err)
@@ -51,10 +56,12 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 		return exitFailure
 	}
 	a := &agent.Agent{
-		Config:   cfg,
-		StateDir: *stateDir,
-		Client:   client,
-		Logger:   logger,
+		Config:        cfg,
+		StateDir:      *stateDir,
+		Client:        client,
+		Logger:        logger,
+		Wait:          reportWait,
+		ConfigChanged: watcher.Changed,
 		Collect: func(ctx context.Context) (*collect.Inventory, error) {
 			collectors, err := collect.Defaults(collect.Options{Root: collectRoot, CollectServices: cfg.CollectServices})
 			if err != nil {
@@ -74,6 +81,9 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 	case errors.Is(err, agent.ErrRevoked):
 		logger.Error("stopping", "error", err)
 		return exitRevoked
+	case errors.Is(err, agent.ErrConfigChanged):
+		logger.Info("stopping", "reason", err)
+		return exitRestart
 	case err != nil && *once:
 		logger.Error("report failed", "error", err)
 		return exitFailure
