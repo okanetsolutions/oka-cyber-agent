@@ -6,7 +6,7 @@
 # Downloads the binary and checksums.txt from one release, verifies the SHA-256 (and the cosign signature of
 # checksums.txt when cosign is installed), installs /usr/local/bin/oka-cyber-agent, creates the oka-cyber
 # system user, writes a hardened systemd unit, enrolls the server and starts the service. Rerunning it
-# upgrades the binary and keeps the enrollment.
+# upgrades the binary, keeps the enrollment and restarts the service, unless the admin disabled it.
 set -eu
 
 REPOSITORY="okanetsolutions/oka-cyber-agent"
@@ -21,6 +21,7 @@ VERSION=""
 INSECURE_DEV=""
 DOWNLOAD_URL="${OKA_CYBER_AGENT_DOWNLOAD_URL:-}"
 WORK_DIR=""
+FIRST_INSTALL=""
 
 say() {
 	printf 'oka-cyber-agent: %s\n' "$*"
@@ -248,15 +249,30 @@ enroll() {
 	OKA_CYBER_ENROLLMENT_TOKEN="$ENROLLMENT_TOKEN" "$BINARY_PATH" enroll --url "$TENANT_URL" $INSECURE_DEV
 }
 
+# Taken before write_unit. A host without the unit or without an enrollment has never run the service, so it is
+# enabled and started; otherwise the admin's choice stands and a disabled service stays disabled.
+detect_first_install() {
+	if [ ! -f "$UNIT_PATH" ] || [ ! -f "$CONFIG_DIR/token" ] || [ ! -f "$CONFIG_DIR/config.yaml" ]; then
+		FIRST_INSTALL=1
+	fi
+}
+
 start_service() {
 	if ! has_systemd; then
 		say "systemd is not running here: the service was not started. Run '$BINARY_PATH run' under your init system."
 		return
 	fi
 	systemctl daemon-reload
-	systemctl enable oka-cyber-agent.service >/dev/null 2>&1
-	systemctl restart oka-cyber-agent.service
-	say "service started: systemctl status oka-cyber-agent"
+	if [ -n "$FIRST_INSTALL" ]; then
+		systemctl enable oka-cyber-agent.service >/dev/null 2>&1
+		systemctl restart oka-cyber-agent.service
+		say "service enabled and started: systemctl status oka-cyber-agent"
+	elif systemctl is-enabled --quiet oka-cyber-agent.service || systemctl is-active --quiet oka-cyber-agent.service; then
+		systemctl restart oka-cyber-agent.service
+		say "service restarted on the new binary: systemctl status oka-cyber-agent"
+	else
+		say "the service is disabled, so it was left disabled and stopped. Enable and start it with: systemctl enable --now oka-cyber-agent"
+	fi
 }
 
 cleanup() {
@@ -275,6 +291,7 @@ main() {
 	download_and_verify
 	install_binary
 	create_user
+	detect_first_install
 	write_unit
 	enroll
 	start_service

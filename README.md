@@ -58,7 +58,7 @@ The [install script](install.sh) is short; read it first if you like. It:
 4. writes a hardened systemd unit (`/etc/systemd/system/oka-cyber-agent.service`),
 5. enrolls the server and starts the service.
 
-Rerunning it upgrades the agent and keeps the enrollment. Pass `--version v1.2.3` to install a specific release.
+Rerunning it upgrades the agent, keeps the enrollment and restarts the service on the new binary. A service you disabled stays disabled. Pass `--version v1.2.3` to install a specific release.
 
 The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It can only write its state directory, `/var/lib/oka-cyber-agent`. The agent token stays root only (mode 0600) and systemd hands it to the service with `LoadCredential`. systemd older than 247 (the RHEL 8 family) has no `LoadCredential`, so there `enroll` makes the token readable by the `oka-cyber` group only (mode 0640), for the install script and the packages alike.
 
