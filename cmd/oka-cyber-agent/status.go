@@ -51,7 +51,7 @@ func statusCommand(ctx context.Context, args []string, io streams) int {
 	line("Agent token", tokenState(*configDir))
 	line("Service", serviceState(ctx))
 
-	state, err := agent.LoadState(*stateDir)
+	state, err := agent.LoadState(*stateDir, cfg.ServerID)
 	if err != nil {
 		fmt.Fprintf(io.stderr, "status: %v\n", err)
 	}

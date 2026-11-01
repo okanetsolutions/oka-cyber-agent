@@ -45,8 +45,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		return err
 	}
 	for {
-		if err := a.Cycle(ctx); err != nil {
+		err := a.Cycle(ctx)
+		if errors.Is(err, ErrRevoked) {
 			return err
+		}
+		if err != nil {
+			a.Logger.Error("report failed, retrying at the next interval", "error", err)
 		}
 		if err := a.Wait(ctx, a.nextDelay()); err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -57,8 +61,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-// Cycle sends a heartbeat, then the inventory when it changed or is due. Errors other than a revoked token
-// are logged and kept in the state for the status command, and the next cycle tries again.
+// Cycle sends a heartbeat, then the inventory when it changed or is due. A failure is kept in the state for
+// the status command and returned; ErrRevoked means the server revoked the agent token.
 func (a *Agent) Cycle(ctx context.Context) error {
 	if err := a.init(); err != nil {
 		return err
@@ -75,14 +79,13 @@ func (a *Agent) Cycle(ctx context.Context) error {
 	case err != nil && ctx.Err() != nil:
 		return nil
 	case err != nil:
-		a.Logger.Error("report failed", "error", err)
 		a.recordError(err)
 	default:
 		a.state.LastError = ""
 		a.state.LastErrorAt = time.Time{}
 	}
 	a.save()
-	return nil
+	return err
 }
 
 func (a *Agent) init() error {
@@ -96,7 +99,7 @@ func (a *Agent) init() error {
 		a.Wait = sleep
 	}
 	if !a.loaded {
-		s, err := LoadState(a.StateDir)
+		s, err := LoadState(a.StateDir, a.Config.ServerID)
 		if err != nil {
 			return err
 		}

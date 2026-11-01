@@ -57,10 +57,10 @@ make build-all    # static Linux amd64 and arm64 binaries in bin/
 sudo oka-cyber-agent enroll --url https://<your tenant> --token <enrollment token>
 oka-cyber-agent status       # enrollment, service state, last heartbeat and inventory, last error
 oka-cyber-agent inventory    # what would be reported, as JSON; sends nothing
-oka-cyber-agent run --once   # one heartbeat and inventory report, then exit
+oka-cyber-agent run --once   # one heartbeat and inventory report, then exit (non zero if it failed)
 ```
 
-`enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
+`enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. It checks that it can write to `/etc/oka-cyber-agent` before it uses the enrollment token, so run it as root. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
 
 ## Configuration
 

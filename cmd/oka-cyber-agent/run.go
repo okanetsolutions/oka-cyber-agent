@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
@@ -15,6 +16,9 @@ import (
 )
 
 var collectRoot = "/"
+
+// retrySleep is the API client's wait between retries; nil keeps the client's default.
+var retrySleep func(ctx context.Context, d time.Duration) error
 
 func runCommand(ctx context.Context, args []string, io streams) int {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -41,7 +45,7 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 		logger.Error("cannot start", "error", fmt.Errorf("state directory: %w", err))
 		return exitFailure
 	}
-	client, err := api.New(cfg.URL, api.Options{Token: api.Secret(token), InsecureDev: cfg.InsecureDev, AgentVersion: agent.Version})
+	client, err := api.New(cfg.URL, api.Options{Token: api.Secret(token), InsecureDev: cfg.InsecureDev, AgentVersion: agent.Version, Sleep: retrySleep})
 	if err != nil {
 		logger.Error("cannot start", "error", err)
 		return exitFailure
@@ -70,6 +74,9 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 	case errors.Is(err, agent.ErrRevoked):
 		logger.Error("stopping", "error", err)
 		return exitRevoked
+	case err != nil && *once:
+		logger.Error("report failed", "error", err)
+		return exitFailure
 	case err != nil:
 		logger.Error("stopping", "error", err)
 		return exitFailure

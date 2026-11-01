@@ -50,7 +50,7 @@ func newTestAgent(t *testing.T, client *fakeClient, packages *[]collect.Package)
 	t.Helper()
 	c := &clock{now: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)}
 	return &Agent{
-		Config:   config.Config{ReportIntervalSeconds: 300},
+		Config:   config.Config{ServerID: "42", ReportIntervalSeconds: 300},
 		StateDir: t.TempDir(),
 		Client:   client,
 		Collect: func(context.Context) (*collect.Inventory, error) {
@@ -118,17 +118,46 @@ func TestStateSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestReenrolledServerStartsFromAFreshState(t *testing.T) {
+	client := &fakeClient{interval: 3600}
+	packages := []collect.Package{{Ecosystem: "Debian:12", Name: "bash", Version: "1"}}
+	a, clk := newTestAgent(t, client, &packages)
+	if err := a.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	client.interval = 0
+	reenrolled := config.Config{ServerID: "43", ReportIntervalSeconds: 300}
+	b := &Agent{Config: reenrolled, StateDir: a.StateDir, Client: client, Collect: a.Collect, Logger: a.Logger, Now: clk.Now}
+	if err := b.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.inventories) != 2 {
+		t.Fatalf("inventories = %d, want the new server to get its first inventory at once", len(client.inventories))
+	}
+	if got := b.interval(); got != 300*time.Second {
+		t.Fatalf("interval = %v, want the new server's 300s, not the previous server's 3600s", got)
+	}
+	state, err := LoadState(a.StateDir, "43")
+	if err != nil || state.ServerID != "43" || state.LastInventoryAt.IsZero() {
+		t.Fatalf("state = %+v, err = %v; want it saved for the new server", state, err)
+	}
+	if old, _ := LoadState(a.StateDir, "42"); !old.LastInventoryAt.IsZero() {
+		t.Fatalf("state for the previous server = %+v, want it ignored", old)
+	}
+}
+
 func TestFailedHeartbeatSkipsInventoryAndIsRecorded(t *testing.T) {
 	client := &fakeClient{heartbeatErr: errors.New("connection refused")}
 	packages := []collect.Package{}
 	a, _ := newTestAgent(t, client, &packages)
-	if err := a.Cycle(context.Background()); err != nil {
-		t.Fatalf("a transient failure must not stop the agent: %v", err)
+	if err := a.Cycle(context.Background()); err == nil || errors.Is(err, ErrRevoked) {
+		t.Fatalf("Cycle = %v, want the heartbeat failure returned", err)
 	}
 	if len(client.inventories) != 0 {
 		t.Fatal("inventory must wait for a successful heartbeat")
 	}
-	state, err := LoadState(a.StateDir)
+	state, err := LoadState(a.StateDir, a.Config.ServerID)
 	if err != nil || state.LastError == "" || state.LastErrorAt.IsZero() {
 		t.Fatalf("state = %+v, err = %v; want the error recorded", state, err)
 	}
@@ -137,17 +166,18 @@ func TestFailedHeartbeatSkipsInventoryAndIsRecorded(t *testing.T) {
 	if err := a.Cycle(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if state, _ := LoadState(a.StateDir); state.LastError != "" {
+	if state, _ := LoadState(a.StateDir, a.Config.ServerID); state.LastError != "" {
 		t.Fatalf("last error = %q, want it cleared after a successful cycle", state.LastError)
 	}
 }
 
 func TestFailedInventoryIsResentNextCycle(t *testing.T) {
-	client := &fakeClient{inventoryErr: errors.New("HTTP 502")}
+	inventoryErr := errors.New("HTTP 502")
+	client := &fakeClient{inventoryErr: inventoryErr}
 	packages := []collect.Package{{Ecosystem: "Debian:12", Name: "bash", Version: "1"}}
 	a, _ := newTestAgent(t, client, &packages)
-	if err := a.Cycle(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := a.Cycle(context.Background()); !errors.Is(err, inventoryErr) {
+		t.Fatalf("Cycle = %v, want the inventory failure returned", err)
 	}
 	client.inventoryErr = nil
 	if err := a.Cycle(context.Background()); err != nil {
@@ -181,7 +211,7 @@ func TestCollectFailureSendsNothingAndRetries(t *testing.T) {
 		if len(client.inventories) != 0 {
 			return context.Canceled
 		}
-		if state, _ := LoadState(a.StateDir); state.LastError == "" {
+		if state, _ := LoadState(a.StateDir, a.Config.ServerID); state.LastError == "" {
 			t.Fatal("a failed collection must be visible in the status")
 		}
 		return nil
@@ -192,7 +222,7 @@ func TestCollectFailureSendsNothingAndRetries(t *testing.T) {
 	if cycles != 3 || len(client.inventories) != 1 {
 		t.Fatalf("cycles = %d, inventories = %d, want two failed cycles then one inventory", cycles, len(client.inventories))
 	}
-	if state, _ := LoadState(a.StateDir); state.LastError != "" {
+	if state, _ := LoadState(a.StateDir, a.Config.ServerID); state.LastError != "" {
 		t.Fatalf("LastError = %q, want it cleared by the successful cycle", state.LastError)
 	}
 }
@@ -203,7 +233,7 @@ func TestRevokedTokenStopsTheAgent(t *testing.T) {
 	if err := a.Run(context.Background()); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("Run = %v, want ErrRevoked", err)
 	}
-	if state, _ := LoadState(a.StateDir); state.LastError == "" {
+	if state, _ := LoadState(a.StateDir, a.Config.ServerID); state.LastError == "" {
 		t.Fatal("the revocation must be visible in the status")
 	}
 }

@@ -140,3 +140,17 @@ func TestSavedConfigNeverContainsTheToken(t *testing.T) {
 		t.Fatal("config.yaml must not contain the token")
 	}
 }
+
+func TestCheckWritableCreatesTheDirAndLeavesNothing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "oka-cyber-agent")
+	if err := CheckWritable(dir); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("entries = %v, err = %v; want an empty directory", entries, err)
+	}
+	if err := CheckWritable(filepath.Join(dir, "missing", "\x00")); err == nil {
+		t.Fatal("want an error for a path that cannot be created")
+	}
+}

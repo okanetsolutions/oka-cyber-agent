@@ -5,7 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
@@ -44,6 +46,15 @@ func enrollCommand(ctx context.Context, args []string, io streams) int {
 	if _, err := config.LoadToken(*configDir); err == nil && !*force {
 		fmt.Fprintf(io.stdout, "Already enrolled as server %s at %s. Use --force to enroll again.\n", existing.ServerID, existing.URL)
 		return exitOK
+	}
+	// The server spends the enrollment token as soon as it answers, so check first that the agent token it
+	// returns can be saved.
+	if err := config.CheckWritable(*configDir); err != nil {
+		fmt.Fprintf(io.stderr, "enroll: cannot save the agent token in %s: %v\n", *configDir, err)
+		if errors.Is(err, fs.ErrPermission) {
+			fmt.Fprintln(io.stderr, "Run enroll as root, for example with sudo.")
+		}
+		return exitFailure
 	}
 
 	host, err := collect.Run(ctx, collect.OSCollector{Root: collectRoot})
@@ -84,11 +95,14 @@ func enrollCommand(ctx context.Context, args []string, io streams) int {
 		cfg.ReportIntervalSeconds = min(max(resp.ReportIntervalSeconds, config.MinReportIntervalSeconds), config.MaxReportIntervalSeconds)
 	}
 	if err := config.SaveToken(*configDir, string(resp.AgentToken)); err != nil {
-		fmt.Fprintf(io.stderr, "enroll: save agent token: %v\n", err)
+		fmt.Fprintf(io.stderr, "enroll: the server enrolled this host as server %s, but saving its agent token failed: %v\n", cfg.ServerID, err)
+		fmt.Fprintf(io.stderr, "The agent token was not stored and the enrollment token may be used up. Revoke server %s in the dashboard, then enroll again with a new enrollment token.\n", cfg.ServerID)
 		return exitFailure
 	}
 	if err := config.Save(*configDir, cfg); err != nil {
-		fmt.Fprintf(io.stderr, "enroll: save configuration: %v\n", err)
+		fmt.Fprintf(io.stderr, "enroll: the agent token of server %s was saved, but saving the configuration failed: %v\n", cfg.ServerID, err)
+		fmt.Fprintf(io.stderr, "To finish by hand, write %s with url: %s and server_id: \"%s\". Otherwise revoke server %s in the dashboard and enroll again with --force.\n",
+			filepath.Join(*configDir, config.FileName), cfg.URL, cfg.ServerID, cfg.ServerID)
 		return exitFailure
 	}
 	fmt.Fprintf(io.stdout, "Enrolled as server %s. Start reporting with: systemctl enable --now oka-cyber-agent\n", cfg.ServerID)

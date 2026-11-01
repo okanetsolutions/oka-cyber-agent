@@ -159,6 +159,23 @@ func SaveToken(dir, token string) error {
 	return nil
 }
 
+// CheckWritable fails when the agent token and configuration could not be saved in dir, so enroll stops
+// before it spends an enrollment token. It creates dir when missing, then creates and removes a probe file.
+func CheckWritable(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	probe, err := os.CreateTemp(dir, ".write-check.*")
+	if err != nil {
+		return err
+	}
+	if err := probe.Close(); err != nil {
+		os.Remove(probe.Name())
+		return err
+	}
+	return os.Remove(probe.Name())
+}
+
 func WriteFileAtomic(path string, data []byte, mode fs.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
