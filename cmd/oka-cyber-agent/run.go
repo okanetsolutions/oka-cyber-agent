@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
@@ -15,6 +16,12 @@ import (
 )
 
 var collectRoot = "/"
+
+// retrySleep is the API client's wait between retries; nil keeps the client's default.
+var retrySleep func(ctx context.Context, d time.Duration) error
+
+// reportWait is the agent's wait between reports; nil keeps the agent's default.
+var reportWait func(ctx context.Context, d time.Duration) error
 
 func runCommand(ctx context.Context, args []string, io streams) int {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -27,6 +34,8 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 	}
 	logger := slog.New(slog.NewTextHandler(io.stderr, nil))
 
+	// Taken before reading the files, so a re-enroll that lands while the agent starts is not missed.
+	watcher := config.NewWatcher(*configDir)
 	cfg, err := config.Load(*configDir)
 	if err != nil {
 		logger.Error("cannot start", "error", err)
@@ -41,18 +50,24 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 		logger.Error("cannot start", "error", fmt.Errorf("state directory: %w", err))
 		return exitFailure
 	}
-	client, err := api.New(cfg.URL, api.Options{Token: api.Secret(token), InsecureDev: cfg.InsecureDev, AgentVersion: agent.Version})
+	client, err := api.New(cfg.URL, api.Options{Token: api.Secret(token), InsecureDev: cfg.InsecureDev, AgentVersion: agent.Version, Sleep: retrySleep})
 	if err != nil {
 		logger.Error("cannot start", "error", err)
 		return exitFailure
 	}
 	a := &agent.Agent{
-		Config:   cfg,
-		StateDir: *stateDir,
-		Client:   client,
-		Logger:   logger,
+		Config:        cfg,
+		StateDir:      *stateDir,
+		Client:        client,
+		Logger:        logger,
+		Wait:          reportWait,
+		ConfigChanged: watcher.Changed,
 		Collect: func(ctx context.Context) (*collect.Inventory, error) {
-			return collect.Run(ctx, collect.Defaults(collectOptions(cfg))...)
+			collectors, err := collect.Defaults(collectOptions(cfg))
+			if err != nil {
+				return nil, err
+			}
+			return collect.Run(ctx, collectors...)
 		},
 	}
 
@@ -66,6 +81,12 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 	case errors.Is(err, agent.ErrRevoked):
 		logger.Error("stopping", "error", err)
 		return exitRevoked
+	case errors.Is(err, agent.ErrConfigChanged):
+		logger.Info("stopping", "reason", err)
+		return exitRestart
+	case err != nil && *once:
+		logger.Error("report failed", "error", err)
+		return exitFailure
 	case err != nil:
 		logger.Error("stopping", "error", err)
 		return exitFailure

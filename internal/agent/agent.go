@@ -19,7 +19,13 @@ import (
 // FullInventoryEvery is how often the inventory is sent even when it did not change.
 const FullInventoryEvery = 24 * time.Hour
 
-var ErrRevoked = errors.New("the server rejected the agent token: this server was revoked in the dashboard or the token is invalid")
+// ConfigCheckEvery is how often Run checks between reports whether the configuration or the token changed.
+const ConfigCheckEvery = 30 * time.Second
+
+var (
+	ErrRevoked       = errors.New("the server rejected the agent token: this server was revoked in the dashboard or the token is invalid")
+	ErrConfigChanged = errors.New("the configuration or the agent token changed: restarting to apply it")
+)
 
 type Client interface {
 	Heartbeat(ctx context.Context, req api.HeartbeatRequest) (api.HeartbeatResponse, error)
@@ -34,21 +40,27 @@ type Agent struct {
 	Logger   *slog.Logger
 	Now      func() time.Time
 	Wait     func(ctx context.Context, d time.Duration) error
+	// ConfigChanged reports whether enroll --force or an edit replaced the configuration or the token, so Run
+	// returns ErrConfigChanged and the service manager restarts the agent with them. Nil disables the check.
+	ConfigChanged func() (bool, error)
 
 	state  State
 	loaded bool
 }
 
-// Run reports until the context is cancelled or the server revokes the agent.
+// Run reports until the context is cancelled, the server revokes the agent (ErrRevoked) or the configuration
+// or the token changed (ErrConfigChanged).
 func (a *Agent) Run(ctx context.Context) error {
-	if err := a.init(); err != nil {
-		return err
-	}
+	a.init()
 	for {
-		if err := a.Cycle(ctx); err != nil {
+		err := a.Cycle(ctx)
+		if errors.Is(err, ErrRevoked) {
 			return err
 		}
-		if err := a.Wait(ctx, a.nextDelay()); err != nil {
+		if err != nil && ctx.Err() == nil {
+			a.Logger.Error("report failed, retrying at the next interval", "error", err)
+		}
+		if err := a.waitNext(ctx); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
@@ -57,12 +69,35 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-// Cycle sends a heartbeat, then the inventory when it changed or is due. Errors other than a revoked token
-// are logged and kept in the state for the status command, and the next cycle tries again.
-func (a *Agent) Cycle(ctx context.Context) error {
-	if err := a.init(); err != nil {
-		return err
+// waitNext waits for the next report in steps of ConfigCheckEvery, so a changed configuration is applied
+// quickly even with a report interval of a day.
+func (a *Agent) waitNext(ctx context.Context) error {
+	for remaining := a.nextDelay(); remaining > 0; {
+		step := min(remaining, ConfigCheckEvery)
+		if err := a.Wait(ctx, step); err != nil {
+			return err
+		}
+		remaining -= step
+		if a.ConfigChanged == nil {
+			continue
+		}
+		changed, err := a.ConfigChanged()
+		if err != nil {
+			a.Logger.Warn("the configuration changed but cannot be used, keeping the current one", "error", err)
+		}
+		if changed {
+			return ErrConfigChanged
+		}
 	}
+	return nil
+}
+
+// Cycle sends a heartbeat, then the inventory when it changed or is due. A failure is kept in the state for
+// the status command and returned; ErrRevoked means the server revoked the agent token. A report cut short
+// by a stop (the context is cancelled) is returned too, so run --once fails, but it is not recorded: the
+// stop is not a failure of the server or the host.
+func (a *Agent) Cycle(ctx context.Context) error {
+	a.init()
 	err := a.heartbeat(ctx)
 	if err == nil {
 		err = a.inventory(ctx)
@@ -73,19 +108,18 @@ func (a *Agent) Cycle(ctx context.Context) error {
 		a.save()
 		return ErrRevoked
 	case err != nil && ctx.Err() != nil:
-		return nil
+		return err
 	case err != nil:
-		a.Logger.Error("report failed", "error", err)
 		a.recordError(err)
 	default:
 		a.state.LastError = ""
 		a.state.LastErrorAt = time.Time{}
 	}
 	a.save()
-	return nil
+	return err
 }
 
-func (a *Agent) init() error {
+func (a *Agent) init() {
 	if a.Logger == nil {
 		a.Logger = slog.Default()
 	}
@@ -96,14 +130,13 @@ func (a *Agent) init() error {
 		a.Wait = sleep
 	}
 	if !a.loaded {
-		s, err := LoadState(a.StateDir)
+		s, err := LoadState(a.StateDir, a.Config.ServerID)
 		if err != nil {
-			return err
+			a.Logger.Warn("starting from an empty state", "error", err)
 		}
 		a.state = s
 		a.loaded = true
 	}
-	return nil
 }
 
 func (a *Agent) heartbeat(ctx context.Context) error {

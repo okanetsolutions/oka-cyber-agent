@@ -224,10 +224,14 @@ func mapsEqualBool(a, b map[string]bool) bool {
 }
 
 func TestDefaultsIncludeDependenciesOnlyWhenConfigured(t *testing.T) {
-	has := func(cs []Collector) bool {
+	has := func(o Options) bool {
+		cs, err := Defaults(o)
+		if err != nil {
+			t.Fatal(err)
+		}
 		return slices.ContainsFunc(cs, func(c Collector) bool { return c.Name() == "dependencies" })
 	}
-	if has(Defaults(Options{})) || !has(Defaults(Options{Dependencies: &DependencyOptions{}})) {
+	if has(Options{}) || !has(Options{Dependencies: &DependencyOptions{}}) {
 		t.Fatal("the dependency collector must follow Options.Dependencies")
 	}
 }

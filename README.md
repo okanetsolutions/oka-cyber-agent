@@ -9,9 +9,9 @@ It is a single static binary with no runtime dependencies. This repository is pu
 ## What it collects
 
 - OS facts: hostname, OS family, name and version, kernel version, CPU architecture.
-- Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine).
+- Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine). On Red Hat Enterprise Linux it also reads which repository each package was installed from in the dnf history database, never the commands recorded there.
 - Application dependencies: name and resolved version of the libraries listed in common lock files, with the path of the file each one came from (see [Dependency files](#dependency-files)). You can turn this off.
-- Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. You can turn this off.
+- Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. The process ID is not sent, so restarting a service does not count as an inventory change. You can turn this off.
 - Security log events, only when an admin turns log collection on for that server in the dashboard: SSH logins, sudo and su use, account and cron changes, suspicious web requests and application errors. Lines are redacted on your server before they are sent, and normal web traffic is only sent as counts per IP and minute.
 
 To see exactly what the agent would report from a server, without sending anything:
@@ -22,7 +22,7 @@ oka-cyber-agent inventory
 
 ## What it never collects
 
-- The contents of your files, other than the package databases, the dependency lock files and the log files listed above.
+- The contents of your files, other than the package databases, the dnf history database, the dependency lock files and the log files listed above.
 - Secrets, passwords, keys or tokens, environment variables, shell history or command line arguments of other processes.
 - Your users' data: databases, uploads, mail or application data.
 - Anything from a path chosen by the dashboard. The dashboard can only switch built in sources on and off; every file path the agent reads comes from its local configuration on your server.
@@ -53,14 +53,14 @@ curl -fsSL https://github.com/okanetsolutions/oka-cyber-agent/releases/latest/do
 The [install script](install.sh) is short; read it first if you like. It:
 
 1. resolves one release and downloads the binary for your architecture (x86_64 or aarch64) and `checksums.txt` from it,
-2. verifies the binary's SHA-256 against `checksums.txt`, and the cosign signature of `checksums.txt` when `cosign` is installed,
+2. verifies the binary's SHA-256 against `checksums.txt`, and the cosign signature of `checksums.txt` when `cosign` is installed (cosign v3 or newer: the installer stops and asks you to upgrade an older cosign that cannot read the signature),
 3. installs `/usr/local/bin/oka-cyber-agent` and creates the `oka-cyber` system user,
 4. writes a hardened systemd unit (`/etc/systemd/system/oka-cyber-agent.service`),
 5. enrolls the server and starts the service.
 
-Rerunning it upgrades the agent and keeps the enrollment. Pass `--version v1.2.3` to install a specific release.
+Rerunning it upgrades the agent, keeps the enrollment and restarts the service on the new binary. A service you disabled stays disabled. Pass `--version v1.2.3` to install a specific release. It refuses to run on a server where the agent was installed from a package: upgrade that one with your package manager.
 
-The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It can only write its state directory, `/var/lib/oka-cyber-agent`. The agent token stays root only (mode 0600) and systemd hands it to the service with `LoadCredential`. On systemd older than 247 (the RHEL 8 family) the installer makes the token readable by the `oka-cyber` group instead.
+The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It can only write its state directory, `/var/lib/oka-cyber-agent`. The agent token stays root only (mode 0600) and systemd hands it to the service with `LoadCredential`. systemd older than 247 (the RHEL 8 family) has no `LoadCredential`, so there `enroll` makes the token readable by the `oka-cyber` group only (mode 0640), for the install script and the packages alike.
 
 ### Packages
 
@@ -71,6 +71,10 @@ sudo apt install ./oka-cyber-agent_<version>_amd64.deb        # or: sudo dnf ins
 sudo oka-cyber-agent enroll --url https://<your tenant> --token <enrollment token>
 sudo systemctl enable --now oka-cyber-agent
 ```
+
+Upgrading the package restarts the service on the new binary, and leaves it disabled if you disabled it. Installing the package on a server that is already enrolled enables and starts the service. After `apt remove`, which keeps the enrollment, installing it again starts the service only if it was enabled before the removal.
+
+The package does not install over an agent installed by the install script, whose unit would take precedence over the package's. Run `sudo /usr/local/bin/oka-cyber-agent uninstall` first, which also deletes the enrollment. To keep the enrollment instead, run `sudo systemctl disable --now oka-cyber-agent` and delete `/usr/local/bin/oka-cyber-agent` and `/etc/systemd/system/oka-cyber-agent.service`: the package then enables and starts the service on its first install.
 
 ### Verify a release
 
@@ -94,12 +98,14 @@ make build-all    # static Linux amd64 and arm64 binaries in bin/
 
 ```bash
 sudo oka-cyber-agent enroll --url https://<your tenant> --token <enrollment token>
-oka-cyber-agent status       # enrollment, service state, last heartbeat and inventory, last error
+sudo oka-cyber-agent status  # enrollment, service state, last heartbeat and inventory, last error
 oka-cyber-agent inventory    # what would be reported, as JSON; sends nothing
-oka-cyber-agent run --once   # one heartbeat and inventory report, then exit
+oka-cyber-agent run --once   # one heartbeat and inventory report, then exit (non zero if it failed)
 ```
 
-`enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
+`enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. When only one of `config.yaml` and `token` loads (an interrupted enrollment, or a deleted or broken file), it stops with an error and enrolls again only with `--force`. A running service notices the new enrollment within about a minute and exits, so systemd restarts it with the new token. It checks that it can write to `/etc/oka-cyber-agent` before it uses the enrollment token, so run it as root. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
+
+`status` reads the state in `/var/lib/oka-cyber-agent`, which only the service user and root can read, so run it with sudo; it exits with an error rather than show the last reports as never when it cannot read the state. `run --once` reads the root owned agent token, so run it with sudo. A state file it writes as root is given to the owner of `/var/lib/oka-cyber-agent`, so the service can keep using it, and the agent starts from an empty state (with a warning) when its state file is unreadable or corrupt.
 
 ## Configuration
 
@@ -123,7 +129,7 @@ max_file_size: 20971520                        # bytes; larger lock files are sk
 collect_go_binaries: false                     # also read module lists from Go executables
 ```
 
-Unknown keys are rejected, so a typo cannot silently turn an option off. The agent token lives in `/etc/oka-cyber-agent/token` (mode 0600, owned by root) and is never written to the configuration file or the logs. Restart the service after editing the file.
+Unknown keys are rejected, so a typo cannot silently turn an option off. The agent token lives in `/etc/oka-cyber-agent/token` (mode 0600, owned by root) and is never written to the configuration file or the logs. The running service checks the file and the token every 30 seconds and, when either changed, exits so systemd restarts it with the new settings. An edit that does not load is ignored with a warning in the journal, and the service keeps its current settings.
 
 ## Dependency files
 
@@ -152,11 +158,11 @@ If you used the install script:
 sudo oka-cyber-agent uninstall
 ```
 
-This stops and disables the service and removes the unit, `/etc/oka-cyber-agent` (configuration and token), `/var/lib/oka-cyber-agent` (state), the `oka-cyber` user and `/usr/local/bin/oka-cyber-agent`.
+This stops and disables the service and removes the unit, `/etc/oka-cyber-agent` (configuration and token), `/var/lib/oka-cyber-agent` (state), the `oka-cyber` user and `/usr/local/bin/oka-cyber-agent`. If the service cannot be stopped, it removes nothing and exits with an error.
 
 If you installed a package, remove it with the package manager instead: `sudo apt purge oka-cyber-agent` or `sudo dnf remove oka-cyber-agent`. Both remove the same files and the user (`apt remove` without purge keeps the enrollment).
 
-Then revoke the server in your Oka Cyber dashboard so its token stops working. Both uninstall paths are tested in CI on Ubuntu, Debian and Rocky Linux.
+Then revoke the server in your Oka Cyber dashboard so its token stops working. Both uninstall paths are tested in CI on Ubuntu, Debian, Rocky Linux 8 and 9 and Red Hat Enterprise Linux 8 and 9.
 
 ## Development
 

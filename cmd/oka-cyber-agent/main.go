@@ -17,6 +17,9 @@ const (
 	exitUsage   = 2
 	// exitRevoked tells systemd not to restart the agent (RestartPreventExitStatus) once the server revoked it.
 	exitRevoked = 77
+	// exitRestart is a failure status so that systemd (Restart=on-failure) starts the agent again after
+	// enroll --force or an edit, which also hands it the new token through LoadCredential.
+	exitRestart = 75
 )
 
 type streams struct {

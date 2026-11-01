@@ -29,7 +29,12 @@ func inventoryCommand(ctx context.Context, args []string, io streams) int {
 	cfg.CollectDependencyFiles = cfg.CollectDependencyFiles && *dependencies
 	options := collectOptions(cfg)
 	options.Root = *root
-	inv, err := collect.Run(ctx, collect.Defaults(options)...)
+	collectors, err := collect.Defaults(options)
+	if err != nil {
+		fmt.Fprintf(io.stderr, "inventory: %v\n", err)
+		return exitFailure
+	}
+	inv, err := collect.Run(ctx, collectors...)
 	if err != nil {
 		fmt.Fprintf(io.stderr, "inventory: %v\n", err)
 		return exitFailure

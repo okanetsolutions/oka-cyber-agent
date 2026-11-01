@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -18,6 +19,14 @@ const (
 	MaxSkippedFiles = 1000
 	MaxServices     = 4096
 )
+
+// ErrTooManyOSPackages means the OS packages alone exceed MaxPackages. They have no manifest path to record as
+// skipped, and the server deletes every stored package missing from a snapshot, so the inventory fails instead.
+var ErrTooManyOSPackages = errors.New("more OS packages than the server accepts")
+
+// ErrTooManyCutManifests means more manifests were cut by MaxPackages than MaxSkippedFiles can list. A cut manifest
+// left out of skipped_files would have everything the server stored for it deleted, so the inventory fails instead.
+var ErrTooManyCutManifests = errors.New("more manifests cut by the package limit than the server accepts as skipped")
 
 const (
 	ReasonUnsupportedDistribution = "unsupported_distribution"
@@ -64,7 +73,6 @@ type Service struct {
 	Address  string `json:"address"`
 	Port     int    `json:"port"`
 	Process  string `json:"process,omitempty"`
-	PID      int    `json:"pid,omitempty"`
 }
 
 type Collector interface {
@@ -80,8 +88,12 @@ type Options struct {
 }
 
 // Defaults returns the collectors in the order they must run: package collectors read the OS facts the first one fills in.
-func Defaults(o Options) []Collector {
-	root := cmp.Or(o.Root, "/")
+// The root is made absolute because rpm rejects a relative --root.
+func Defaults(o Options) ([]Collector, error) {
+	root, err := filepath.Abs(cmp.Or(o.Root, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("root %q: %w", o.Root, err)
+	}
 	collectors := []Collector{
 		OSCollector{Root: root},
 		DpkgCollector{Root: root},
@@ -94,7 +106,7 @@ func Defaults(o Options) []Collector {
 	if o.CollectServices {
 		collectors = append(collectors, ServicesCollector{Root: root})
 	}
-	return collectors
+	return collectors, nil
 }
 
 // Run fails as a whole when one collector fails, so a partial package list is never reported as the full inventory.
@@ -108,7 +120,9 @@ func Run(ctx context.Context, collectors ...Collector) (*Inventory, error) {
 			return nil, fmt.Errorf("%s collector: %w", c.Name(), err)
 		}
 	}
-	inv.Normalize()
+	if err := inv.Normalize(); err != nil {
+		return nil, err
+	}
 	return inv, nil
 }
 
@@ -117,7 +131,10 @@ func (inv *Inventory) Skip(path, reason string) {
 }
 
 // Normalize dedupes and sorts the inventory and applies the server limits, so an unchanged host always produces the same snapshot.
-func (inv *Inventory) Normalize() {
+// Above MaxPackages it keeps every OS package and cuts dependency packages by manifest path, recording each manifest
+// it cuts as skipped so the server keeps what it stored for it. Those records are never dropped by MaxSkippedFiles:
+// the other skipped files are capped first.
+func (inv *Inventory) Normalize() error {
 	seen := make(map[packageIdentity]bool, len(inv.Packages))
 	packages := make([]Package, 0, len(inv.Packages))
 	for _, p := range inv.Packages {
@@ -135,10 +152,14 @@ func (inv *Inventory) Normalize() {
 		packages = append(packages, p)
 	}
 	if len(packages) > MaxPackages {
-		limited := map[string]bool{}
-		for _, p := range packages[MaxPackages:] {
-			if p.ManifestPath != "" && !limited[p.ManifestPath] {
-				limited[p.ManifestPath] = true
+		slices.SortFunc(packages, func(a, b Package) int {
+			return cmp.Or(cmp.Compare(a.ManifestPath, b.ManifestPath), a.identity().compare(b.identity()))
+		})
+		if packages[MaxPackages].ManifestPath == "" {
+			return fmt.Errorf("%w: limit %d", ErrTooManyOSPackages, MaxPackages)
+		}
+		for i, p := range packages[MaxPackages:] {
+			if i == 0 || p.ManifestPath != packages[MaxPackages+i-1].ManifestPath {
 				inv.Skip(p.ManifestPath, ReasonPackageLimit)
 			}
 		}
@@ -148,12 +169,16 @@ func (inv *Inventory) Normalize() {
 	inv.Packages = packages
 
 	inv.SkippedFiles = slices.DeleteFunc(inv.SkippedFiles, func(f SkippedFile) bool { return !validPath(f.Path) || f.Reason == "" })
-	slices.SortFunc(inv.SkippedFiles, func(a, b SkippedFile) int {
-		return cmp.Or(cmp.Compare(a.Path, b.Path), cmp.Compare(a.Reason, b.Reason))
-	})
+	slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
 	inv.SkippedFiles = slices.Compact(inv.SkippedFiles)
 	if len(inv.SkippedFiles) > MaxSkippedFiles {
-		inv.SkippedFiles = inv.SkippedFiles[:MaxSkippedFiles]
+		cut := slices.DeleteFunc(slices.Clone(inv.SkippedFiles), func(f SkippedFile) bool { return f.Reason != ReasonPackageLimit })
+		if len(cut) > MaxSkippedFiles {
+			return fmt.Errorf("%w: %d manifests, limit %d", ErrTooManyCutManifests, len(cut), MaxSkippedFiles)
+		}
+		others := slices.DeleteFunc(inv.SkippedFiles, func(f SkippedFile) bool { return f.Reason == ReasonPackageLimit })
+		inv.SkippedFiles = slices.Concat(others[:MaxSkippedFiles-len(cut)], cut)
+		slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
 	}
 
 	slices.SortFunc(inv.Services, compareServices)
@@ -163,6 +188,11 @@ func (inv *Inventory) Normalize() {
 	if len(inv.Services) > MaxServices {
 		inv.Services = inv.Services[:MaxServices]
 	}
+	return nil
+}
+
+func compareSkippedFiles(a, b SkippedFile) int {
+	return cmp.Or(cmp.Compare(a.Path, b.Path), cmp.Compare(a.Reason, b.Reason))
 }
 
 func compareServices(a, b Service) int {
@@ -170,7 +200,6 @@ func compareServices(a, b Service) int {
 		cmp.Compare(a.Protocol, b.Protocol),
 		cmp.Compare(a.Address, b.Address),
 		cmp.Compare(a.Port, b.Port),
-		cmp.Compare(a.PID, b.PID),
 		cmp.Compare(a.Process, b.Process),
 	)
 }
@@ -233,7 +262,9 @@ func (inv *Inventory) Marshal(limit int) ([]byte, error) {
 		}
 		inv.Packages = slices.DeleteFunc(inv.Packages, func(p Package) bool { return p.ManifestPath == largest })
 		inv.Skip(largest, ReasonPackageLimit)
-		inv.Normalize()
+		if err := inv.Normalize(); err != nil {
+			return nil, err
+		}
 	}
 }
 

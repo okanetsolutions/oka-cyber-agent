@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -107,7 +108,7 @@ func TestValidateURL(t *testing.T) {
 
 func TestTokenIsPrivateAndPreferredFromSystemdCredentials(t *testing.T) {
 	dir := t.TempDir()
-	if err := SaveToken(dir, "agent-secret"); err != nil {
+	if err := SaveToken(dir, "agent-secret", TokenAccessFor(os.Geteuid(), 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(filepath.Join(dir, TokenFileName))
@@ -133,9 +134,66 @@ func TestTokenIsPrivateAndPreferredFromSystemdCredentials(t *testing.T) {
 	}
 }
 
+func TestTokenAccessFor(t *testing.T) {
+	const gid = 990
+	tests := []struct {
+		name                       string
+		euid, systemdVersion, sgid int
+		want                       TokenAccess
+	}{
+		{"not root", 1000, 239, gid, TokenAccess{Mode: 0o600}},
+		{"systemd with credentials", 0, 247, gid, TokenAccess{Owner: &Owner{UID: 0, GID: 0}, Mode: 0o600}},
+		{"recent systemd", 0, 257, gid, TokenAccess{Owner: &Owner{UID: 0, GID: 0}, Mode: 0o600}},
+		{"systemd 239 (RHEL 8)", 0, 239, gid, TokenAccess{Owner: &Owner{UID: 0, GID: gid}, Mode: 0o640}},
+		{"systemd 239 without the service group", 0, 239, -1, TokenAccess{Owner: &Owner{UID: 0, GID: 0}, Mode: 0o600}},
+		{"unknown systemd version", 0, 0, gid, TokenAccess{Owner: &Owner{UID: 0, GID: 0}, Mode: 0o600}},
+	}
+	for _, tt := range tests {
+		got := TokenAccessFor(tt.euid, tt.systemdVersion, tt.sgid)
+		if got.Mode != tt.want.Mode || (got.Owner == nil) != (tt.want.Owner == nil) || (got.Owner != nil && *got.Owner != *tt.want.Owner) {
+			t.Errorf("%s: TokenAccessFor = %+v (owner %+v), want %+v (owner %+v)", tt.name, got, got.Owner, tt.want, tt.want.Owner)
+		}
+	}
+}
+
+func TestParseSystemdVersion(t *testing.T) {
+	tests := map[string]int{
+		"systemd 239 (239-82.el8)\n+PAM +AUDIT +SELINUX\n": 239,
+		"systemd 252 (252.39-1~deb12u1)\n+PAM +AUDIT\n":    252,
+		"systemd 255 (255.4-1ubuntu8.10)\n":                255,
+		"":                                                 0,
+		"systemctl: command not found\n":                   0,
+		"systemd unknown\n":                                0,
+		"+PAM +AUDIT\nsystemd 239 (on the wrong line)\n":   0,
+	}
+	for out, want := range tests {
+		if got := ParseSystemdVersion(out); got != want {
+			t.Errorf("ParseSystemdVersion(%q) = %d, want %d", out, got, want)
+		}
+	}
+}
+
+func TestSaveTokenReadableByTheServiceGroup(t *testing.T) {
+	dir := t.TempDir()
+	access := TokenAccess{Owner: &Owner{UID: os.Getuid(), GID: os.Getgid()}, Mode: 0o640}
+	if err := SaveToken(dir, "agent-secret", access); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, TokenFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("token mode = %v, want 0640", info.Mode().Perm())
+	}
+	if token, err := LoadToken(dir); err != nil || token != "agent-secret" {
+		t.Fatalf("LoadToken = %q, %v", token, err)
+	}
+}
+
 func TestSavedConfigNeverContainsTheToken(t *testing.T) {
 	dir := t.TempDir()
-	if err := SaveToken(dir, "agent-secret"); err != nil {
+	if err := SaveToken(dir, "agent-secret", TokenAccessFor(os.Geteuid(), 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(dir, validConfig()); err != nil {
@@ -147,6 +205,67 @@ func TestSavedConfigNeverContainsTheToken(t *testing.T) {
 	}
 	if strings.Contains(string(data), "agent-secret") {
 		t.Fatal("config.yaml must not contain the token")
+	}
+}
+
+func TestCheckWritableCreatesTheDirAndLeavesNothing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "oka-cyber-agent")
+	if err := CheckWritable(dir); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("entries = %v, err = %v; want an empty directory", entries, err)
+	}
+	if err := CheckWritable(filepath.Join(dir, "missing", "\x00")); err == nil {
+		t.Fatal("want an error for a path that cannot be created")
+	}
+}
+
+func TestWriteFileAtomicSetsTheOwnerBeforeTheFileAppears(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may give a file to any owner")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := WriteFileAtomic(path, []byte("{}\n"), 0o600, &Owner{UID: os.Getuid(), GID: os.Getgid()}); err != nil {
+		t.Fatalf("WriteFileAtomic to its own user = %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(path, []byte("{}\n"), 0o600, &Owner{UID: 0, GID: 0}); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("WriteFileAtomic to root = %v, want a permission error", err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("entries = %v, err = %v; want nothing written when the owner cannot be set", entries, err)
+	}
+}
+
+func TestReadRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := ReadRegularFile(path, 5); err != nil || string(data) != "12345" {
+		t.Fatalf("ReadRegularFile = %q, %v", data, err)
+	}
+	if _, err := ReadRegularFile(path, 4); err == nil {
+		t.Fatal("want an error for a file larger than the limit")
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRegularFile(link, 5); err == nil {
+		t.Fatal("want a symlink refused")
+	}
+	if _, err := ReadRegularFile(dir, 5); err == nil {
+		t.Fatal("want a directory refused")
+	}
+	if _, err := ReadRegularFile(filepath.Join(dir, "missing"), 5); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ReadRegularFile of a missing file = %v, want fs.ErrNotExist", err)
 	}
 }
 

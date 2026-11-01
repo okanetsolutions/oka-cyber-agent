@@ -5,14 +5,19 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/collect"
@@ -31,6 +36,13 @@ func runCLI(t *testing.T, stdin string, args ...string) result {
 	return result{code, stdout.String(), stderr.String()}
 }
 
+func withoutRetryDelay(t *testing.T) {
+	t.Helper()
+	previous := retrySleep
+	retrySleep = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { retrySleep = previous })
+}
+
 func useFixtureHost(t *testing.T) {
 	t.Helper()
 	previous := collectRoot
@@ -45,10 +57,12 @@ type fakeTenant struct {
 	auth            map[string]string
 	enrollStatus    int
 	heartbeatStatus int
+	inventoryStatus int
+	enrolls         int
 }
 
 func newFakeTenant(t *testing.T) (*fakeTenant, *httptest.Server) {
-	tenant := &fakeTenant{bodies: map[string]map[string]any{}, auth: map[string]string{}, enrollStatus: http.StatusCreated, heartbeatStatus: http.StatusOK}
+	tenant := &fakeTenant{bodies: map[string]map[string]any{}, auth: map[string]string{}, enrollStatus: http.StatusCreated, heartbeatStatus: http.StatusOK, inventoryStatus: http.StatusOK}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		zr, err := gzip.NewReader(r.Body)
 		if err != nil {
@@ -62,17 +76,22 @@ func newFakeTenant(t *testing.T) (*fakeTenant, *httptest.Server) {
 		tenant.paths = append(tenant.paths, r.Method+" "+r.URL.Path)
 		tenant.bodies[r.URL.Path] = body
 		tenant.auth[r.URL.Path] = r.Header.Get("Authorization")
-		enrollStatus, heartbeatStatus := tenant.enrollStatus, tenant.heartbeatStatus
+		enrollStatus, heartbeatStatus, inventoryStatus := tenant.enrollStatus, tenant.heartbeatStatus, tenant.inventoryStatus
+		if r.URL.Path == "/cyber-agent/v1/enroll" {
+			tenant.enrolls++
+		}
+		serverID := 41 + tenant.enrolls
 		tenant.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/cyber-agent/v1/enroll":
 			w.WriteHeader(enrollStatus)
-			io.WriteString(w, `{"server_id":42,"agent_token":"agent-secret","report_interval_seconds":300}`)
+			fmt.Fprintf(w, `{"server_id":%d,"agent_token":"agent-secret","report_interval_seconds":300}`, serverID)
 		case "/cyber-agent/v1/heartbeat":
 			w.WriteHeader(heartbeatStatus)
 			io.WriteString(w, `{"report_interval_seconds":300}`)
 		case "/cyber-agent/v1/inventory":
+			w.WriteHeader(inventoryStatus)
 			io.WriteString(w, `{"changed":true,"report_interval_seconds":300}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -170,6 +189,114 @@ func TestEnrollIsIdempotentUnlessForced(t *testing.T) {
 	}
 }
 
+func TestEnrollRefusesAnIncompleteEnrollmentUnlessForced(t *testing.T) {
+	useFixtureHost(t)
+	for _, kept := range []string{config.TokenFileName, config.FileName} {
+		t.Run(kept, func(t *testing.T) {
+			tenant, srv := newFakeTenant(t)
+			configDir := t.TempDir()
+			args := []string{"enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir}
+			if r := runCLI(t, "", args...); r.code != exitOK {
+				t.Fatalf("enroll = %+v", r)
+			}
+			for _, name := range []string{config.TokenFileName, config.FileName} {
+				if name != kept {
+					if err := os.Remove(filepath.Join(configDir, name)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			r := runCLI(t, "", args...)
+			if r.code != exitFailure || r.stdout != "" || !strings.Contains(r.stderr, "--force") {
+				t.Fatalf("enroll with only %s = %+v, want a failure pointing at --force", kept, r)
+			}
+			if len(tenant.requests()) != 1 {
+				t.Fatalf("requests = %v, want no new enrollment", tenant.requests())
+			}
+			if r := runCLI(t, "", append(args, "--force")...); r.code != exitOK || len(tenant.requests()) != 2 {
+				t.Fatalf("forced enroll = %+v after %d requests", r, len(tenant.requests()))
+			}
+			if _, err := config.Load(configDir); err != nil {
+				t.Fatalf("config after forced enroll: %v", err)
+			}
+			if _, err := config.LoadToken(configDir); err != nil {
+				t.Fatalf("token after forced enroll: %v", err)
+			}
+		})
+	}
+}
+
+func TestForcedReenrollSendsTheNewServerItsFirstInventory(t *testing.T) {
+	useFixtureHost(t)
+	tenant, srv := newFakeTenant(t)
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	enroll := []string{"enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir}
+	runOnce := []string{"run", "--once", "--config-dir", configDir, "--state-dir", stateDir}
+	for _, args := range [][]string{enroll, runOnce, append(enroll, "--force"), runOnce} {
+		if r := runCLI(t, "", args...); r.code != exitOK {
+			t.Fatalf("%v = %+v", args, r)
+		}
+	}
+	got := strings.Join(tenant.requests(), ",")
+	want := "POST /cyber-agent/v1/enroll,POST /cyber-agent/v1/heartbeat,PUT /cyber-agent/v1/inventory," +
+		"POST /cyber-agent/v1/enroll,POST /cyber-agent/v1/heartbeat,PUT /cyber-agent/v1/inventory"
+	if got != want {
+		t.Fatalf("requests = %s, want %s", got, want)
+	}
+	if state, err := agent.LoadState(stateDir, "43"); err != nil || state.LastInventoryAt.IsZero() {
+		t.Fatalf("state = %+v, err = %v; want the inventory recorded for the new server", state, err)
+	}
+}
+
+func TestEnrollChecksTheConfigDirBeforeSpendingTheToken(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write to a read only directory")
+	}
+	useFixtureHost(t)
+	tenant, srv := newFakeTenant(t)
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(parent, 0o700) })
+	configDir := filepath.Join(parent, "oka-cyber-agent")
+	r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "enroll-secret", "--insecure-dev", "--config-dir", configDir)
+	if r.code != exitFailure {
+		t.Fatalf("enroll = %+v, want a failure", r)
+	}
+	if requests := tenant.requests(); len(requests) != 0 {
+		t.Fatalf("requests = %v, want none: the enrollment token must not be spent", requests)
+	}
+	if strings.Contains(r.stdout+r.stderr, "secret") {
+		t.Fatal("enroll output leaks a token")
+	}
+}
+
+func TestEnrollReportsAnAgentTokenItCouldNotSave(t *testing.T) {
+	useFixtureHost(t)
+	for _, blocked := range []string{config.TokenFileName, config.FileName} {
+		t.Run(blocked, func(t *testing.T) {
+			tenant, srv := newFakeTenant(t)
+			configDir := t.TempDir()
+			// A directory in place of the file passes the write check but makes the final rename fail. --force
+			// gets past the refusal to enroll over a file that does not load.
+			if err := os.Mkdir(filepath.Join(configDir, blocked), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "enroll-secret", "--insecure-dev", "--force", "--config-dir", configDir)
+			if r.code != exitFailure || len(tenant.requests()) != 1 {
+				t.Fatalf("enroll = %+v after %d requests, want a failure after one enroll", r, len(tenant.requests()))
+			}
+			if !strings.Contains(r.stderr, "42") {
+				t.Fatalf("stderr = %q, want the enrolled server id reported", r.stderr)
+			}
+			if strings.Contains(r.stdout+r.stderr, "secret") {
+				t.Fatal("enroll output leaks a token")
+			}
+		})
+	}
+}
+
 func TestEnrollKeepsLocalOptionsOnForcedReenroll(t *testing.T) {
 	useFixtureHost(t)
 	_, srv := newFakeTenant(t)
@@ -245,6 +372,114 @@ func TestRunExitsWithRevokedCodeOn401(t *testing.T) {
 	}
 }
 
+func TestRunRestartsAfterAForcedReenroll(t *testing.T) {
+	useFixtureHost(t)
+	tenant, srv := newFakeTenant(t)
+	configDir := t.TempDir()
+	enroll := []string{"enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir}
+	if r := runCLI(t, "", enroll...); r.code != exitOK || !strings.Contains(r.stdout, "systemctl enable --now") {
+		t.Fatalf("enroll = %+v, want the start hint", r)
+	}
+	var reenroll result
+	waits := 0
+	previous := reportWait
+	reportWait = func(context.Context, time.Duration) error {
+		waits++
+		switch {
+		case waits > 100:
+			return context.Canceled
+		case reenroll.stdout == "":
+			reenroll = runCLI(t, "", append(enroll, "--force")...)
+		}
+		return nil
+	}
+	t.Cleanup(func() { reportWait = previous })
+
+	if r := runCLI(t, "", "run", "--config-dir", configDir, "--state-dir", t.TempDir()); r.code != exitRestart {
+		t.Fatalf("run = %+v, want exit %d so systemd restarts it with the new enrollment", r, exitRestart)
+	}
+	if reenroll.code != exitOK || !strings.Contains(reenroll.stdout, "43") {
+		t.Fatalf("enroll --force = %+v", reenroll)
+	}
+	if got := strings.Count(strings.Join(tenant.requests(), ","), "heartbeat"); got != 1 {
+		t.Fatalf("heartbeats = %d, want the old enrollment to stop after the re-enroll", got)
+	}
+}
+
+func TestRunStartsWithAnUnreadableState(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a file with mode 0000")
+	}
+	useFixtureHost(t)
+	_, srv := newFakeTenant(t)
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	runCLI(t, "", "enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir)
+	// What a root run --once used to leave behind for the unprivileged service.
+	path := filepath.Join(stateDir, "state.json")
+	if err := os.WriteFile(path, []byte(`{"server_id":"42"}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if r := runCLI(t, "", "run", "--once", "--config-dir", configDir, "--state-dir", stateDir); r.code != exitOK || !strings.Contains(r.stderr, "level=WARN") {
+		t.Fatalf("run --once = %+v, want a warning and a successful report", r)
+	}
+	if state, err := agent.LoadState(stateDir, "42"); err != nil || state.LastInventoryAt.IsZero() {
+		t.Fatalf("state = %+v, err = %v; want the state file replaced", state, err)
+	}
+}
+
+func TestRunOnceFailsWhenTheReportFails(t *testing.T) {
+	useFixtureHost(t)
+	withoutRetryDelay(t)
+	tests := map[string]func(*fakeTenant, *httptest.Server){
+		"heartbeat 500": func(f *fakeTenant, _ *httptest.Server) { f.heartbeatStatus = http.StatusInternalServerError },
+		"inventory 500": func(f *fakeTenant, _ *httptest.Server) { f.inventoryStatus = http.StatusInternalServerError },
+		"network error": func(_ *fakeTenant, srv *httptest.Server) { srv.Close() },
+	}
+	for name, breakTenant := range tests {
+		t.Run(name, func(t *testing.T) {
+			tenant, srv := newFakeTenant(t)
+			configDir, stateDir := t.TempDir(), t.TempDir()
+			if r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir); r.code != exitOK {
+				t.Fatalf("enroll = %+v", r)
+			}
+			tenant.mu.Lock()
+			breakTenant(tenant, srv)
+			tenant.mu.Unlock()
+			if r := runCLI(t, "", "run", "--once", "--config-dir", configDir, "--state-dir", stateDir); r.code != exitFailure {
+				t.Fatalf("run --once = %+v, want exit %d", r, exitFailure)
+			}
+			if state, _ := agent.LoadState(stateDir, "42"); state.LastError == "" {
+				t.Fatal("the failure must be recorded for the status command")
+			}
+		})
+	}
+}
+
+func TestRunOnceFailsWhenStoppedDuringARetry(t *testing.T) {
+	useFixtureHost(t)
+	tenant, srv := newFakeTenant(t)
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	if r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir); r.code != exitOK {
+		t.Fatalf("enroll = %+v", r)
+	}
+	tenant.mu.Lock()
+	tenant.inventoryStatus = http.StatusServiceUnavailable
+	tenant.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previous := retrySleep
+	retrySleep = func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { retrySleep = previous })
+
+	var stdout, stderr bytes.Buffer
+	if code := run(ctx, []string{"run", "--once", "--config-dir", configDir, "--state-dir", stateDir}, streams{strings.NewReader(""), &stdout, &stderr}); code != exitFailure {
+		t.Fatalf("run --once = %d, want exit %d: the inventory never reached the server", code, exitFailure)
+	}
+}
+
 func TestRunAndStatusWithoutEnrollment(t *testing.T) {
 	configDir, stateDir := t.TempDir(), t.TempDir()
 	if r := runCLI(t, "", "run", "--once", "--config-dir", configDir, "--state-dir", stateDir); r.code != exitFailure {
@@ -252,6 +487,55 @@ func TestRunAndStatusWithoutEnrollment(t *testing.T) {
 	}
 	if r := runCLI(t, "", "status", "--config-dir", configDir, "--state-dir", stateDir); r.code != exitFailure {
 		t.Fatalf("status = %+v", r)
+	}
+}
+
+func TestStatusBeforeTheFirstReport(t *testing.T) {
+	useFixtureHost(t)
+	_, srv := newFakeTenant(t)
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	if r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir); r.code != exitOK {
+		t.Fatalf("enroll = %+v", r)
+	}
+	r := runCLI(t, "", "status", "--config-dir", configDir, "--state-dir", stateDir)
+	if r.code != exitOK || !strings.Contains(r.stdout, "never") {
+		t.Fatalf("status = %+v, want success with no report yet", r)
+	}
+}
+
+func TestStatusFailsWhenTheStateIsUnreadable(t *testing.T) {
+	useFixtureHost(t)
+	tests := map[string]struct {
+		data []byte
+		mode os.FileMode
+	}{
+		"corrupt":    {data: []byte("{"), mode: 0o600},
+		"permission": {data: []byte(`{"server_id":"42","last_heartbeat_at":"2026-11-01T00:00:00Z"}`), mode: 0},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if tt.mode == 0 && os.Geteuid() == 0 {
+				t.Skip("root can read a file with mode 0000")
+			}
+			_, srv := newFakeTenant(t)
+			configDir, stateDir := t.TempDir(), t.TempDir()
+			if r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir); r.code != exitOK {
+				t.Fatalf("enroll = %+v", r)
+			}
+			if err := os.WriteFile(filepath.Join(stateDir, "state.json"), tt.data, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			r := runCLI(t, "", "status", "--config-dir", configDir, "--state-dir", stateDir)
+			if r.code != exitFailure {
+				t.Fatalf("status = %+v, want exit %d", r, exitFailure)
+			}
+			if !strings.Contains(r.stdout, "42") || strings.Contains(r.stdout, "never") || strings.Contains(r.stdout, "Last error") {
+				t.Fatalf("stdout = %q, want the enrollment without the zero state", r.stdout)
+			}
+			if tt.mode == 0 && !strings.Contains(r.stderr, "sudo") {
+				t.Fatalf("stderr = %q, want a hint to run as root", r.stderr)
+			}
+		})
 	}
 }
 
@@ -273,22 +557,102 @@ func TestInventoryPrintsTheSnapshotAsJSON(t *testing.T) {
 	}
 }
 
-func TestUninstallRequiresRootAndConfirmation(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("this test checks the non root refusal")
+// fakeUninstallHost makes uninstall run as euid from the binary at self against a host under a temporary
+// directory, and records every systemctl and userdel call it makes.
+type fakeUninstallHost struct {
+	root  string
+	calls []string
+}
+
+func useFakeUninstallHost(t *testing.T, self string, euid int) *fakeUninstallHost {
+	t.Helper()
+	h := &fakeUninstallHost{root: t.TempDir()}
+	for _, dir := range []string{"etc/oka-cyber-agent", "var/lib/oka-cyber-agent", "etc/systemd/system"} {
+		if err := os.MkdirAll(filepath.Join(h.root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if r := runCLI(t, "y\n", "uninstall", "--yes"); r.code != exitFailure {
-		t.Fatalf("uninstall as non root = %+v, want a refusal", r)
+	for _, file := range []string{"etc/oka-cyber-agent/token", "etc/systemd/system/oka-cyber-agent.service"} {
+		if err := os.WriteFile(filepath.Join(h.root, file), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previousPath, previousEuid, previousUninstaller := executablePath, geteuid, newUninstaller
+	executablePath = func() (string, error) { return self, nil }
+	geteuid = func() int { return euid }
+	newUninstaller = func(string) agent.Uninstaller {
+		return agent.Uninstaller{
+			ConfigDir: filepath.Join(h.root, "etc/oka-cyber-agent"),
+			StateDir:  filepath.Join(h.root, "var/lib/oka-cyber-agent"),
+			UnitPath:  filepath.Join(h.root, "etc/systemd/system/oka-cyber-agent.service"),
+			User:      serviceUser,
+			Systemctl: func(_ context.Context, args ...string) error {
+				h.calls = append(h.calls, "systemctl "+strings.Join(args, " "))
+				return nil
+			},
+			UserExists: func(string) bool { return true },
+			DeleteUser: func(_ context.Context, name string) error {
+				h.calls = append(h.calls, "userdel "+name)
+				return nil
+			},
+		}
+	}
+	t.Cleanup(func() { executablePath, geteuid, newUninstaller = previousPath, previousEuid, previousUninstaller })
+	return h
+}
+
+func (h *fakeUninstallHost) checkUntouched(t *testing.T) {
+	t.Helper()
+	if len(h.calls) != 0 {
+		t.Fatalf("uninstall ran %q, want no removal step", h.calls)
+	}
+	for _, file := range []string{"etc/oka-cyber-agent/token", "etc/systemd/system/oka-cyber-agent.service", "var/lib/oka-cyber-agent"} {
+		if _, err := os.Stat(filepath.Join(h.root, file)); err != nil {
+			t.Fatalf("uninstall removed %s: %v", file, err)
+		}
 	}
 }
 
-func TestUninstallRefusesPackageInstalls(t *testing.T) {
-	previous := executablePath
-	executablePath = func() (string, error) { return packagedBinaryPath, nil }
-	t.Cleanup(func() { executablePath = previous })
-	if r := runCLI(t, "", "uninstall", "--yes"); r.code != exitFailure {
-		t.Fatalf("uninstall of a package install = %+v, want a refusal", r)
+func TestUninstallRemovesAScriptInstall(t *testing.T) {
+	h := useFakeUninstallHost(t, installedBinaryPath, 0)
+	r := runCLI(t, "", "uninstall", "--yes")
+	if r.code != exitOK {
+		t.Fatalf("uninstall = %+v", r)
 	}
+	for _, path := range []string{"etc/oka-cyber-agent", "var/lib/oka-cyber-agent", "etc/systemd/system/oka-cyber-agent.service"} {
+		if _, err := os.Stat(filepath.Join(h.root, path)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s still exists after uninstall: %v", path, err)
+		}
+	}
+	want := []string{"systemctl disable --now oka-cyber-agent.service", "systemctl daemon-reload", "userdel oka-cyber"}
+	if !slices.Equal(h.calls, want) {
+		t.Fatalf("calls = %q, want %q", h.calls, want)
+	}
+}
+
+func TestUninstallRequiresRoot(t *testing.T) {
+	h := useFakeUninstallHost(t, installedBinaryPath, 1000)
+	if r := runCLI(t, "", "uninstall", "--yes"); r.code != exitFailure || !strings.Contains(r.stderr, "sudo oka-cyber-agent uninstall") {
+		t.Fatalf("uninstall as non root = %+v, want a refusal", r)
+	}
+	h.checkUntouched(t)
+}
+
+func TestUninstallRequiresConfirmation(t *testing.T) {
+	h := useFakeUninstallHost(t, installedBinaryPath, 0)
+	if r := runCLI(t, "n\n", "uninstall"); r.code != exitFailure {
+		t.Fatalf("uninstall answered no = %+v, want it aborted", r)
+	}
+	h.checkUntouched(t)
+}
+
+func TestUninstallRefusesPackageInstalls(t *testing.T) {
+	h := useFakeUninstallHost(t, packagedBinaryPath, 0)
+	r := runCLI(t, "", "uninstall", "--yes")
+	if r.code != exitFailure || !strings.Contains(r.stderr, "apt purge oka-cyber-agent") || strings.Contains(r.stderr, "run as root") {
+		t.Fatalf("uninstall of a package install as root = %+v, want the package manager refusal", r)
+	}
+	h.checkUntouched(t)
 }
 
 func TestInventoryIncludesDependencyFilesFromConfiguredScanPaths(t *testing.T) {
