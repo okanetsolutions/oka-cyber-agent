@@ -118,6 +118,29 @@ sha256_of() {
 	fi
 }
 
+# Releases are signed by cosign v3, whose sigstore bundle (v0.3) cosign v2 cannot read. That failure says
+# nothing about the release, so it asks for a newer cosign instead of reporting a bad signature.
+verify_signature() {
+	if cosign verify-blob \
+		--bundle "$2" \
+		--certificate-identity-regexp "^https://github.com/$REPOSITORY/\.github/workflows/release\.yml@refs/tags/v" \
+		--certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+		"$1" >/dev/null 2>"$WORK_DIR/cosign.log"; then
+		say "verified the cosign signature of checksums.txt"
+		return
+	fi
+	sed 's/^/  cosign: /' "$WORK_DIR/cosign.log" >&2
+	cosign_version=$(cosign version 2>/dev/null | sed -n 's/^GitVersion: *//p' | head -n 1)
+	case "$cosign_version" in
+		v[0-2].* | [0-2].*) old_cosign=1 ;;
+		*) old_cosign="" ;;
+	esac
+	if [ -n "$old_cosign" ] || grep -q -i -e 'bundle does not contain' -e 'unsupported bundle' -e 'unknown bundle' -e 'unknown field' "$WORK_DIR/cosign.log"; then
+		fail "cosign ${cosign_version:-(unknown version)} cannot read the signature bundle of this release. Upgrade cosign to v3 or newer (https://docs.sigstore.dev/cosign/system_config/installation/) and run the installer again"
+	fi
+	fail "the cosign signature of checksums.txt does not verify: the release files may have been tampered with, do not install them"
+}
+
 download_and_verify() {
 	asset="oka-cyber-agent_linux_$ARCH"
 	say "downloading $asset from $RELEASE_URL"
@@ -126,12 +149,7 @@ download_and_verify() {
 
 	if command -v cosign >/dev/null 2>&1 && [ -z "$DOWNLOAD_URL" ]; then
 		download "$RELEASE_URL/checksums.txt.sigstore.json" "$WORK_DIR/checksums.txt.sigstore.json"
-		cosign verify-blob \
-			--bundle "$WORK_DIR/checksums.txt.sigstore.json" \
-			--certificate-identity-regexp "^https://github.com/$REPOSITORY/\.github/workflows/release\.yml@refs/tags/v" \
-			--certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-			"$WORK_DIR/checksums.txt" >/dev/null 2>&1 || fail "the cosign signature of checksums.txt does not verify"
-		say "verified the cosign signature of checksums.txt"
+		verify_signature "$WORK_DIR/checksums.txt" "$WORK_DIR/checksums.txt.sigstore.json"
 	fi
 
 	expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1 }' "$WORK_DIR/checksums.txt")
@@ -167,15 +185,6 @@ create_user() {
 
 has_systemd() {
 	[ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
-}
-
-# LoadCredential needs systemd 247 or newer.
-supports_load_credential() {
-	version=$(systemctl --version 2>/dev/null | awk 'NR == 1 { print $2 }')
-	case "$version" in
-		'' | *[!0-9]*) return 1 ;;
-	esac
-	[ "$version" -ge 247 ]
 }
 
 write_unit() {
@@ -239,21 +248,6 @@ enroll() {
 	OKA_CYBER_ENROLLMENT_TOKEN="$ENROLLMENT_TOKEN" "$BINARY_PATH" enroll --url "$TENANT_URL" $INSECURE_DEV
 }
 
-# The token stays root only (0600) and systemd hands it to the service with LoadCredential. That needs
-# systemd 247 or newer; on older systemd (RHEL 8 family) the service user reads the file directly, so it
-# becomes readable by the oka-cyber group only.
-grant_token_access() {
-	if has_systemd && ! supports_load_credential; then
-		sed -i '/^LoadCredential=/d' "$UNIT_PATH"
-		chown "root:$SERVICE_USER" "$CONFIG_DIR/token"
-		chmod 0640 "$CONFIG_DIR/token"
-		say "systemd is older than 247: the token is readable by the $SERVICE_USER group instead of passed as a credential"
-		return
-	fi
-	chown root:root "$CONFIG_DIR/token"
-	chmod 0600 "$CONFIG_DIR/token"
-}
-
 start_service() {
 	if ! has_systemd; then
 		say "systemd is not running here: the service was not started. Run '$BINARY_PATH run' under your init system."
@@ -283,7 +277,6 @@ main() {
 	create_user
 	write_unit
 	enroll
-	grant_token_access
 	start_service
 	say "done. Check it with: $BINARY_PATH status"
 }

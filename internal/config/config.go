@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -119,8 +120,9 @@ func Save(dir string, cfg Config) error {
 	return WriteFileAtomic(filepath.Join(dir, FileName), append([]byte(fileHeader), data...), 0o644, nil)
 }
 
-// TokenPath returns where the agent token is read from. Under systemd the root owned token file is passed
-// in with LoadCredential, so the unprivileged service user never needs read access to /etc/oka-cyber-agent/token.
+// TokenPath returns where the agent token is read from. Under systemd 247 or newer the root owned token file is
+// passed in with LoadCredential, so the unprivileged service user never needs read access to
+// /etc/oka-cyber-agent/token. Older systemd ignores LoadCredential and the service reads the file (see TokenAccessFor).
 func TokenPath(dir string) string {
 	if credentials := os.Getenv("CREDENTIALS_DIRECTORY"); credentials != "" {
 		path := filepath.Join(credentials, TokenFileName)
@@ -147,13 +149,49 @@ func LoadToken(dir string) (string, error) {
 	return token, nil
 }
 
-// SaveToken writes the agent token with mode 0600, owned by root when running as root.
-func SaveToken(dir, token string) error {
-	var owner *Owner
-	if os.Geteuid() == 0 {
-		owner = &Owner{UID: 0, GID: 0}
+// MinCredentialsSystemdVersion is the first systemd release that supports LoadCredential.
+const MinCredentialsSystemdVersion = 247
+
+// TokenAccess is the owner and mode SaveToken gives the agent token file.
+type TokenAccess struct {
+	Owner *Owner
+	Mode  fs.FileMode
+}
+
+// TokenAccessFor returns the owner and mode of the agent token written by a process with effective user euid.
+// Root keeps the token root only (0600) and systemd hands it to the service with LoadCredential. systemd older
+// than 247 (the RHEL 8 family) ignores LoadCredential, so there the service user reads the file itself and the
+// token becomes readable by the service group serviceGID only (0640), never by other users. systemdVersion is 0
+// when unknown and serviceGID is -1 when the group does not exist; both keep the token root only.
+func TokenAccessFor(euid, systemdVersion, serviceGID int) TokenAccess {
+	switch {
+	case euid != 0:
+		return TokenAccess{Mode: 0o600}
+	case systemdVersion > 0 && systemdVersion < MinCredentialsSystemdVersion && serviceGID > 0:
+		return TokenAccess{Owner: &Owner{UID: 0, GID: serviceGID}, Mode: 0o640}
+	default:
+		return TokenAccess{Owner: &Owner{UID: 0, GID: 0}, Mode: 0o600}
 	}
-	return WriteFileAtomic(filepath.Join(dir, TokenFileName), []byte(token+"\n"), 0o600, owner)
+}
+
+// ParseSystemdVersion reads the version from the first line of "systemctl --version", for example
+// "systemd 239 (239-82.el8)". It returns 0 when the output has no version.
+func ParseSystemdVersion(out string) int {
+	first, _, _ := strings.Cut(out, "\n")
+	fields := strings.Fields(first)
+	if len(fields) < 2 || fields[0] != "systemd" {
+		return 0
+	}
+	version, err := strconv.Atoi(fields[1])
+	if err != nil || version < 0 {
+		return 0
+	}
+	return version
+}
+
+// SaveToken writes the agent token with the owner and mode of access.
+func SaveToken(dir, token string, access TokenAccess) error {
+	return WriteFileAtomic(filepath.Join(dir, TokenFileName), []byte(token+"\n"), access.Mode, access.Owner)
 }
 
 // CheckWritable fails when the agent token and configuration could not be saved in dir, so enroll stops

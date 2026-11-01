@@ -5,10 +5,19 @@ if ! getent passwd oka-cyber >/dev/null 2>&1; then
 	useradd --system --user-group --no-create-home --home-dir /var/lib/oka-cyber-agent --shell /usr/sbin/nologin oka-cyber
 fi
 
+# An enrolled host keeps its service running: an upgrade restarts it on the new binary, and a reinstall after a
+# deb "remove" (which disabled it but kept the enrollment) enables and starts it again.
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload >/dev/null 2>&1 || true
 	if [ -f /etc/oka-cyber-agent/token ]; then
 		systemctl try-restart oka-cyber-agent.service >/dev/null 2>&1 || true
+		if ! systemctl is-enabled --quiet oka-cyber-agent.service || ! systemctl is-active --quiet oka-cyber-agent.service; then
+			if systemctl enable --now oka-cyber-agent.service >/dev/null 2>&1; then
+				echo "Oka Cyber Agent is enrolled: enabled and started oka-cyber-agent.service."
+			else
+				echo "Oka Cyber Agent is enrolled but oka-cyber-agent.service did not start. Check it with: systemctl status oka-cyber-agent"
+			fi
+		fi
 	fi
 fi
 

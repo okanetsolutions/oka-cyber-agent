@@ -21,7 +21,7 @@ These are product promises written in the README. A change that breaks one is a 
   - Install the binary (`/usr/local/bin/oka-cyber-agent` from `install.sh`, `/usr/bin/oka-cyber-agent` from a package) and the systemd unit (`/etc/systemd/system/oka-cyber-agent.service` or `/usr/lib/systemd/system/oka-cyber-agent.service`).
   - Create the `oka-cyber` system user (nologin shell, home directory not created) with its own `oka-cyber` group, and add it to the `adm` and `systemd-journal` groups where they exist so it can read auth logs and the journal (okanetsolutions/oka-cyber-agent#7).
   - Create `/etc/oka-cyber-agent` (through `enroll`) and set the owner and mode of its `token` file. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
-  - Reload systemd and enable, start, restart, stop or disable `oka-cyber-agent.service` only (rerunning `install.sh` and upgrading the package restart it on the new binary).
+  - Reload systemd and enable, start, restart, stop or disable `oka-cyber-agent.service` only (rerunning `install.sh` and upgrading the package restart it on the new binary; installing the package on an enrolled host enables and starts it).
   - On deb purge or rpm erase only (`rpm -e` or `dnf remove`, not an upgrade), delete both directories, the `oka-cyber` user and its group. A deb `remove` keeps them.
 
 ## Repository Layout
@@ -35,7 +35,7 @@ These are product promises written in the README. A change that breaks one is a 
 - `testdata` directories next to the code they feed: real sample files, never generated at test time.
 - `install.sh`: the one line installer (POSIX `sh`, it runs as `curl ... | sudo sh -s --`). It embeds the systemd unit, which must stay identical to `packaging/oka-cyber-agent.service` apart from the binary path (`test/install/check-unit.sh` enforces it).
 - `packaging`: the systemd unit and the `.deb`/`.rpm` maintainer scripts used by `.goreleaser.yaml`.
-- `test/faketenant` and `test/install`: a stand in for the agent API and the CI scripts that install, rerun and uninstall the agent (script and packages) on Ubuntu, Debian and Rocky.
+- `test/faketenant` and `test/install`: a stand in for the agent API and the CI scripts that install, rerun, upgrade and uninstall the agent (script and packages) on Ubuntu, Debian, Rocky and RHEL 8 (systemd 239, without `LoadCredential`).
 
 Update this section in the same PR when a package is added, moved or removed.
 

@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
@@ -112,7 +115,8 @@ func enrollCommand(ctx context.Context, args []string, io streams) int {
 	if resp.ReportIntervalSeconds > 0 {
 		cfg.ReportIntervalSeconds = min(max(resp.ReportIntervalSeconds, config.MinReportIntervalSeconds), config.MaxReportIntervalSeconds)
 	}
-	if err := config.SaveToken(*configDir, string(resp.AgentToken)); err != nil {
+	access := tokenAccess(ctx)
+	if err := config.SaveToken(*configDir, string(resp.AgentToken), access); err != nil {
 		fmt.Fprintf(io.stderr, "enroll: the server enrolled this host as server %s, but saving its agent token failed: %v\n", cfg.ServerID, err)
 		fmt.Fprintf(io.stderr, "The agent token was not stored and the enrollment token may be used up. Revoke server %s in the dashboard, then enroll again with a new enrollment token.\n", cfg.ServerID)
 		return exitFailure
@@ -124,10 +128,45 @@ func enrollCommand(ctx context.Context, args []string, io streams) int {
 		return exitFailure
 	}
 	fmt.Fprintf(io.stdout, "Enrolled as server %s.\n", cfg.ServerID)
+	if access.Mode&0o040 != 0 {
+		fmt.Fprintf(io.stdout, "systemd is older than %d, so the agent token is readable by the %s group instead of passed to the service as a credential.\n", config.MinCredentialsSystemdVersion, serviceUser)
+	}
 	if existingErr == nil {
 		fmt.Fprintln(io.stdout, "A running agent service restarts with this enrollment within about a minute. If the service is stopped, start it with: systemctl enable --now oka-cyber-agent")
 	} else {
 		fmt.Fprintln(io.stdout, "Start reporting with: systemctl enable --now oka-cyber-agent")
 	}
 	return exitOK
+}
+
+// tokenAccess decides who may read the agent token. Only root asks systemctl for its version, because only root
+// can give the token to the service group.
+func tokenAccess(ctx context.Context) config.TokenAccess {
+	euid := os.Geteuid()
+	if euid != 0 {
+		return config.TokenAccessFor(euid, 0, -1)
+	}
+	return config.TokenAccessFor(euid, systemdVersion(ctx), groupID(serviceUser))
+}
+
+// systemdVersion works without a running systemd (a chroot or an image build), where the unit still runs on the
+// installed systemd at the next boot. It returns 0 when systemctl is missing.
+func systemdVersion(ctx context.Context) int {
+	out, err := exec.CommandContext(ctx, "systemctl", "--version").Output()
+	if err != nil {
+		return 0
+	}
+	return config.ParseSystemdVersion(string(out))
+}
+
+func groupID(name string) int {
+	group, err := user.LookupGroup(name)
+	if err != nil {
+		return -1
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		return -1
+	}
+	return gid
 }

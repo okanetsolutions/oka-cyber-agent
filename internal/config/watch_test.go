@@ -8,7 +8,7 @@ import (
 
 func TestWatcherSeesAReenrollAndIgnoresABrokenEdit(t *testing.T) {
 	dir := t.TempDir()
-	if err := SaveToken(dir, "agent-secret"); err != nil {
+	if err := SaveToken(dir, "agent-secret", TokenAccessFor(os.Geteuid(), 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(dir, validConfig()); err != nil {
@@ -35,7 +35,7 @@ func TestWatcherSeesAReenrollAndIgnoresABrokenEdit(t *testing.T) {
 
 	reenrolled := validConfig()
 	reenrolled.ServerID = "43"
-	if err := SaveToken(dir, "new-agent-secret"); err != nil {
+	if err := SaveToken(dir, "new-agent-secret", TokenAccessFor(os.Geteuid(), 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(dir, reenrolled); err != nil {
@@ -48,7 +48,7 @@ func TestWatcherSeesAReenrollAndIgnoresABrokenEdit(t *testing.T) {
 		t.Fatalf("Changed = %v, %v, want no change after it was seen", ok, err)
 	}
 
-	if err := SaveToken(dir, "rotated"); err != nil {
+	if err := SaveToken(dir, "rotated", TokenAccessFor(os.Geteuid(), 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := changed(); !ok || err != nil {
