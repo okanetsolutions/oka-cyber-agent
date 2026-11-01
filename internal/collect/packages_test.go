@@ -135,11 +135,11 @@ func TestRPMRocky9(t *testing.T) {
 func TestRPMRHEL9(t *testing.T) {
 	inv := collectHost(t, "rhel-9", filepath.Join("testdata", "rpm", "rhel-9.txt"))
 	ssl := findPackage(t, inv, "openssl-libs")
-	if ssl.Ecosystem != "Red Hat:9" || ssl.Version != "1:3.5.8-2.el9_8" {
+	if ssl.Ecosystem != "Red Hat:enterprise_linux:9::baseos" || ssl.Version != "1:3.5.8-2.el9_8" {
 		t.Fatalf("openssl-libs = %+v", ssl)
 	}
-	if len(inv.Packages) != 186 {
-		t.Fatalf("packages = %d, want 186", len(inv.Packages))
+	if len(inv.Packages) != 201 {
+		t.Fatalf("packages = %d, want 201 (203 rows minus gpg-pubkey)", len(inv.Packages))
 	}
 }
 

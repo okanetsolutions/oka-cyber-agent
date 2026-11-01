@@ -18,7 +18,8 @@ func TestOSCollectorPerDistribution(t *testing.T) {
 		{"alpine-3.20", FamilyAlpine, "Alpine Linux", "3.20.10", "Alpine:v3.20"},
 		{"rocky-9", FamilyRHEL, "Rocky Linux", "9.8", "Rocky Linux:9"},
 		{"almalinux-9", FamilyRHEL, "AlmaLinux", "9.8", "AlmaLinux:9"},
-		{"rhel-9", FamilyRHEL, "Red Hat Enterprise Linux", "9.8", "Red Hat:9"},
+		{"rhel-9", FamilyRHEL, "Red Hat Enterprise Linux", "9.8", "Red Hat:enterprise_linux:9::baseos"},
+		{"rhel-10", FamilyRHEL, "Red Hat Enterprise Linux", "10.2", "Red Hat:enterprise_linux:10.2"},
 		{"arch", "arch", "Arch Linux", "20261025.0.616225", ""},
 	}
 	for _, tt := range tests {

@@ -54,6 +54,11 @@ func (c RPMCollector) Collect(ctx context.Context, inv *Inventory) error {
 	if err != nil {
 		return fmt.Errorf("rpm -qa: %w", err)
 	}
+	if strings.HasPrefix(inv.OS.OSVEcosystem, "Red Hat:") {
+		if err := assignRedHatEcosystems(ctx, c.Root, inv.OS.Version, packages); err != nil {
+			return err
+		}
+	}
 	inv.Packages = append(inv.Packages, packages...)
 	return nil
 }
