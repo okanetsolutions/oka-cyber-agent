@@ -2,9 +2,12 @@ package logs
 
 import (
 	"context"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
 const (
@@ -41,6 +44,8 @@ type Collector struct {
 	watches     map[string]*watch
 	skipped     []SkippedSource
 	lastPlan    time.Time
+	// listed holds the file names in the directories of the watched files, read just before the latest plan.
+	listed map[string]map[string]bool
 
 	journalCancel context.CancelFunc
 	journalDone   chan struct{}
@@ -51,14 +56,15 @@ type Collector struct {
 	untrustedEntries int
 }
 
-// NewCollector starts at resume for the sources that were already enabled when it was saved. A source that
-// is newly enabled starts at the current end of its files and of the journal: no history is uploaded.
+// NewCollector starts at resume for the sources that were already enabled when it was saved. A newly enabled
+// source starts at the current end of the journal, and every file without a saved position starts at its
+// current end: no history is uploaded (see plan).
 func NewCollector(sources []string, o Options, resume Checkpoint, start StartFunc, now func() time.Time) *Collector {
 	if now == nil {
 		now = time.Now
 	}
 	if o.HasJournalctl == nil {
-		o.HasJournalctl = func() bool { _, err := exec.LookPath("journalctl"); return err == nil }
+		o.HasJournalctl = func() bool { _, err := trustedcmd.Look("journalctl"); return err == nil }
 	}
 	c := &Collector{
 		sources:     slices.Clone(sources),
@@ -146,8 +152,15 @@ func (c *Collector) parseLine(plan FilePlan, line string) (Event, bool) {
 // RemovedAfter. A file found by a glob pattern that is gone and no longer matches is dropped silently
 // after its last lines were read. A file rotated by rename keeps matching once it is created again under
 // the same name, so its tailer follows the new file.
+//
+// A file that enters the plan without a saved position starts at its current end, since it may hold years
+// of history: a file found at startup, a file added to log_paths, a new vhost's existing log. Only a file
+// created while the agent was watching is read from its start (a new daily laravel-YYYY-MM-DD.log, a new
+// vhost log in /var/log/nginx): one whose directory was listed before the previous plan without it.
 func (c *Collector) plan(ctx context.Context) {
-	firstPlan := c.lastPlan.IsZero()
+	previous := c.listed
+	c.listed = map[string]map[string]bool{}
+	c.listWatchedDirs()
 	c.lastPlan = c.now()
 	p := PlanSources(c.sources, c.options)
 	c.skipped = p.Skipped
@@ -171,11 +184,14 @@ func (c *Collector) plan(ctx context.Context) {
 		if pos, ok := c.resume.Files[path]; ok && !c.firstEnable[f.Source] {
 			resume = &pos
 		}
-		startAtEnd := firstPlan && c.firstEnable[f.Source]
+		startAtEnd := resume == nil && !createdSince(previous, path)
 		t := NewTailer(c.options.path(path), resume, startAtEnd)
 		t.Now = c.now
 		c.watches[path] = &watch{plan: f, tailer: t, planned: true}
 	}
+	// A directory watched for the first time is listed now, so that a file created in it before the next
+	// plan is recognized as new.
+	c.listWatchedDirs()
 	if p.Journal && c.journalCh == nil {
 		cursor := ""
 		if !c.firstEnable[SourceAuth] {
@@ -183,6 +199,43 @@ func (c *Collector) plan(ctx context.Context) {
 		}
 		c.startJournal(ctx, cursor)
 	}
+}
+
+// listWatchedDirs records the names in each directory of a watched file that is not listed yet. A directory
+// that cannot be listed is not recorded, so a file found in it later is treated as one that existed before.
+func (c *Collector) listWatchedDirs() {
+	for path := range c.watches {
+		dir := filepath.Dir(path)
+		if _, ok := c.listed[dir]; ok {
+			continue
+		}
+		if names, err := readDirNames(c.options.path(dir)); err == nil {
+			c.listed[dir] = names
+		}
+	}
+}
+
+func readDirNames(dir string) (map[string]bool, error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set, nil
+}
+
+// createdSince reports whether path was missing from its directory when the directory was listed.
+func createdSince(listed map[string]map[string]bool, path string) bool {
+	names, ok := listed[filepath.Dir(path)]
+	return ok && !names[filepath.Base(path)]
 }
 
 // dropWatch forgets a file, also its saved position, so a file created later under the same name is read

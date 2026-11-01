@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
 // JournalEntry is one journald entry. UID, Exe and Comm are the trusted fields journald fills in from the
@@ -170,8 +172,12 @@ func (j *Journal) Run(ctx context.Context, emit func(JournalEntry)) error {
 }
 
 func startCommand(ctx context.Context, name string, args ...string) (io.ReadCloser, func() error, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = []string{"LC_ALL=C", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "SYSTEMD_COLORS=0"}
+	path, err := trustedcmd.Look(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = trustedcmd.Env("SYSTEMD_COLORS=0")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, err

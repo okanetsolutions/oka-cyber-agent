@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
 // plantCommand writes an executable shell script that creates marker when run and prints output.
@@ -20,9 +22,9 @@ func plantCommand(t *testing.T, dir, name, marker, output string) {
 
 func withTrustedCommandDirs(t *testing.T, dirs ...string) {
 	t.Helper()
-	previous := trustedCommandDirs
-	trustedCommandDirs = dirs
-	t.Cleanup(func() { trustedCommandDirs = previous })
+	previous := trustedcmd.Dirs
+	trustedcmd.Dirs = dirs
+	t.Cleanup(func() { trustedcmd.Dirs = previous })
 }
 
 func TestRunCommandIgnoresTheAgentPath(t *testing.T) {
@@ -61,25 +63,4 @@ func TestRunCommandIgnoresTheAgentPath(t *testing.T) {
 			t.Fatalf("the rpm planted first in PATH was executed")
 		}
 	})
-}
-
-func TestLookTrustedCommandSkipsNonExecutablesAndRejectsPaths(t *testing.T) {
-	first, second := t.TempDir(), t.TempDir()
-	withTrustedCommandDirs(t, first, second)
-	if err := os.WriteFile(filepath.Join(first, "rpm"), []byte("not executable"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(first, "dir"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	plantCommand(t, second, "rpm", filepath.Join(second, "ran"), "ok")
-
-	if path, err := lookTrustedCommand("rpm"); err != nil || path != filepath.Join(second, "rpm") {
-		t.Fatalf("lookTrustedCommand(rpm) = %q, %v; want the executable in the second directory", path, err)
-	}
-	for _, name := range []string{"", "dir", "./rpm", filepath.Join(second, "rpm"), "../rpm"} {
-		if path, err := lookTrustedCommand(name); !errors.Is(err, exec.ErrNotFound) {
-			t.Errorf("lookTrustedCommand(%q) = %q, %v; want exec.ErrNotFound", name, path, err)
-		}
-	}
 }

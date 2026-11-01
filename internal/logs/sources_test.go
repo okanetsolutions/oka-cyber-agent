@@ -2,14 +2,18 @@ package logs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
 type hostTree struct {
@@ -186,6 +190,56 @@ func TestJournalRunFollowsAndKeepsCursor(t *testing.T) {
 	}
 }
 
+func TestJournalctlComesOnlyFromTrustedDirectories(t *testing.T) {
+	scratch := t.TempDir()
+	untrusted, trusted := filepath.Join(scratch, "untrusted"), filepath.Join(scratch, "trusted")
+	planted := filepath.Join(scratch, "planted-ran")
+	for _, dir := range []string{untrusted, trusted} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant := func(dir, marker, output string) {
+		script := "#!/bin/sh\n: > '" + marker + "'\necho " + output + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "journalctl"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant(untrusted, planted, "planted")
+	t.Setenv("PATH", untrusted+string(os.PathListSeparator)+os.Getenv("PATH"))
+	previous := trustedcmd.Dirs
+	trustedcmd.Dirs = []string{trusted}
+	t.Cleanup(func() { trustedcmd.Dirs = previous })
+	c := NewCollector([]string{SourceAuth}, Options{Root: t.TempDir()}, Checkpoint{}, nil, nil)
+	defer c.Close()
+
+	if c.options.HasJournalctl() {
+		t.Fatal("a journalctl found only in the agent's PATH must not count as available")
+	}
+	if _, _, err := startCommand(context.Background(), "journalctl", "--version"); !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("startCommand error = %v, want exec.ErrNotFound", err)
+	}
+	if _, err := os.Stat(planted); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the journalctl planted first in PATH was executed")
+	}
+
+	plant(trusted, filepath.Join(scratch, "trusted-ran"), "trusted")
+	if !c.options.HasJournalctl() {
+		t.Fatal("the journalctl in a trusted directory must count as available")
+	}
+	stdout, wait, err := startCommand(context.Background(), "journalctl", "--version")
+	if err != nil {
+		t.Fatalf("startCommand: %v", err)
+	}
+	output, _ := io.ReadAll(stdout)
+	if err := wait(); err != nil || string(output) != "trusted\n" {
+		t.Fatalf("output = %q, %v; want the trusted journalctl", output, err)
+	}
+	if _, err := os.Stat(planted); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the journalctl planted first in PATH was executed")
+	}
+}
+
 func TestCollectorReadsFilesAndResumesFromCheckpoint(t *testing.T) {
 	h := newHost(t)
 	h.write("/var/log/auth.log", "2026-10-31T18:58:00.000000+00:00 host sshd[1]: Failed password for root from 203.0.113.7 port 1 ssh2\n")
@@ -358,5 +412,83 @@ func TestCollectorReadsJournalFromCursor(t *testing.T) {
 	}
 	if cp := c.Checkpoint(); cp.JournalCursor == "" || cp.JournalCursor == "s=previous" {
 		t.Fatalf("checkpoint cursor = %q", cp.JournalCursor)
+	}
+}
+
+func appErrors(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "[2024-01-%02d 10:00:00] production.ERROR: old error %d\n", i%28+1, i)
+	}
+	return b.String()
+}
+
+func TestCollectorStartsFilesThatAlreadyExistedAtTheirEnd(t *testing.T) {
+	h := newHost(t)
+	h.write("/srv/api/app.log", "")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp}, h.options(false, "/srv/api/app.log"), Checkpoint{}, nil, clock.Now)
+	c.Poll(context.Background())
+	checkpoint := c.Checkpoint()
+	c.Close()
+
+	laravel := "/var/www/shop/storage/logs/laravel.log"
+	h.write(laravel, appErrors(1000))
+	h.append("/srv/api/app.log", appErrors(3))
+	delete(checkpoint.Files, "/srv/api/app.log")
+	restarted := NewCollector([]string{SourceApp}, h.options(false, "/srv/api/app.log", laravel), checkpoint, nil, clock.Now)
+	defer restarted.Close()
+	if events := restarted.Poll(context.Background()); len(events) != 0 {
+		t.Fatalf("an existing file added to log_paths, or one whose position was lost, must not upload its history: %d events", len(events))
+	}
+	h.append(laravel, "[2026-10-31 19:00:03] production.ERROR: new error\n")
+	events := restarted.Poll(context.Background())
+	if len(events) != 1 || events[0].Fields["file"] != laravel {
+		t.Fatalf("events = %+v, want only the line written after the restart", events)
+	}
+}
+
+func TestCollectorStartsAFileThatBecomesReadableAtItsEnd(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	h := newHost(t)
+	dir := "/var/www/shop/storage/logs"
+	h.write(dir+"/laravel-2026-10-31.log", "")
+	h.write(dir+"/laravel-2026-10-30.log", appErrors(100))
+	old := filepath.Join(h.root, dir, "laravel-2026-10-30.log")
+	os.Chmod(old, 0)
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp}, h.options(false, dir+"/laravel-*.log"), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+	os.Chmod(old, 0o644)
+	clock.now = clock.now.Add(replanEvery)
+	if events := c.Poll(context.Background()); len(events) != 0 {
+		t.Fatalf("a file that existed before it was readable must not upload its history: %d events", len(events))
+	}
+	if _, ok := c.watches[dir+"/laravel-2026-10-30.log"]; !ok {
+		t.Fatalf("watches = %v, want the file that became readable", sortedWatchPaths(c.watches))
+	}
+}
+
+func TestCollectorReadsFilesCreatedWhileWatchingFromTheirStart(t *testing.T) {
+	h := newHost(t)
+	dir := "/var/www/shop/storage/logs"
+	h.write(dir+"/laravel-2026-10-31.log", appErrors(100))
+	h.write("/var/log/nginx/access.log", "")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp, SourceWeb}, h.options(false, dir+"/laravel-*.log"), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	if events := c.Poll(context.Background()); len(events) != 0 {
+		t.Fatalf("first poll must not upload history: %d events", len(events))
+	}
+
+	h.write(dir+"/laravel-2026-11-01.log", "[2026-11-01 00:00:01] production.ERROR: first error of the day\n")
+	h.write("/var/log/nginx/shop.example.com.access.log", `203.0.113.7 - - [01/Nov/2026:00:00:02 +0000] "GET /.env HTTP/1.1" 404 0 "-" "zgrab"`+"\n")
+	clock.now = clock.now.Add(replanEvery)
+	events := c.Poll(context.Background())
+	if len(events) != 2 || events[0].Fields["vhost"] != "shop.example.com" || events[1].Fields["file"] != dir+"/laravel-2026-11-01.log" {
+		t.Fatalf("events = %+v, want the first lines of the new daily log and of the new vhost log", events)
 	}
 }

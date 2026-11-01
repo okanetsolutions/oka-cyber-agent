@@ -45,7 +45,8 @@ type Tailer struct {
 }
 
 // NewTailer starts at resume when it still points at the same file, at the end of the current file when
-// startAtEnd is set (first enable: no history is uploaded), and otherwise at the beginning.
+// startAtEnd is set (a file that existed before it was watched: no history is uploaded), and otherwise at the
+// beginning. A file that is missing when first polled is read from its beginning once created.
 func NewTailer(path string, resume *Position, startAtEnd bool) *Tailer {
 	return &Tailer{Path: path, resume: resume, startAtEnd: startAtEnd, Now: time.Now}
 }
