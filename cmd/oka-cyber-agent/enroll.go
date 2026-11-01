@@ -43,9 +43,27 @@ func enrollCommand(ctx context.Context, args []string, io streams) int {
 	}
 
 	existing, existingErr := config.Load(*configDir)
-	if _, err := config.LoadToken(*configDir); err == nil && !*force {
-		fmt.Fprintf(io.stdout, "Already enrolled as server %s at %s. Use --force to enroll again.\n", existing.ServerID, existing.URL)
-		return exitOK
+	_, tokenErr := config.LoadToken(*configDir)
+	if !*force {
+		switch {
+		case existingErr == nil && tokenErr == nil:
+			fmt.Fprintf(io.stdout, "Already enrolled as server %s at %s. Use --force to enroll again.\n", existing.ServerID, existing.URL)
+			return exitOK
+		case !errors.Is(existingErr, config.ErrNotEnrolled) || !errors.Is(tokenErr, config.ErrNotEnrolled):
+			// Only one of the two files is usable (an earlier enroll was interrupted, or a file was deleted or
+			// broken). Enrolling over it creates a second server in the dashboard, so the user must ask for it.
+			fmt.Fprintf(io.stderr, "enroll: %s holds an incomplete or unreadable enrollment:\n", *configDir)
+			for _, err := range []error{existingErr, tokenErr} {
+				if err != nil {
+					fmt.Fprintf(io.stderr, "  %v\n", err)
+				}
+			}
+			if errors.Is(existingErr, fs.ErrPermission) || errors.Is(tokenErr, fs.ErrPermission) {
+				fmt.Fprintln(io.stderr, "Run enroll as root, for example with sudo.")
+			}
+			fmt.Fprintln(io.stderr, "To replace it, revoke the old server in the dashboard if it is listed, then enroll again with --force.")
+			return exitFailure
+		}
 	}
 	// The server spends the enrollment token as soon as it answers, so check first that the agent token it
 	// returns can be saved.

@@ -186,6 +186,43 @@ func TestEnrollIsIdempotentUnlessForced(t *testing.T) {
 	}
 }
 
+func TestEnrollRefusesAnIncompleteEnrollmentUnlessForced(t *testing.T) {
+	useFixtureHost(t)
+	for _, kept := range []string{config.TokenFileName, config.FileName} {
+		t.Run(kept, func(t *testing.T) {
+			tenant, srv := newFakeTenant(t)
+			configDir := t.TempDir()
+			args := []string{"enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir}
+			if r := runCLI(t, "", args...); r.code != exitOK {
+				t.Fatalf("enroll = %+v", r)
+			}
+			for _, name := range []string{config.TokenFileName, config.FileName} {
+				if name != kept {
+					if err := os.Remove(filepath.Join(configDir, name)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			r := runCLI(t, "", args...)
+			if r.code != exitFailure || r.stdout != "" || !strings.Contains(r.stderr, "--force") {
+				t.Fatalf("enroll with only %s = %+v, want a failure pointing at --force", kept, r)
+			}
+			if len(tenant.requests()) != 1 {
+				t.Fatalf("requests = %v, want no new enrollment", tenant.requests())
+			}
+			if r := runCLI(t, "", append(args, "--force")...); r.code != exitOK || len(tenant.requests()) != 2 {
+				t.Fatalf("forced enroll = %+v after %d requests", r, len(tenant.requests()))
+			}
+			if _, err := config.Load(configDir); err != nil {
+				t.Fatalf("config after forced enroll: %v", err)
+			}
+			if _, err := config.LoadToken(configDir); err != nil {
+				t.Fatalf("token after forced enroll: %v", err)
+			}
+		})
+	}
+}
+
 func TestForcedReenrollSendsTheNewServerItsFirstInventory(t *testing.T) {
 	useFixtureHost(t)
 	tenant, srv := newFakeTenant(t)
@@ -238,11 +275,12 @@ func TestEnrollReportsAnAgentTokenItCouldNotSave(t *testing.T) {
 		t.Run(blocked, func(t *testing.T) {
 			tenant, srv := newFakeTenant(t)
 			configDir := t.TempDir()
-			// A directory in place of the file passes the write check but makes the final rename fail.
+			// A directory in place of the file passes the write check but makes the final rename fail. --force
+			// gets past the refusal to enroll over a file that does not load.
 			if err := os.Mkdir(filepath.Join(configDir, blocked), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "enroll-secret", "--insecure-dev", "--config-dir", configDir)
+			r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "enroll-secret", "--insecure-dev", "--force", "--config-dir", configDir)
 			if r.code != exitFailure || len(tenant.requests()) != 1 {
 				t.Fatalf("enroll = %+v after %d requests, want a failure after one enroll", r, len(tenant.requests()))
 			}
@@ -446,6 +484,55 @@ func TestRunAndStatusWithoutEnrollment(t *testing.T) {
 	}
 	if r := runCLI(t, "", "status", "--config-dir", configDir, "--state-dir", stateDir); r.code != exitFailure {
 		t.Fatalf("status = %+v", r)
+	}
+}
+
+func TestStatusBeforeTheFirstReport(t *testing.T) {
+	useFixtureHost(t)
+	_, srv := newFakeTenant(t)
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	if r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir); r.code != exitOK {
+		t.Fatalf("enroll = %+v", r)
+	}
+	r := runCLI(t, "", "status", "--config-dir", configDir, "--state-dir", stateDir)
+	if r.code != exitOK || !strings.Contains(r.stdout, "never") {
+		t.Fatalf("status = %+v, want success with no report yet", r)
+	}
+}
+
+func TestStatusFailsWhenTheStateIsUnreadable(t *testing.T) {
+	useFixtureHost(t)
+	tests := map[string]struct {
+		data []byte
+		mode os.FileMode
+	}{
+		"corrupt":    {data: []byte("{"), mode: 0o600},
+		"permission": {data: []byte(`{"server_id":"42","last_heartbeat_at":"2026-11-01T00:00:00Z"}`), mode: 0},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if tt.mode == 0 && os.Geteuid() == 0 {
+				t.Skip("root can read a file with mode 0000")
+			}
+			_, srv := newFakeTenant(t)
+			configDir, stateDir := t.TempDir(), t.TempDir()
+			if r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir); r.code != exitOK {
+				t.Fatalf("enroll = %+v", r)
+			}
+			if err := os.WriteFile(filepath.Join(stateDir, "state.json"), tt.data, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			r := runCLI(t, "", "status", "--config-dir", configDir, "--state-dir", stateDir)
+			if r.code != exitFailure {
+				t.Fatalf("status = %+v, want exit %d", r, exitFailure)
+			}
+			if !strings.Contains(r.stdout, "42") || strings.Contains(r.stdout, "never") || strings.Contains(r.stdout, "Last error") {
+				t.Fatalf("stdout = %q, want the enrollment without the zero state", r.stdout)
+			}
+			if tt.mode == 0 && !strings.Contains(r.stderr, "sudo") {
+				t.Fatalf("stderr = %q, want a hint to run as root", r.stderr)
+			}
+		})
 	}
 }
 

@@ -55,14 +55,14 @@ make build-all    # static Linux amd64 and arm64 binaries in bin/
 
 ```bash
 sudo oka-cyber-agent enroll --url https://<your tenant> --token <enrollment token>
-oka-cyber-agent status       # enrollment, service state, last heartbeat and inventory, last error
+sudo oka-cyber-agent status  # enrollment, service state, last heartbeat and inventory, last error
 oka-cyber-agent inventory    # what would be reported, as JSON; sends nothing
 oka-cyber-agent run --once   # one heartbeat and inventory report, then exit (non zero if it failed)
 ```
 
-`enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. A running service notices the new enrollment within about a minute and exits, so systemd restarts it with the new token. It checks that it can write to `/etc/oka-cyber-agent` before it uses the enrollment token, so run it as root. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
+`enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. When only one of `config.yaml` and `token` loads (an interrupted enrollment, or a deleted or broken file), it stops with an error and enrolls again only with `--force`. A running service notices the new enrollment within about a minute and exits, so systemd restarts it with the new token. It checks that it can write to `/etc/oka-cyber-agent` before it uses the enrollment token, so run it as root. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
 
-`run --once` reads the root owned agent token, so run it with sudo. A state file it writes as root is given to the owner of `/var/lib/oka-cyber-agent`, so the service can keep using it, and the agent starts from an empty state (with a warning) when its state file is unreadable or corrupt.
+`status` reads the state in `/var/lib/oka-cyber-agent`, which only the service user and root can read, so run it with sudo; it exits with an error rather than show the last reports as never when it cannot read the state. `run --once` reads the root owned agent token, so run it with sudo. A state file it writes as root is given to the owner of `/var/lib/oka-cyber-agent`, so the service can keep using it, and the agent starts from an empty state (with a warning) when its state file is unreadable or corrupt.
 
 ## Configuration
 
@@ -83,7 +83,7 @@ Unknown keys are rejected, so a typo cannot silently turn an option off. The age
 sudo oka-cyber-agent uninstall
 ```
 
-This stops and removes the service, its configuration (`/etc/oka-cyber-agent`), its state (`/var/lib/oka-cyber-agent`) and the binary. Then revoke the server in your Oka Cyber dashboard so its token stops working.
+This stops and removes the service, its configuration (`/etc/oka-cyber-agent`), its state (`/var/lib/oka-cyber-agent`) and the binary. If the service cannot be stopped, it removes nothing and exits with an error. Then revoke the server in your Oka Cyber dashboard so its token stops working.
 
 ## Development
 
