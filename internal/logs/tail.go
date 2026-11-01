@@ -54,6 +54,8 @@ type PollResult struct {
 	Lines []string
 	// Removed is set once when the file has been missing for RemovedAfter.
 	Removed bool
+	// Missing is set while the file does not exist, after what the old file still held was read.
+	Missing bool
 	// Err is a read error other than the file being absent, such as permission denied.
 	Err error
 }
@@ -73,6 +75,7 @@ func (t *Tailer) Poll() PollResult {
 	var r PollResult
 	info, err := os.Stat(t.Path)
 	if errors.Is(err, fs.ErrNotExist) {
+		r.Missing = true
 		if t.file != nil {
 			r.Lines = t.drain()
 			t.Close()

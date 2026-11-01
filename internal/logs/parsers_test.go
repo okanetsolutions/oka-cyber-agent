@@ -209,6 +209,9 @@ func TestJournalEntries(t *testing.T) {
 		if entry.Cursor == "" || entry.At.IsZero() || entry.Identifier == "" {
 			t.Fatalf("entry = %+v", entry)
 		}
+		if !TrustedAuthEntry(entry) {
+			t.Fatalf("genuine entry rejected: %+v", entry)
+		}
 		if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At); ok {
 			events = append(events, e)
 		}
@@ -219,6 +222,66 @@ func TestJournalEntries(t *testing.T) {
 	}
 	if got := kindCounts(events); !maps.Equal(got, want) {
 		t.Fatalf("events = %v\nwant %v", got, want)
+	}
+}
+
+// debian-12-forged.jsonl was captured on Debian 12 after an unprivileged user (uid 1000) ran logger -t sshd,
+// logger -p auth.info -t useradd, systemd-cat -t sshd with sh and with a copy of dash named sshd in its home,
+// and the real /usr/sbin/useradd with an LD_PRELOAD library that prints a "new user" line; root ran useradd
+// twice.
+func TestJournalRejectsForgedAuthEntries(t *testing.T) {
+	var genuine []Event
+	var forged int
+	for _, line := range readLines(t, filepath.Join("testdata", "journal", "debian-12-forged.jsonl")) {
+		entry, err := ParseJournalEntry([]byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At)
+		if !TrustedAuthEntry(entry) {
+			if entry.UID != "1000" || !ok {
+				t.Fatalf("rejected entry = %+v", entry)
+			}
+			forged++
+			continue
+		}
+		if ok {
+			genuine = append(genuine, e)
+		}
+	}
+	if forged != 5 || len(genuine) != 2 || genuine[0].Username != "mallory" || genuine[1].Username != "deploy" {
+		t.Fatalf("forged = %d, genuine = %+v", forged, genuine)
+	}
+}
+
+func TestTrustedAuthEntry(t *testing.T) {
+	for _, tc := range []struct {
+		identifier, uid, exe, comm string
+		want                       bool
+	}{
+		{"sshd", "0", "/usr/sbin/sshd", "sshd", true},
+		{"sshd", "0", "/usr/sbin/sshd (deleted)", "sshd", true},
+		{"sshd-session", "0", "/usr/lib/openssh/sshd-session", "sshd-session", true},
+		{"sshd", "0", "/usr/libexec/openssh/sshd-session", "sshd-session", true},
+		{"sshd-session", "0", "/usr/lib/ssh/sshd-session", "sshd-session", true},
+		{"sudo", "1000", "/usr/bin/sudo", "sudo", true},
+		{"sudo", "1000", "/usr/lib/cargo/bin/sudo", "sudo", true},
+		{"su", "1000", "/bin/su", "su", true},
+		{"crontab", "0", "", "crontab", true},
+		{"sshd", "1000", "/usr/sbin/sshd", "sshd", false},
+		{"useradd", "1000", "/usr/sbin/useradd", "useradd", false},
+		{"sshd", "0", "/usr/bin/logger", "logger", false},
+		{"sshd", "0", "/usr/sbin/sudo", "sudo", false},
+		{"sudo", "1000", "/home/alice/bin/sudo", "sudo", false},
+		{"sudo", "1000", "/usr/bin/../../home/alice/sudo", "sudo", false},
+		{"crontab", "1000", "", "crontab", false},
+		{"sshd", "0", "", "logger", false},
+		{"cron", "0", "/usr/sbin/cron", "cron", false},
+	} {
+		entry := JournalEntry{Identifier: tc.identifier, UID: tc.uid, Exe: tc.exe, Comm: tc.comm}
+		if got := TrustedAuthEntry(entry); got != tc.want {
+			t.Errorf("TrustedAuthEntry(%+v) = %v, want %v", entry, got, tc.want)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package logs
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -77,17 +78,31 @@ func TestPlanAuthReportsWhatItCannotRead(t *testing.T) {
 	if os.Geteuid() == 0 {
 		return
 	}
+	h.write("/var/log/auth.log", "")
+	os.Chmod(filepath.Join(h.root, "/var/log/auth.log"), 0)
+	p = PlanSources([]string{SourceAuth}, h.options(true))
+	if !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "/var/log/auth.log", ReasonPermissionDenied}}) {
+		t.Fatalf("unreadable auth.log = %+v", p)
+	}
 	h.write("/var/log/journal/abc/system.journal", "")
 	os.Chmod(filepath.Join(h.root, "/var/log/journal/abc/system.journal"), 0)
 	p = PlanSources([]string{SourceAuth}, h.options(true))
 	if !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "journal", ReasonPermissionDenied}}) {
 		t.Fatalf("unreadable journal = %+v", p)
 	}
+}
+
+func TestPlanAuthNeverFallsBackToFilesWhenTheJournalExists(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	h := newHost(t)
 	h.write("/var/log/auth.log", "")
-	os.Chmod(filepath.Join(h.root, "/var/log/auth.log"), 0)
-	p = PlanSources([]string{SourceAuth}, h.options(true))
-	if !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "/var/log/auth.log", ReasonPermissionDenied}}) {
-		t.Fatalf("unreadable auth.log = %+v", p)
+	h.write("/var/log/journal/abc/system.journal", "")
+	os.Chmod(filepath.Join(h.root, "/var/log/journal/abc/system.journal"), 0)
+	p := PlanSources([]string{SourceAuth}, h.options(true))
+	if p.Journal || len(p.Files) != 0 || !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "journal", ReasonPermissionDenied}}) {
+		t.Fatalf("plan = %+v, want the unreadable journal reported and auth.log left alone", p)
 	}
 }
 
@@ -218,6 +233,108 @@ func TestCollectorReportsRemovedFileAndSkippedSources(t *testing.T) {
 	events := c.Poll(context.Background())
 	if len(events) != 1 || events[0].Kind != KindLogFileRemoved || events[0].Source != SourceApp || events[0].Fields["path"] != "/var/www/shop/storage/logs/laravel.log" {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestCollectorPrefersJournalAndDropsForgedEntries(t *testing.T) {
+	h := newHost(t)
+	h.write("/run/log/journal/abc/system.journal", "")
+	h.write("/var/log/auth.log", "")
+	var args []string
+	c := NewCollector([]string{SourceAuth}, h.options(true), Checkpoint{Sources: []string{SourceAuth}}, fixtureStart(t, "debian-12-forged.jsonl", &args), (&fakeClock{now: testNow}).Now)
+	defer c.Close()
+	c.Poll(context.Background())
+	h.append("/var/log/auth.log", "2026-10-31T19:00:00.000000+00:00 host sshd[2]: Accepted password for root from 203.0.113.9 port 22 ssh2\n")
+	var events []Event
+	deadline := time.Now().Add(5 * time.Second)
+	for c.UntrustedEntries() < 5 && time.Now().Before(deadline) {
+		events = append(events, c.Poll(context.Background())...)
+		time.Sleep(10 * time.Millisecond)
+	}
+	events = append(events, c.Poll(context.Background())...)
+	if c.UntrustedEntries() != 5 || len(events) != 2 || events[0].Kind != KindUserCreated || events[0].Username != "mallory" || events[1].Username != "deploy" {
+		t.Fatalf("untrusted = %d, events = %+v", c.UntrustedEntries(), events)
+	}
+	if cp := c.Checkpoint(); len(cp.Files) != 0 {
+		t.Fatalf("auth.log must not be read when the journal is: %+v", cp.Files)
+	}
+}
+
+func TestCollectorDropsGlobFilesRemovedByRetention(t *testing.T) {
+	h := newHost(t)
+	dir := "/var/www/shop/storage/logs"
+	day := func(i int) string { return fmt.Sprintf("%s/laravel-2026-10-%02d.log", dir, i) }
+	h.write(day(1), "")
+	h.write(day(2), "")
+	h.write("/srv/api/app.log", "")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp}, h.options(false, dir+"/laravel-*.log", "/srv/api/app.log"), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+	for i := 3; i <= 30; i++ {
+		h.write(day(i), "")
+		h.append(day(i-2), "[2026-10-31 19:00:03] production.ERROR: last error before the prune\n")
+		os.Remove(filepath.Join(h.root, day(i-2)))
+		clock.now = clock.now.Add(24 * time.Hour)
+		events := c.Poll(context.Background())
+		if len(events) != 1 || events[0].Kind != KindAppError || events[0].Fields["file"] != day(i-2) {
+			t.Fatalf("day %d: events = %+v, want only the pruned file's last line", i, events)
+		}
+		if len(c.watches) != 3 {
+			t.Fatalf("day %d: watches = %v, want the two current daily files and app.log", i, sortedWatchPaths(c.watches))
+		}
+	}
+	if _, ok := c.Checkpoint().Files[day(1)]; ok {
+		t.Fatalf("checkpoint keeps a pruned file: %+v", c.Checkpoint().Files)
+	}
+
+	os.Remove(filepath.Join(h.root, "/srv/api/app.log"))
+	c.Poll(context.Background())
+	clock.now = clock.now.Add(RemovedAfter)
+	events := c.Poll(context.Background())
+	if len(events) != 1 || events[0].Kind != KindLogFileRemoved || events[0].Fields["path"] != "/srv/api/app.log" {
+		t.Fatalf("a configured file that disappears must be reported: %+v", events)
+	}
+}
+
+func TestCollectorFollowsRenameRotationOfGlobFiles(t *testing.T) {
+	h := newHost(t)
+	h.write("/var/log/nginx/access.log", "")
+	request := func(path string) string {
+		return `203.0.113.7 - - [31/Oct/2026:19:00:02 +0000] "GET ` + path + ` HTTP/1.1" 404 0 "-" "zgrab"` + "\n"
+	}
+	full := filepath.Join(h.root, "/var/log/nginx/access.log")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceWeb}, h.options(false), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+	paths := func(events []Event) []string {
+		var out []string
+		for _, e := range events {
+			out = append(out, e.Kind+":"+fmt.Sprint(e.Fields["path"]))
+		}
+		return out
+	}
+
+	h.append("/var/log/nginx/access.log", request("/.env"))
+	os.Rename(full, full+".1")
+	h.append("/var/log/nginx/access.log.1", request("/.git/config"))
+	h.write("/var/log/nginx/access.log", request("/wp-login.php"))
+	clock.now = clock.now.Add(replanEvery)
+	if got := paths(c.Poll(context.Background())); !slices.Equal(got, []string{"http_request:/.env", "http_request:/.git/config", "http_request:/wp-login.php"}) {
+		t.Fatalf("rotation: %v", got)
+	}
+
+	h.append("/var/log/nginx/access.log", request("/phpmyadmin"))
+	os.Rename(full, full+".1")
+	clock.now = clock.now.Add(replanEvery)
+	if got := paths(c.Poll(context.Background())); !slices.Equal(got, []string{"http_request:/phpmyadmin"}) {
+		t.Fatalf("a file renamed away while the plan ran must be read to its end: %v", got)
+	}
+	h.write("/var/log/nginx/access.log", request("/admin"))
+	clock.now = clock.now.Add(replanEvery)
+	if got := paths(c.Poll(context.Background())); !slices.Equal(got, []string{"http_request:/admin"}) {
+		t.Fatalf("the recreated file must be read from its start: %v", got)
 	}
 }
 

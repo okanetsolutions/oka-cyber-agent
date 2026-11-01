@@ -24,6 +24,8 @@ type Checkpoint struct {
 type watch struct {
 	plan   FilePlan
 	tailer *Tailer
+	// planned is whether the latest plan still lists the file.
+	planned bool
 }
 
 // Collector reads the enabled sources and parses their lines into events. Poll is called from one
@@ -44,6 +46,9 @@ type Collector struct {
 	journalDone   chan struct{}
 	journalCh     chan JournalEntry
 	journalCursor string
+	// untrustedEntries counts journal entries dropped because they claimed an auth identifier without
+	// coming from that program (see TrustedAuthEntry).
+	untrustedEntries int
 }
 
 // NewCollector starts at resume for the sources that were already enabled when it was saved. A source that
@@ -74,6 +79,8 @@ func (c *Collector) Sources() []string { return slices.Clone(c.sources) }
 
 func (c *Collector) Skipped() []SkippedSource { return slices.Clone(c.skipped) }
 
+func (c *Collector) UntrustedEntries() int { return c.untrustedEntries }
+
 // Poll returns the events read since the previous call.
 func (c *Collector) Poll(ctx context.Context) []Event {
 	if c.lastPlan.IsZero() || c.now().Sub(c.lastPlan) >= replanEvery {
@@ -88,14 +95,20 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 				events = append(events, e)
 			}
 		}
-		if result.Removed {
+		if w.plan.Glob && result.Missing && !w.planned {
+			c.dropWatch(path)
+			continue
+		}
+		if result.Removed && !w.plan.Glob {
 			events = append(events, RemovedEvent(w.plan.Source, w.plan.Path, c.now().UTC()))
 		}
 	}
 	for {
 		select {
 		case entry := <-c.journalCh:
-			if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At); ok {
+			if !TrustedAuthEntry(entry) {
+				c.untrustedEntries++
+			} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At); ok {
 				events = append(events, e)
 			}
 			c.journalCursor = entry.Cursor
@@ -129,24 +142,39 @@ func (c *Collector) parseLine(plan FilePlan, line string) (Event, bool) {
 }
 
 // plan resolves the sources again, so log files created later (a new vhost, a new daily log) are picked
-// up. Files that disappear keep their tailer, which reports log_file_removed after RemovedAfter.
+// up. A file named in full keeps its tailer when it disappears, which reports log_file_removed after
+// RemovedAfter. A file found by a glob pattern that is gone and no longer matches is dropped silently
+// after its last lines were read. A file rotated by rename keeps matching once it is created again under
+// the same name, so its tailer follows the new file.
 func (c *Collector) plan(ctx context.Context) {
+	firstPlan := c.lastPlan.IsZero()
 	c.lastPlan = c.now()
 	p := PlanSources(c.sources, c.options)
 	c.skipped = p.Skipped
-	firstPlan := len(c.watches) == 0 && c.journalCh == nil
+	planned := map[string]FilePlan{}
 	for _, f := range p.Files {
-		if _, ok := c.watches[f.Path]; ok {
+		if prev, ok := planned[f.Path]; !ok || prev.Glob {
+			planned[f.Path] = f
+		}
+	}
+	for path, w := range c.watches {
+		f, ok := planned[path]
+		if w.planned = ok; ok {
+			w.plan = f
+		}
+	}
+	for path, f := range planned {
+		if _, ok := c.watches[path]; ok {
 			continue
 		}
 		var resume *Position
-		if pos, ok := c.resume.Files[f.Path]; ok && !c.firstEnable[f.Source] {
+		if pos, ok := c.resume.Files[path]; ok && !c.firstEnable[f.Source] {
 			resume = &pos
 		}
 		startAtEnd := firstPlan && c.firstEnable[f.Source]
-		t := NewTailer(c.options.path(f.Path), resume, startAtEnd)
+		t := NewTailer(c.options.path(path), resume, startAtEnd)
 		t.Now = c.now
-		c.watches[f.Path] = &watch{plan: f, tailer: t}
+		c.watches[path] = &watch{plan: f, tailer: t, planned: true}
 	}
 	if p.Journal && c.journalCh == nil {
 		cursor := ""
@@ -155,6 +183,14 @@ func (c *Collector) plan(ctx context.Context) {
 		}
 		c.startJournal(ctx, cursor)
 	}
+}
+
+// dropWatch forgets a file, also its saved position, so a file created later under the same name is read
+// from its start even if it gets the old inode number back.
+func (c *Collector) dropWatch(path string) {
+	c.watches[path].tailer.Close()
+	delete(c.watches, path)
+	delete(c.resume.Files, path)
 }
 
 func (c *Collector) startJournal(ctx context.Context, cursor string) {

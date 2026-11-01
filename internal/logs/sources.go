@@ -33,6 +33,9 @@ type FilePlan struct {
 	Source string
 	Path   string
 	Vhost  string
+	// Glob is set for a file found by a glob pattern rather than named in full. Such files come and go with
+	// normal retention (a daily laravel-YYYY-MM-DD.log, a removed vhost), so their removal is not reported.
+	Glob bool
 }
 
 // Plan is what the enabled sources resolve to on this host. Paths are host paths; Options.Root only
@@ -56,8 +59,8 @@ func (o Options) path(p string) string {
 }
 
 // PlanSources resolves the enabled built in sources: auth reads journald when journalctl exists and the
-// system journal is readable, otherwise the first auth log file (plus the cron log); web reads the nginx
-// and Apache access logs; app reads the configured log_paths.
+// system journal is readable, and the first auth log file (plus the cron log) only when there is no
+// journal; web reads the nginx and Apache access logs; app reads the configured log_paths.
 func PlanSources(enabled []string, o Options) Plan {
 	var p Plan
 	if slices.Contains(enabled, SourceAuth) {
@@ -72,10 +75,16 @@ func PlanSources(enabled []string, o Options) Plan {
 	return p
 }
 
+// planAuth never reads the auth log files when the system journal exists, even when it is unreadable: any
+// local user can write a line with any program name to them (logger -p auth.info -t sshd), while journald
+// records who really sent each entry (see TrustedAuthEntry).
 func (o Options) planAuth(p *Plan) {
-	journal := o.journalAccess()
-	if journal == "" {
+	switch o.journalAccess() {
+	case "":
 		p.Journal = true
+		return
+	case ReasonPermissionDenied:
+		p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, "journal", ReasonPermissionDenied})
 		return
 	}
 	for _, path := range authFiles {
@@ -92,10 +101,6 @@ func (o Options) planAuth(p *Plan) {
 			p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, path, ReasonPermissionDenied})
 			return
 		}
-	}
-	if journal == ReasonPermissionDenied {
-		p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, "journal", ReasonPermissionDenied})
-		return
 	}
 	p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, authFiles[0], ReasonNotFound})
 }
@@ -135,7 +140,7 @@ func (o Options) planWeb(p *Plan) {
 				p.Skipped = append(p.Skipped, SkippedSource{SourceWeb, hostPath, reason})
 				continue
 			}
-			p.Files = append(p.Files, FilePlan{Source: SourceWeb, Path: hostPath, Vhost: VhostFromPath(hostPath)})
+			p.Files = append(p.Files, FilePlan{Source: SourceWeb, Path: hostPath, Vhost: VhostFromPath(hostPath), Glob: true})
 		}
 	}
 	if !found {
@@ -174,7 +179,7 @@ func (o Options) planApp(p *Plan) {
 				p.Skipped = append(p.Skipped, SkippedSource{SourceApp, hostPath, reason})
 				continue
 			}
-			p.Files = append(p.Files, FilePlan{Source: SourceApp, Path: hostPath})
+			p.Files = append(p.Files, FilePlan{Source: SourceApp, Path: hostPath, Glob: true})
 		}
 	}
 }
