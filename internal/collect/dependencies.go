@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/collect/lockfile"
 )
@@ -172,9 +173,10 @@ func (s *scan) lockFile(rel, hostPath string, format lockfile.Format, symlink bo
 }
 
 // read opens a lock file through the scan root. A symlink that resolves outside the root cannot be opened
-// (os.Root refuses it) and is reported; a dangling one is ignored.
+// (os.Root refuses it) and is reported; a dangling one is ignored. O_NONBLOCK keeps a FIFO given a lock file
+// name by any local user from blocking the open, and with it the whole inventory.
 func (s *scan) read(rel string, symlink bool) ([]byte, string) {
-	f, err := s.root.Open(rel)
+	f, err := s.root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, ReasonNotFound
