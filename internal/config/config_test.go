@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,5 +153,52 @@ func TestCheckWritableCreatesTheDirAndLeavesNothing(t *testing.T) {
 	}
 	if err := CheckWritable(filepath.Join(dir, "missing", "\x00")); err == nil {
 		t.Fatal("want an error for a path that cannot be created")
+	}
+}
+
+func TestWriteFileAtomicSetsTheOwnerBeforeTheFileAppears(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may give a file to any owner")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := WriteFileAtomic(path, []byte("{}\n"), 0o600, &Owner{UID: os.Getuid(), GID: os.Getgid()}); err != nil {
+		t.Fatalf("WriteFileAtomic to its own user = %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(path, []byte("{}\n"), 0o600, &Owner{UID: 0, GID: 0}); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("WriteFileAtomic to root = %v, want a permission error", err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("entries = %v, err = %v; want nothing written when the owner cannot be set", entries, err)
+	}
+}
+
+func TestReadRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := ReadRegularFile(path, 5); err != nil || string(data) != "12345" {
+		t.Fatalf("ReadRegularFile = %q, %v", data, err)
+	}
+	if _, err := ReadRegularFile(path, 4); err == nil {
+		t.Fatal("want an error for a file larger than the limit")
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRegularFile(link, 5); err == nil {
+		t.Fatal("want a symlink refused")
+	}
+	if _, err := ReadRegularFile(dir, 5); err == nil {
+		t.Fatal("want a directory refused")
+	}
+	if _, err := ReadRegularFile(filepath.Join(dir, "missing"), 5); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ReadRegularFile of a missing file = %v, want fs.ErrNotExist", err)
 	}
 }

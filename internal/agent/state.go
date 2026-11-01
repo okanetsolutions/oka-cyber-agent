@@ -12,7 +12,10 @@ import (
 	"github.com/okanetsolutions/oka-cyber-agent/internal/config"
 )
 
-const stateFileName = "state.json"
+const (
+	stateFileName = "state.json"
+	maxStateSize  = 1 << 20
+)
 
 type State struct {
 	ServerID              string    `json:"server_id,omitempty"`
@@ -28,10 +31,12 @@ type State struct {
 // another server: after enroll --force the new server must get its first inventory at once and its own
 // report interval. The state is only a cache (the worst outcome of losing it is one extra inventory upload),
 // so when the file cannot be read or parsed it also returns an empty state, with an error to warn about.
+// The service user can write to the state directory, so a symlink, FIFO or other special file planted there
+// is refused rather than followed or waited on when root reads it (sudo run --once, status).
 func LoadState(dir, serverID string) (State, error) {
 	empty := State{ServerID: serverID}
 	path := filepath.Join(dir, stateFileName)
-	data, err := os.ReadFile(path)
+	data, err := config.ReadRegularFile(path, maxStateSize)
 	if errors.Is(err, fs.ErrNotExist) {
 		return empty, nil
 	}
@@ -55,28 +60,29 @@ func SaveState(dir string, s State) error {
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(dir, stateFileName)
-	if err := config.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	if geteuid() != 0 {
-		return nil
-	}
-	info, err := os.Stat(dir)
+	owner, err := stateOwner(dir)
 	if err != nil {
 		return err
 	}
-	uid, gid, ok := fileOwner(info)
-	if !ok || uid == 0 {
-		return nil
-	}
-	if err := chown(path, uid, gid); err != nil {
-		return fmt.Errorf("give state to the owner of %s: %w", dir, err)
+	if err := config.WriteFileAtomic(filepath.Join(dir, stateFileName), append(data, '\n'), 0o600, owner); err != nil {
+		return fmt.Errorf("save state: %w", err)
 	}
 	return nil
 }
 
-var (
-	geteuid = os.Geteuid
-	chown   = os.Chown
-)
+func stateOwner(dir string) (*config.Owner, error) {
+	if geteuid() != 0 {
+		return nil, nil
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, err
+	}
+	uid, gid, ok := fileOwner(info)
+	if !ok || uid == 0 {
+		return nil, nil
+	}
+	return &config.Owner{UID: uid, GID: gid}, nil
+}
+
+var geteuid = os.Geteuid

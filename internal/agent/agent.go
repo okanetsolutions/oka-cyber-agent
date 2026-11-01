@@ -57,7 +57,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		if errors.Is(err, ErrRevoked) {
 			return err
 		}
-		if err != nil {
+		if err != nil && ctx.Err() == nil {
 			a.Logger.Error("report failed, retrying at the next interval", "error", err)
 		}
 		if err := a.waitNext(ctx); err != nil {
@@ -93,7 +93,9 @@ func (a *Agent) waitNext(ctx context.Context) error {
 }
 
 // Cycle sends a heartbeat, then the inventory when it changed or is due. A failure is kept in the state for
-// the status command and returned; ErrRevoked means the server revoked the agent token.
+// the status command and returned; ErrRevoked means the server revoked the agent token. A report cut short
+// by a stop (the context is cancelled) is returned too, so run --once fails, but it is not recorded: the
+// stop is not a failure of the server or the host.
 func (a *Agent) Cycle(ctx context.Context) error {
 	a.init()
 	err := a.heartbeat(ctx)
@@ -106,7 +108,7 @@ func (a *Agent) Cycle(ctx context.Context) error {
 		a.save()
 		return ErrRevoked
 	case err != nil && ctx.Err() != nil:
-		return nil
+		return err
 	case err != nil:
 		a.recordError(err)
 	default:

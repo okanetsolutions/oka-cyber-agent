@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -326,32 +325,108 @@ func TestStateSavedByRootBelongsToTheStateDirOwner(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("file owners are read on Linux only")
 	}
-	dir := t.TempDir()
-	var chowned []string
-	previousEuid, previousChown := geteuid, chown
-	geteuid = func() int { return 0 }
-	chown = func(path string, uid, gid int) error {
-		chowned = append(chowned, fmt.Sprintf("%s %d:%d", path, uid, gid))
-		return nil
+	if os.Geteuid() == 0 {
+		t.Skip("covered by TestRootSaveStateDoesNotFollowAPlantedSymlink")
 	}
-	t.Cleanup(func() { geteuid, chown = previousEuid, previousChown })
+	previous := geteuid
+	geteuid = func() int { return 0 }
+	t.Cleanup(func() { geteuid = previous })
 
+	dir := t.TempDir()
 	if err := SaveState(dir, State{ServerID: "42"}); err != nil {
+		t.Fatalf("SaveState = %v, want the state given to the owner of the state directory", err)
+	}
+	assertOwnedBy(t, filepath.Join(dir, stateFileName), os.Getuid(), os.Getgid())
+}
+
+func TestSaveStateReplacesAPlantedSymlinkWithoutFollowingIt(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "shadow")
+	if err := os.WriteFile(target, []byte("root:x:0:0\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("%s %d:%d", filepath.Join(dir, stateFileName), os.Getuid(), os.Getgid())
-	if os.Getuid() == 0 {
-		want = ""
+	if err := os.Chmod(target, 0o640); err != nil {
+		t.Fatal(err)
 	}
-	if got := strings.Join(chowned, ","); got != want {
-		t.Fatalf("chown = %q, want %q", got, want)
+	path := filepath.Join(dir, stateFileName)
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(dir, State{ServerID: "42", InventoryHash: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	assertUntouched(t, target, "root:x:0:0\n", 0o640)
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		t.Fatalf("state file = %v, %v; want a regular file with mode 0600 in place of the symlink", info, err)
+	}
+	if state, err := LoadState(dir, "42"); err != nil || state.InventoryHash != "abc" {
+		t.Fatalf("LoadState = %+v, %v", state, err)
+	}
+}
+
+func TestLoadStateRefusesASymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(target, []byte(`{"server_id":"42","inventory_hash":"abc"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, stateFileName)); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := LoadState(dir, "42"); err == nil || state != (State{ServerID: "42"}) {
+		t.Fatalf("LoadState = %+v, %v; want an empty state and an error to warn about", state, err)
+	}
+}
+
+func assertUntouched(t *testing.T, path, content string, mode fs.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != content {
+		t.Fatalf("%s = %q, %v; want it unchanged", path, data, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != mode {
+		t.Fatalf("%s mode = %v, %v; want %v", path, info.Mode().Perm(), err, mode)
+	}
+}
+
+func assertOwnedBy(t *testing.T, path string, uid, gid int) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotUID, gotGID, ok := fileOwner(info)
+	if !ok || gotUID != uid || gotGID != gid {
+		t.Fatalf("%s owner = %d:%d, want %d:%d", path, gotUID, gotGID, uid, gid)
+	}
+}
+
+func TestCancelledCycleFailsWithoutRecordingAnError(t *testing.T) {
+	client := &fakeClient{inventoryErr: errors.New("503 Service Unavailable")}
+	a, _ := newTestAgent(t, client, &[]collect.Package{})
+	var stop context.CancelFunc
+	collectInventory := a.Collect
+	a.Collect = func(ctx context.Context) (*collect.Inventory, error) {
+		stop()
+		return collectInventory(ctx)
 	}
 
-	chown = func(string, int, int) error { return fs.ErrPermission }
-	if os.Getuid() != 0 {
-		if err := SaveState(dir, State{ServerID: "42"}); !errors.Is(err, fs.ErrPermission) {
-			t.Fatalf("SaveState = %v, want the chown failure reported", err)
-		}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop = cancel
+	if err := a.Cycle(ctx); err == nil {
+		t.Fatal("Cycle = nil, want an error: the inventory never reached the server")
+	}
+	if state, _ := LoadState(a.StateDir, a.Config.ServerID); state.LastError != "" {
+		t.Fatalf("LastError = %q, want a stop not recorded as a failure", state.LastError)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	stop = cancel
+	if err := a.Run(ctx); err != nil {
+		t.Fatalf("Run = %v, want nil when stopped during a report", err)
 	}
 }
 

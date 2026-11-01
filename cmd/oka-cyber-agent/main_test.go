@@ -414,6 +414,31 @@ func TestRunOnceFailsWhenTheReportFails(t *testing.T) {
 	}
 }
 
+func TestRunOnceFailsWhenStoppedDuringARetry(t *testing.T) {
+	useFixtureHost(t)
+	tenant, srv := newFakeTenant(t)
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	if r := runCLI(t, "", "enroll", "--url", srv.URL, "--token", "t", "--insecure-dev", "--config-dir", configDir); r.code != exitOK {
+		t.Fatalf("enroll = %+v", r)
+	}
+	tenant.mu.Lock()
+	tenant.inventoryStatus = http.StatusServiceUnavailable
+	tenant.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previous := retrySleep
+	retrySleep = func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { retrySleep = previous })
+
+	var stdout, stderr bytes.Buffer
+	if code := run(ctx, []string{"run", "--once", "--config-dir", configDir, "--state-dir", stateDir}, streams{strings.NewReader(""), &stdout, &stderr}); code != exitFailure {
+		t.Fatalf("run --once = %d, want exit %d: the inventory never reached the server", code, exitFailure)
+	}
+}
+
 func TestRunAndStatusWithoutEnrollment(t *testing.T) {
 	configDir, stateDir := t.TempDir(), t.TempDir()
 	if r := runCLI(t, "", "run", "--once", "--config-dir", configDir, "--state-dir", stateDir); r.code != exitFailure {
