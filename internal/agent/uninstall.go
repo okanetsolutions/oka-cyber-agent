@@ -20,9 +20,12 @@ type Uninstaller struct {
 	StateDir   string
 	UnitPath   string
 	BinaryPath string
+	User       string
 	// Systemctl runs systemctl with args and returns an error for a non zero exit. It is nil when systemd is not
 	// running, in which case no service can be running either.
-	Systemctl func(ctx context.Context, args ...string) error
+	Systemctl  func(ctx context.Context, args ...string) error
+	UserExists func(name string) bool
+	DeleteUser func(ctx context.Context, name string) error
 }
 
 // Uninstall stops the service and removes everything the installer and the agent created. Missing pieces are
@@ -59,6 +62,13 @@ func (u Uninstaller) Uninstall(ctx context.Context) ([]string, error) {
 			continue
 		}
 		removed = append(removed, path)
+	}
+	if u.User != "" && u.UserExists != nil && u.DeleteUser != nil && u.UserExists(u.User) {
+		if err := u.DeleteUser(ctx, u.User); err != nil {
+			errs = append(errs, fmt.Errorf("delete user %s: %w", u.User, err))
+		} else {
+			removed = append(removed, "user "+u.User)
+		}
 	}
 	return removed, errors.Join(errs...)
 }

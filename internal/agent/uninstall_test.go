@@ -38,6 +38,13 @@ func installedTree(t *testing.T, failing ...string) (Uninstaller, *[]string) {
 		}
 		return nil
 	}
+	users := map[string]bool{"oka-cyber": true}
+	u.User = "oka-cyber"
+	u.UserExists = func(name string) bool { return users[name] }
+	u.DeleteUser = func(_ context.Context, name string) error {
+		delete(users, name)
+		return nil
+	}
 	return u, &calls
 }
 
@@ -57,6 +64,9 @@ func TestUninstallStopsServiceAndRemovesEverything(t *testing.T) {
 		if !slices.Contains(removed, path) {
 			t.Fatalf("removed = %v, missing %s", removed, path)
 		}
+	}
+	if !slices.Contains(removed, "user oka-cyber") || u.UserExists("oka-cyber") {
+		t.Fatalf("removed = %v, want the service user deleted", removed)
 	}
 
 	*calls = nil
@@ -134,6 +144,9 @@ func TestUninstallRemovesNothingWhenTheServiceDoesNotStop(t *testing.T) {
 				if _, err := os.Lstat(path); err != nil {
 					t.Fatalf("%s: %v, want it kept", path, err)
 				}
+			}
+			if !u.UserExists(u.User) {
+				t.Fatal("the service user was deleted, want it kept")
 			}
 		})
 	}

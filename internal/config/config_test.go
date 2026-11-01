@@ -99,7 +99,7 @@ func TestValidateURL(t *testing.T) {
 
 func TestTokenIsPrivateAndPreferredFromSystemdCredentials(t *testing.T) {
 	dir := t.TempDir()
-	if err := SaveToken(dir, "agent-secret"); err != nil {
+	if err := SaveToken(dir, "agent-secret", TokenAccessFor(os.Geteuid(), 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(filepath.Join(dir, TokenFileName))
@@ -125,9 +125,66 @@ func TestTokenIsPrivateAndPreferredFromSystemdCredentials(t *testing.T) {
 	}
 }
 
+func TestTokenAccessFor(t *testing.T) {
+	const gid = 990
+	tests := []struct {
+		name                       string
+		euid, systemdVersion, sgid int
+		want                       TokenAccess
+	}{
+		{"not root", 1000, 239, gid, TokenAccess{Mode: 0o600}},
+		{"systemd with credentials", 0, 247, gid, TokenAccess{Owner: &Owner{UID: 0, GID: 0}, Mode: 0o600}},
+		{"recent systemd", 0, 257, gid, TokenAccess{Owner: &Owner{UID: 0, GID: 0}, Mode: 0o600}},
+		{"systemd 239 (RHEL 8)", 0, 239, gid, TokenAccess{Owner: &Owner{UID: 0, GID: gid}, Mode: 0o640}},
+		{"systemd 239 without the service group", 0, 239, -1, TokenAccess{Owner: &Owner{UID: 0, GID: 0}, Mode: 0o600}},
+		{"unknown systemd version", 0, 0, gid, TokenAccess{Owner: &Owner{UID: 0, GID: 0}, Mode: 0o600}},
+	}
+	for _, tt := range tests {
+		got := TokenAccessFor(tt.euid, tt.systemdVersion, tt.sgid)
+		if got.Mode != tt.want.Mode || (got.Owner == nil) != (tt.want.Owner == nil) || (got.Owner != nil && *got.Owner != *tt.want.Owner) {
+			t.Errorf("%s: TokenAccessFor = %+v (owner %+v), want %+v (owner %+v)", tt.name, got, got.Owner, tt.want, tt.want.Owner)
+		}
+	}
+}
+
+func TestParseSystemdVersion(t *testing.T) {
+	tests := map[string]int{
+		"systemd 239 (239-82.el8)\n+PAM +AUDIT +SELINUX\n": 239,
+		"systemd 252 (252.39-1~deb12u1)\n+PAM +AUDIT\n":    252,
+		"systemd 255 (255.4-1ubuntu8.10)\n":                255,
+		"":                                                 0,
+		"systemctl: command not found\n":                   0,
+		"systemd unknown\n":                                0,
+		"+PAM +AUDIT\nsystemd 239 (on the wrong line)\n":   0,
+	}
+	for out, want := range tests {
+		if got := ParseSystemdVersion(out); got != want {
+			t.Errorf("ParseSystemdVersion(%q) = %d, want %d", out, got, want)
+		}
+	}
+}
+
+func TestSaveTokenReadableByTheServiceGroup(t *testing.T) {
+	dir := t.TempDir()
+	access := TokenAccess{Owner: &Owner{UID: os.Getuid(), GID: os.Getgid()}, Mode: 0o640}
+	if err := SaveToken(dir, "agent-secret", access); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, TokenFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("token mode = %v, want 0640", info.Mode().Perm())
+	}
+	if token, err := LoadToken(dir); err != nil || token != "agent-secret" {
+		t.Fatalf("LoadToken = %q, %v", token, err)
+	}
+}
+
 func TestSavedConfigNeverContainsTheToken(t *testing.T) {
 	dir := t.TempDir()
-	if err := SaveToken(dir, "agent-secret"); err != nil {
+	if err := SaveToken(dir, "agent-secret", TokenAccessFor(os.Geteuid(), 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(dir, validConfig()); err != nil {

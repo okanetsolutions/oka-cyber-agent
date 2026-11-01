@@ -1,0 +1,97 @@
+version: 2
+
+project_name: oka-cyber-agent
+
+builds:
+  - id: oka-cyber-agent
+    main: ./cmd/oka-cyber-agent
+    binary: oka-cyber-agent
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/okanetsolutions/oka-cyber-agent/internal/agent.Version={{ .Tag }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+nfpms:
+  - id: packages
+    package_name: oka-cyber-agent
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: Okanet Solutions
+    homepage: https://github.com/okanetsolutions/oka-cyber-agent
+    maintainer: Okanet Solutions <https://github.com/okanetsolutions>
+    description: Open source server agent that reports installed packages to Oka Cyber.
+    license: Apache-2.0
+    section: admin
+    priority: optional
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    contents:
+      - src: packaging/oka-cyber-agent.service
+        dst: /usr/lib/systemd/system/oka-cyber-agent.service
+        file_info:
+          mode: 0644
+    scripts:
+      preinstall: packaging/preinstall.sh
+      postinstall: packaging/postinstall.sh
+      preremove: packaging/preremove.sh
+      postremove: packaging/postremove.sh
+    rpm:
+      summary: Oka Cyber server agent
+
+checksum:
+  name_template: checksums.txt
+  extra_files:
+    - glob: ./install.sh
+
+sboms:
+  - id: binaries
+    artifacts: binary
+    documents:
+      - "{{ .ArtifactName }}.spdx.json"
+
+signs:
+  - id: checksums
+    cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - --bundle=${signature}
+      - ${artifact}
+      - --yes
+
+release:
+  github:
+    owner: okanetsolutions
+    name: oka-cyber-agent
+  extra_files:
+    - glob: ./install.sh
+  footer: |
+    ## Install
+
+    ```bash
+    curl -fsSL https://github.com/okanetsolutions/oka-cyber-agent/releases/download/{{ .Tag }}/install.sh | sudo sh -s -- --url https://<your tenant> --token <enrollment token>
+    ```
+
+    ## Verify
+
+    ```bash
+    cosign verify-blob --bundle checksums.txt.sigstore.json \
+      --certificate-identity "https://github.com/okanetsolutions/oka-cyber-agent/.github/workflows/release.yml@refs/tags/{{ .Tag }}" \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+    sha256sum --ignore-missing -c checksums.txt
+    ```
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

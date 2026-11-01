@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -17,8 +18,37 @@ import (
 
 const (
 	installedBinaryPath = "/usr/local/bin/oka-cyber-agent"
+	packagedBinaryPath  = "/usr/bin/oka-cyber-agent"
 	installedUnitPath   = "/etc/systemd/system/" + agent.ServiceName
+	serviceUser         = "oka-cyber"
 )
+
+var executablePath = func() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(self)
+}
+
+var geteuid = os.Geteuid
+
+// newUninstaller returns the uninstaller for the real host; self is the resolved path of the running binary.
+var newUninstaller = func(self string) agent.Uninstaller {
+	u := agent.Uninstaller{
+		ConfigDir:  config.DefaultDir,
+		StateDir:   config.DefaultStateDir,
+		UnitPath:   installedUnitPath,
+		User:       serviceUser,
+		Systemctl:  systemctl(),
+		UserExists: userExists,
+		DeleteUser: deleteUser,
+	}
+	if self == installedBinaryPath {
+		u.BinaryPath = installedBinaryPath
+	}
+	return u
+}
 
 func uninstallCommand(ctx context.Context, args []string, io streams) int {
 	flags := flag.NewFlagSet("uninstall", flag.ContinueOnError)
@@ -27,23 +57,18 @@ func uninstallCommand(ctx context.Context, args []string, io streams) int {
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
-	if os.Geteuid() != 0 {
+	self, _ := executablePath()
+	if self == packagedBinaryPath {
+		fmt.Fprintln(io.stderr, "uninstall: this agent was installed from a package. Remove it with your package manager: apt purge oka-cyber-agent, or dnf remove oka-cyber-agent")
+		return exitFailure
+	}
+	if geteuid() != 0 {
 		fmt.Fprintln(io.stderr, "uninstall: run as root, for example: sudo oka-cyber-agent uninstall")
 		return exitFailure
 	}
-	u := agent.Uninstaller{
-		ConfigDir: config.DefaultDir,
-		StateDir:  config.DefaultStateDir,
-		UnitPath:  installedUnitPath,
-	}
-	if self, err := os.Executable(); err == nil {
-		if resolved, err := filepath.EvalSymlinks(self); err == nil && resolved == installedBinaryPath {
-			u.BinaryPath = installedBinaryPath
-		}
-	}
-	u.Systemctl = systemctl()
+	u := newUninstaller(self)
 	if !*yes {
-		fmt.Fprintf(io.stdout, "This stops the agent and removes %s, %s and %s. Continue? [y/N] ", u.ConfigDir, u.StateDir, u.UnitPath)
+		fmt.Fprintf(io.stdout, "This stops the agent and removes %s, %s, %s and the %s user. Continue? [y/N] ", u.ConfigDir, u.StateDir, u.UnitPath, u.User)
 		answer, _ := bufio.NewReader(io.stdin).ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
 			fmt.Fprintln(io.stdout, "Aborted.")
@@ -63,6 +88,18 @@ func uninstallCommand(ctx context.Context, args []string, io streams) int {
 	}
 	fmt.Fprintln(io.stdout, "Oka Cyber Agent is uninstalled. Revoke this server in your Oka Cyber dashboard so its token stops working.")
 	return exitOK
+}
+
+func userExists(name string) bool {
+	_, err := user.Lookup(name)
+	return err == nil
+}
+
+func deleteUser(ctx context.Context, name string) error {
+	if _, err := exec.LookPath("userdel"); err == nil {
+		return exec.CommandContext(ctx, "userdel", name).Run()
+	}
+	return exec.CommandContext(ctx, "deluser", name).Run()
 }
 
 // systemctl returns a runner for systemctl, or nil when systemd is not the running init system (the check

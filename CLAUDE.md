@@ -17,11 +17,12 @@ These are product promises written in the README. A change that breaks one is a 
 - Log events are redacted on the host before they reach the spool (see okanetsolutions/oka-cyber-agent#7). Never send a raw line that has not been through redaction.
 - Never log, print or include in an error the enrollment token or the agent token. Error messages from the API client must not echo request bodies.
 - HTTPS only. `http://` is rejected unless the explicit `--insecure-dev` flag is set for local testing.
-- Install footprint. `install.sh` and the .deb/.rpm maintainer scripts (`postinstall`, `preremove`, `postremove`) make these changes and nothing else:
+- Install footprint. `install.sh` and the .deb/.rpm maintainer scripts (`preinstall`, `postinstall`, `preremove`, `postremove`) make these changes and nothing else:
   - Install the binary (`/usr/local/bin/oka-cyber-agent` from `install.sh`, `/usr/bin/oka-cyber-agent` from a package) and the systemd unit (`/etc/systemd/system/oka-cyber-agent.service` or `/usr/lib/systemd/system/oka-cyber-agent.service`).
   - Create the `oka-cyber` system user (nologin shell, home directory not created) with its own `oka-cyber` group, and add it to the `adm` and `systemd-journal` groups where they exist so it can read auth logs and the journal (okanetsolutions/oka-cyber-agent#7).
-  - Create `/etc/oka-cyber-agent` (through `enroll`) and set the owner and mode of its `token` file. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
-  - Reload systemd and enable, start, stop or disable `oka-cyber-agent.service` only.
+  - Create `/etc/oka-cyber-agent` (through `enroll`, mode 0755 whatever the umask) and set the owner and mode of its `token` file. A deb `remove` of an enabled service leaves the empty marker `/etc/oka-cyber-agent/package-removed`, which the next install deletes. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
+  - Reload systemd and enable, start, restart, stop or disable `oka-cyber-agent.service` only (rerunning `install.sh` and upgrading the package restart it on the new binary, and an upgrade never enables it; a first install of the package on an enrolled host, or a reinstall after a deb `remove` of an enabled service, enables and starts it).
+  - Never both kinds of install on one host: `install.sh` refuses to run when the package is installed (or removed but not purged), and `preinstall` refuses the package when `install.sh` installed the agent, before anything is unpacked.
   - On deb purge or rpm erase only (`rpm -e` or `dnf remove`, not an upgrade), delete both directories, the `oka-cyber` user and its group. A deb `remove` keeps them.
 
 ## Repository Layout
@@ -33,6 +34,9 @@ These are product promises written in the README. A change that breaks one is a 
 - `internal/sqlite`: a minimal read-only reader of SQLite database files, for the dnf history database (release builds have no cgo).
 - `internal/agent`: the run loop (heartbeat, inventory, log shipping) and its persisted state.
 - `testdata` directories next to the code they feed: real sample files, never generated at test time.
+- `install.sh`: the one line installer (POSIX `sh`, it runs as `curl ... | sudo sh -s --`). It embeds the systemd unit, which must stay identical to `packaging/oka-cyber-agent.service` apart from the binary path (`test/install/check-unit.sh` enforces it).
+- `packaging`: the systemd unit and the `.deb`/`.rpm` maintainer scripts used by `.goreleaser.yaml`.
+- `test/faketenant` and `test/install`: a stand in for the agent API and the CI scripts that install, rerun, upgrade and uninstall the agent (script and packages) on Ubuntu, Debian, Rocky and RHEL 8 (systemd 239, without `LoadCredential`).
 
 Update this section in the same PR when a package is added, moved or removed.
 
@@ -74,7 +78,10 @@ gofmt -l .
 go vet ./...
 staticcheck ./...
 go test -race ./...
+shellcheck -s sh install.sh packaging/*.sh test/install/*.sh   # when shell scripts changed
 ```
+
+Installer and packaging changes are verified by the `install` and `packages` CI jobs; to run them locally, start the fake tenant with `sh test/install/prepare.sh` and run `test/install/run.sh` or `test/install/packages.sh` as root in a disposable container (`docker run --rm --network host -v "$PWD:/src:ro" debian:12 sh /src/test/install/run.sh`).
 
 ## Pull Requests
 
