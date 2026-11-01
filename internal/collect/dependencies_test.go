@@ -124,6 +124,68 @@ func TestDependencyDiscovery(t *testing.T) {
 	}
 }
 
+// exclude_paths applies to files as it does to directories: an excluded lock file or executable is never
+// opened, and an excluded lock file still counts as the lock file of the manifest next to it.
+func TestDependencyDiscoveryExcludesFiles(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tree{t, t.TempDir()}
+	tr.copy(lockFixture("bundler/Gemfile.lock"), "/srv/app/Gemfile.lock")
+	tr.write("/srv/app/Gemfile", "")
+	tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/app/Cargo.lock")
+	tr.write("/srv/other/package.json", "{}")
+	tr.copy(self, "/srv/bin/tool")
+	if err := os.Chmod(filepath.Join(tr.root, "/srv/bin/tool"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(tr.root, "/srv/app/Gemfile.lock"), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(tr.root, "/srv/app/Gemfile.lock"), 0o644) })
+	inv, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{
+		ScanPaths:    []string{"/srv"},
+		ExcludePaths: []string{"/srv/app/Gemfile.lock", "/srv/bin/tool/", "/srv/other/package.json"},
+		GoBinaries:   true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]int{"/srv/app/Cargo.lock": 9}; !mapsEqual(manifests(inv), want) {
+		t.Fatalf("manifests = %v, want %v", manifests(inv), want)
+	}
+	// Opening an unreadable excluded file would have listed it as permission_denied (when not root).
+	if len(inv.SkippedFiles) != 0 {
+		t.Fatalf("skipped = %v, want none", inv.SkippedFiles)
+	}
+}
+
+// One version per name reaches the snapshot, and it is the direct one the lock file names, not the first by key.
+func TestDependencyDiscoveryKeepsTheDirectVersion(t *testing.T) {
+	tr := tree{t, t.TempDir()}
+	tr.copy(lockFixture("pnpm-v9-duplicates/pnpm-lock.yaml"), "/srv/web/pnpm-lock.yaml")
+	tr.copy(lockFixture("cargo-duplicates/Cargo.lock"), "/srv/rust/Cargo.lock")
+	inv, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/srv"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"/srv/web/pnpm-lock.yaml emoji-regex": "9.2.2", "/srv/web/pnpm-lock.yaml ansi-regex": "5.0.1", "/srv/rust/Cargo.lock syn": "2.0.119"}
+	for _, p := range inv.Packages {
+		version, ok := want[p.ManifestPath+" "+p.Name]
+		if !ok {
+			continue
+		}
+		if isDirect := p.Direct != nil && *p.Direct; p.Version != version || !isDirect {
+			t.Fatalf("%s %s = %s direct %v, want %s direct", p.ManifestPath, p.Name, p.Version, isDirect, version)
+		}
+		delete(want, p.ManifestPath+" "+p.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing %v", want)
+	}
+}
+
 // max_depth counts path components below the scan path, like find -maxdepth: /srv/a/b/Cargo.lock is at depth 3.
 func TestDependencyDiscoveryHonoursMaxDepth(t *testing.T) {
 	tr := tree{t, t.TempDir()}

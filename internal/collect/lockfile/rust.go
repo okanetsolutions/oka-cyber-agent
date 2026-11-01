@@ -8,7 +8,8 @@ import (
 
 // ParseCargoLock reads Cargo.lock. Only crates from crates.io are reported; workspace members have no source
 // and their dependencies are the direct ones. A dependency is written "name" when the lock holds one version
-// of that crate and "name version" when it holds several.
+// of that crate and "name version" when it holds several, so when a crate is locked in several versions the one
+// a workspace member depends on is the direct one, which Format.Parse keeps.
 func ParseCargoLock(data []byte) (Result, error) {
 	var lock struct {
 		Package []struct {

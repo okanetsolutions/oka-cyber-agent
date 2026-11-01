@@ -106,8 +106,14 @@ func (s *scan) run(ctx context.Context) error {
 			return s.directory(rel, hostPath, d)
 		}
 		format, isLockFile := lockfile.ForFile(d.Name())
-		if _, isManifest := lockfile.Manifests[d.Name()]; isLockFile || isManifest {
+		_, isManifest := lockfile.Manifests[d.Name()]
+		excluded := isExcluded(hostPath, s.options.ExcludePaths)
+		// An excluded lock file is never opened, but it still resolves the manifests next to it.
+		if isLockFile || isManifest && !excluded {
 			s.dirs[path.Dir(rel)] = append(s.dirs[path.Dir(rel)], d.Name())
+		}
+		if excluded {
+			return nil
 		}
 		if isLockFile {
 			s.lockFile(rel, hostPath, format, d.Type()&fs.ModeSymlink != 0)

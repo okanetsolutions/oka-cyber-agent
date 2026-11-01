@@ -1,8 +1,10 @@
 package lockfile
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -18,6 +20,13 @@ var (
 	unknown *bool
 )
 
+// When a name is locked in several versions, the direct one is kept where the file says which it is, the one
+// the project's own range asks for in yarn, and otherwise the highest.
+var (
+	pnpmDuplicates = []spot{{"ansi-regex", "5.0.1", yes}, {"strip-ansi", "7.2.0", yes}, {"wrap-ansi", "8.1.0", yes}, {"string-width", "5.1.2", no}, {"emoji-regex", "9.2.2", yes}, {"ansi-styles", "6.2.3", no}}
+	yarnDuplicates = []spot{{"ansi-regex", "5.0.1", unknown}, {"strip-ansi", "7.2.0", unknown}, {"wrap-ansi", "8.1.0", unknown}, {"string-width", "5.1.2", unknown}, {"emoji-regex", "9.2.2", unknown}, {"ansi-styles", "6.2.3", unknown}}
+)
+
 func TestParsersAgainstRealLockFiles(t *testing.T) {
 	tests := []struct {
 		fixture    string
@@ -26,15 +35,25 @@ func TestParsersAgainstRealLockFiles(t *testing.T) {
 		spots      []spot
 	}{
 		{"composer/composer.lock", 7, 0, []spot{{"monolog/monolog", "3.12.1", unknown}, {"symfony/deprecation-contracts", "3.7.1", unknown}, {"phpunit/php-timer", "", unknown}}},
-		{"npm-v3/package-lock.json", 74, 0, []spot{{"express", "4.19.2", yes}, {"@sentry/node", "7.100.0", yes}, {"lodash", "4.17.20", yes}, {"accepts", "1.3.8", no}}},
-		{"npm-shrinkwrap/npm-shrinkwrap.json", 74, 0, []spot{{"express", "4.19.2", yes}}},
+		{"npm-v3/package-lock.json", 73, 0, []spot{{"express", "4.19.2", yes}, {"@sentry/node", "7.100.0", yes}, {"lodash", "4.17.20", yes}, {"accepts", "1.3.8", no}}},
+		{"npm-shrinkwrap/npm-shrinkwrap.json", 73, 0, []spot{{"express", "4.19.2", yes}}},
 		{"npm-v1/package-lock.json", -1, 0, []spot{{"express", "4.17.1", unknown}, {"mocha", "8.0.1", unknown}}},
-		{"yarn-v1/yarn.lock", 80, 0, []spot{{"express", "4.19.2", unknown}, {"@babel/code-frame", "7.24.2", unknown}}},
-		{"yarn-v1-sources/yarn.lock", 12, 0, []spot{{"string-width", "4.2.3", unknown}, {"@types/node", "20.19.43", unknown}, {"undici-types", "6.21.0", unknown}}},
-		{"yarn-berry/yarn.lock", 87, 0, []spot{{"express", "4.19.2", unknown}, {"resolve", "1.22.8", unknown}}},
-		{"pnpm-v5/pnpm-lock.yaml", 73, 0, []spot{{"express", "4.18.2", yes}, {"react-dom", "18.2.0", yes}, {"accepts", "1.3.8", no}}},
-		{"pnpm-v6/pnpm-lock.yaml", 74, 0, []spot{{"express", "4.19.2", yes}, {"react-dom", "18.3.1", yes}, {"typescript", "5.4.5", yes}, {"accepts", "1.3.8", no}}},
-		{"pnpm-v9/pnpm-lock.yaml", 74, 0, []spot{{"express", "4.19.2", yes}, {"react-dom", "18.3.1", yes}, {"typescript", "5.4.5", yes}, {"accepts", "1.3.8", no}}},
+		{"yarn-v1/yarn.lock", 79, 0, []spot{{"express", "4.19.2", unknown}, {"@babel/code-frame", "7.24.2", unknown}}},
+		{"yarn-v1-sources/yarn.lock", 8, 0, []spot{{"string-width", "5.1.2", unknown}, {"@types/node", "20.19.43", unknown}, {"undici-types", "6.21.0", unknown}}},
+		{"yarn-berry/yarn.lock", 86, 0, []spot{{"express", "4.19.2", unknown}, {"resolve", "1.22.8", unknown}}},
+		{"pnpm-v5/pnpm-lock.yaml", 72, 0, []spot{{"express", "4.18.2", yes}, {"react-dom", "18.2.0", yes}, {"accepts", "1.3.8", no}}},
+		{"pnpm-v6/pnpm-lock.yaml", 73, 0, []spot{{"express", "4.19.2", yes}, {"react-dom", "18.3.1", yes}, {"typescript", "5.4.5", yes}, {"accepts", "1.3.8", no}}},
+		{"pnpm-v9/pnpm-lock.yaml", 73, 0, []spot{{"express", "4.19.2", yes}, {"react-dom", "18.3.1", yes}, {"typescript", "5.4.5", yes}, {"accepts", "1.3.8", no}}},
+		// One project locked by npm 10, pnpm 7, 8 and 9, yarn 1.22 and yarn 4: it depends on ansi-regex ^5 while
+		// strip-ansi 7 pulls ansi-regex 6, on emoji-regex ^9 while cliui pulls emoji-regex 8, and cliui pulls older
+		// string-width and ansi-styles than wrap-ansi 8 does. It also installs is-positive from git, left-pad from a tarball URL and tarlib from a
+		// file: tarball, which are not registry releases.
+		{"npm-duplicates/package-lock.json", 11, 3, []spot{{"ansi-regex", "5.0.1", yes}, {"strip-ansi", "7.2.0", yes}, {"wrap-ansi", "8.1.0", yes}, {"string-width", "4.2.3", no}, {"emoji-regex", "9.2.2", yes}, {"ansi-styles", "6.2.3", no}}},
+		{"pnpm-v5-duplicates/pnpm-lock.yaml", 11, 4, pnpmDuplicates},
+		{"pnpm-v6-duplicates/pnpm-lock.yaml", 11, 4, pnpmDuplicates},
+		{"pnpm-v9-duplicates/pnpm-lock.yaml", 11, 4, pnpmDuplicates},
+		{"yarn-v1-duplicates/yarn.lock", 11, 0, yarnDuplicates},
+		{"yarn-berry-duplicates/yarn.lock", 11, 0, yarnDuplicates},
 		{"poetry-1/poetry.lock", 14, 0, []spot{{"django", "4.2.11", unknown}, {"requests", "2.31.0", unknown}, {"pytest", "8.1.1", unknown}}},
 		{"poetry-2/poetry.lock", 14, 0, []spot{{"django", "4.2.11", unknown}, {"requests", "2.31.0", unknown}}},
 		{"poetry-sources/poetry.lock", 4, 0, []spot{{"idna", "3.7", unknown}, {"urllib3", "2.8.0", unknown}}},
@@ -44,9 +63,12 @@ func TestParsersAgainstRealLockFiles(t *testing.T) {
 		{"requirements-hashes/requirements.txt", 12, 0, []spot{{"requests", "2.31.0", unknown}, {"charset-normalizer", "3.5.2", unknown}}},
 		{"requirements-freeze/requirements.txt", 12, 0, []spot{{"pyproject-hooks", "1.3.3", unknown}}},
 		{"requirements-mixed/requirements.txt", 5, 4, []spot{{"django", "4.2.11", unknown}, {"django-environ", "0.11.2", unknown}, {"psycopg2-binary", "2.9.9", unknown}, {"requests", "2.31.0", unknown}, {"pillow", "10.3.0", unknown}}},
-		{"bundler/Gemfile.lock", 14, 0, []spot{{"sinatra", "4.0.0", yes}, {"nokogiri", "1.16.4", yes}, {"rack", "3.0.10", yes}, {"tilt", "2.9.0", no}}},
+		{"bundler/Gemfile.lock", 9, 0, []spot{{"sinatra", "4.0.0", yes}, {"nokogiri", "1.16.4", yes}, {"rack", "3.0.10", yes}, {"tilt", "2.9.0", no}}},
 		{"gomod/go.mod", 25, 0, []spot{{"github.com/gin-gonic/gin", "1.9.1", yes}, {"golang.org/x/text", "0.14.0", yes}, {"golang.org/x/net", "0.10.0", no}, {"github.com/ugorji/go/codec", "1.2.12", no}}},
 		{"cargo/Cargo.lock", 9, 0, []spot{{"serde", "1.0.229", yes}, {"tokio", "1.54.1", yes}, {"proc-macro2", "", no}}},
+		// Cargo 1.x: the project depends on syn 2 while thiserror-impl pulls syn 1 and clap_derive syn 3, and on
+		// heck 0.4 while clap_derive pulls heck 0.5.
+		{"cargo-duplicates/Cargo.lock", -1, 0, []spot{{"syn", "2.0.119", yes}, {"heck", "0.4.1", yes}, {"thiserror-impl", "1.0.30", no}}},
 		{"gradle/gradle.lockfile", 11, 0, []spot{{"org.apache.logging.log4j:log4j-core", "2.14.1", unknown}, {"com.google.guava:guava", "32.1.3-jre", unknown}}},
 		{"maven/pom.xml", 3, 3, []spot{{"org.apache.logging.log4j:log4j-core", "2.14.1", yes}, {"org.postgresql:postgresql", "42.7.3", yes}, {"junit:junit", "4.13.2", yes}}},
 		{"nuget/packages.lock.json", 8, 0, []spot{{"Newtonsoft.Json", "13.0.3", yes}, {"Serilog", "3.1.1", yes}, {"Microsoft.Extensions.Primitives", "8.0.0", no}}},
@@ -71,7 +93,12 @@ func TestParsersAgainstRealLockFiles(t *testing.T) {
 			if r.Unresolved != tt.unresolved {
 				t.Errorf("unresolved = %d, want %d", r.Unresolved, tt.unresolved)
 			}
+			names := map[string]bool{}
 			for _, d := range r.Dependencies {
+				if names[d.Name] {
+					t.Errorf("%s is reported more than once", d.Name)
+				}
+				names[d.Name] = true
 				if d.Name == "" || strings.ContainsAny(d.Name+d.Version, " \t\n") || !looksLikeVersion(d.Version) {
 					t.Errorf("invalid dependency %+v", d)
 				}
@@ -96,9 +123,9 @@ func TestParsersAgainstRealLockFiles(t *testing.T) {
 func TestNPMLockPrefersHoistedVersion(t *testing.T) {
 	data := []byte(`{"lockfileVersion":3,"packages":{
 		"":{"dependencies":{"a":"^1.0.0"}},
-		"node_modules/a":{"version":"1.0.0"},
-		"node_modules/a/node_modules/b":{"version":"2.0.0"},
-		"node_modules/b":{"version":"1.5.0"},
+		"node_modules/a":{"version":"1.0.0","resolved":"https://registry.npmjs.org/a/-/a-1.0.0.tgz"},
+		"node_modules/a/node_modules/b":{"version":"2.0.0","resolved":"https://registry.npmjs.org/b/-/b-2.0.0.tgz"},
+		"node_modules/b":{"version":"1.5.0","resolved":"https://registry.npmjs.org/b/-/b-1.5.0.tgz"},
 		"node_modules/c":{"version":"file:../c"},
 		"node_modules/local":{"resolved":"packages/local","link":true},
 		"packages/local":{"version":"0.0.1"}
@@ -108,13 +135,67 @@ func TestNPMLockPrefersHoistedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b, _ := first(r.Dependencies, "b"); b.Version != "1.5.0" || *b.Direct {
-		t.Fatalf("b = %+v, want the hoisted 1.5.0 first, transitive", b)
+		t.Fatalf("b = %+v, want the hoisted 1.5.0, transitive", b)
 	}
 	if _, found := first(r.Dependencies, "local"); found {
 		t.Fatal("workspace links are the project's own code")
 	}
 	if r.Unresolved != 1 {
 		t.Fatalf("unresolved = %d, want the file: dependency", r.Unresolved)
+	}
+}
+
+func TestNPMRegistryReleases(t *testing.T) {
+	tests := []struct {
+		name     string
+		p        npmPackage
+		registry bool
+	}{
+		{"lodash", npmPackage{Resolved: "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"}, true},
+		{"@babel/core", npmPackage{Resolved: "https://registry.npmjs.org/@babel/core/-/core-7.24.4.tgz"}, true},
+		{"@acme/ui", npmPackage{Resolved: "https://npm.acme.test/repository/npm/@acme%2fui/-/ui-1.0.0.tgz"}, true},
+		{"lodash", npmPackage{Resolved: "http://verdaccio.internal:4873/lodash/-/lodash-4.17.21.tgz"}, true},
+		{"lodash", npmPackage{Integrity: "sha512-x"}, true},
+		{"lodash", npmPackage{InBundle: true}, true},
+		{"lodash", npmPackage{}, false},
+		{"lodash", npmPackage{Resolved: "git+ssh://git@github.com/acme/lodash.git#abc123", Integrity: "sha512-x"}, false},
+		{"left-pad", npmPackage{Resolved: "https://codeload.github.com/stevemao/left-pad/tar.gz/v1.3.0", Integrity: "sha512-x"}, false},
+		{"lodash", npmPackage{Resolved: "https://example.test/forks/lodash-4.17.21.tgz"}, false},
+		{"lodash", npmPackage{Resolved: "https://registry.npmjs.org/other/-/other-1.0.0.tgz"}, false},
+		{"tarlib", npmPackage{Resolved: "file:vendor/tarlib-1.0.0.tgz", Integrity: "sha512-x"}, false},
+	}
+	for _, tt := range tests {
+		if got := npmFromRegistry(tt.p, tt.name); got != tt.registry {
+			t.Errorf("npmFromRegistry(%s, %+v) = %v, want %v", tt.name, tt.p, got, tt.registry)
+		}
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	ordered := []string{"0.9", "1.0.0-alpha", "1.0.0-rc.1", "1.0.0", "1.0.1", "1.9.3", "1.10.0", "2.0.0", "10.0.0", "99999999999999999999999.0"}
+	for i := range ordered {
+		for j := range ordered {
+			if got, want := compareVersions(ordered[i], ordered[j]), cmp.Compare(i, j); got != want {
+				t.Errorf("compareVersions(%s, %s) = %d, want %d", ordered[i], ordered[j], got, want)
+			}
+		}
+	}
+	if compareVersions("1.0", "1.0.0") == 0 {
+		t.Error("versions that differ only in form must still have a fixed order")
+	}
+}
+
+func TestOnePerNamePrefersRankThenHighestVersion(t *testing.T) {
+	got := onePerName([]candidate{
+		{Dependency{Name: "a", Version: "1.0.0"}, 1},
+		{Dependency{Name: "a", Version: "3.0.0"}, 1},
+		{Dependency{Name: "a", Version: "2.0.0"}, 0},
+		{Dependency{Name: "b", Version: "1.0.0"}, 2},
+		{Dependency{Name: "b", Version: "1.2.0"}, 2},
+	})
+	want := []Dependency{{Name: "a", Version: "2.0.0"}, {Name: "b", Version: "1.2.0"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("onePerName = %+v, want %+v", got, want)
 	}
 }
 
@@ -136,13 +217,21 @@ func TestNPMV1PrefersTopLevelVersion(t *testing.T) {
 	}
 }
 
-// Real lock files from yarn 1.22, Poetry 2.2 and uv 0.9 with an npm alias, a scoped alias, a tarball URL, a git
-// dependency, a URL and a local directory: only registry packages are reported, under their registry names.
+// Real lock files from npm 10, pnpm 7 to 9, yarn 1.22 and 4, Poetry 2.2 and uv 0.9 with an npm alias, a scoped
+// alias, a tarball URL, a git dependency, a URL, a file: tarball and a local directory: only registry packages
+// are reported, under their registry names. npm records the package.json version of a git or tarball install,
+// and pnpm before 9.x keys a git package by host and commit (github.com/kevva/is-positive/97edff6f...), whose
+// last segment starts with a digit like a version does.
 func TestNonRegistrySourcesAreLeftOut(t *testing.T) {
 	for fixture, names := range map[string][]string{
-		"yarn-v1-sources/yarn.lock":  {"string-width-cjs", "node-types", "@sindresorhus/is", "left-pad", "local-lib"},
-		"poetry-sources/poetry.lock": {"requests", "six", "locallib"},
-		"uv-sources/uv.lock":         {"requests", "six", "locallib", "app"},
+		"yarn-v1-sources/yarn.lock":         {"string-width-cjs", "node-types", "@sindresorhus/is", "left-pad", "local-lib"},
+		"poetry-sources/poetry.lock":        {"requests", "six", "locallib"},
+		"uv-sources/uv.lock":                {"requests", "six", "locallib", "app"},
+		"npm-duplicates/package-lock.json":  {"is-positive", "left-pad", "tarlib", "local-lib"},
+		"pnpm-v5-duplicates/pnpm-lock.yaml": {"is-positive", "github.com/kevva/is-positive", "left-pad", "tarlib", "local-lib"},
+		"pnpm-v6-duplicates/pnpm-lock.yaml": {"is-positive", "github.com/kevva/is-positive", "left-pad", "tarlib", "local-lib"},
+		"pnpm-v9-duplicates/pnpm-lock.yaml": {"is-positive", "left-pad", "tarlib", "local-lib"},
+		"yarn-berry-duplicates/yarn.lock":   {"is-positive", "tarlib", "local-lib"},
 	} {
 		format, _ := ForFile(filepath.Base(fixture))
 		data, err := os.ReadFile(filepath.Join("testdata", fixture))
