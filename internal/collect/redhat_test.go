@@ -2,10 +2,13 @@ package collect
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 	"testing"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/sqlite"
 )
 
 // The rhel-9 host is a UBI 9 container: its image packages came from the RHEL CDN, httpd was installed from
@@ -57,27 +60,47 @@ func rhel9RootWithHistory(t *testing.T, history []byte) string {
 	return root
 }
 
-func TestRPMRHEL9WithoutUsableHistoryKeepsTheOSEcosystem(t *testing.T) {
+// A host without a dnf history keeps the OS ecosystem for every package. A history that exists but cannot be read
+// fails the inventory instead, so the server keeps the last snapshot rather than getting every AppStream package
+// relabelled BaseOS for one cycle.
+func TestRPMRHEL9HistoryOnlyFallsBackWhenMissing(t *testing.T) {
 	real, err := os.ReadFile(filepath.Join(hostRoot("rhel-9"), dnfHistoryPath))
 	if err != nil {
 		t.Fatal(err)
 	}
-	histories := map[string][]byte{
-		"missing":   nil,
-		"garbage":   []byte("not a database"),
-		"truncated": real[:16*1024],
+	// The magic number that starts a rollback journal while its transaction is not committed.
+	hotJournal := append([]byte{0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7}, make([]byte, 504)...)
+	tests := map[string]struct {
+		history, journal []byte
+		wantErr          error
+	}{
+		"missing":       {nil, nil, nil},
+		"garbage":       {[]byte("not a database"), nil, sqlite.ErrMalformed},
+		"truncated":     {real[:16*1024], nil, sqlite.ErrMalformed},
+		"being written": {real, hotJournal, sqlite.ErrBusy},
 	}
-	for name, history := range histories {
+	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			root := rhel9RootWithHistory(t, history)
+			root := rhel9RootWithHistory(t, tt.history)
+			if tt.journal != nil {
+				if err := os.WriteFile(filepath.Join(root, dnfHistoryPath+"-journal"), tt.journal, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			inv, err := Run(context.Background(),
 				OSCollector{Root: root, Uname: fixedUname},
 				RPMCollector{Root: root, Run: func(context.Context, string, ...string) ([]byte, error) {
 					return os.ReadFile(filepath.Join("testdata", "rpm", "rhel-9.txt"))
 				}},
 			)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) || inv != nil {
+					t.Fatalf("Run = %v, %v; want no inventory and %v", inv, err, tt.wantErr)
+				}
+				return
+			}
 			if err != nil {
-				t.Fatalf("Run = %v; an unusable dnf history must not fail the inventory", err)
+				t.Fatalf("Run = %v; a host without dnf history must not fail the inventory", err)
 			}
 			if len(inv.Packages) != 201 {
 				t.Fatalf("packages = %d, want 201", len(inv.Packages))

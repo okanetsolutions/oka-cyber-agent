@@ -2,6 +2,9 @@ package collect
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -26,11 +29,10 @@ type rpmNEVRA struct {
 // Swdb::getRPMRepo). It reads the rpm, trans_item and repo tables only, never the recorded command lines or
 // console output.
 func dnfRepositories(ctx context.Context, root string) (map[rpmNEVRA]string, error) {
-	db, err := sqlite.Open(filepath.Join(root, dnfHistoryPath))
+	db, err := sqlite.Open(ctx, filepath.Join(root, dnfHistoryPath))
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
 
 	repos := map[int64]string{}
 	err = db.Scan(ctx, "repo", []string{"id", "repoid"}, func(row []any) error {
@@ -93,14 +95,18 @@ func dnfRepositories(ctx context.Context, root string) (map[rpmNEVRA]string, err
 	return repositories, nil
 }
 
-// assignRedHatEcosystems gives each package the OSV.dev ecosystem of the repository it was installed from. The
-// history database only refines the OS ecosystem every package already has, so when it is missing or unreadable,
-// or a package is not in it (installed with rpm -i or by an image builder) or comes from a repository without an
-// OSV ecosystem, the package keeps the OS ecosystem: BaseOS on RHEL 8 and 9, where the base system comes from.
+// assignRedHatEcosystems gives each package the OSV.dev ecosystem of the repository it was installed from. When
+// the host has no history database, or a package is not in it (installed with rpm -i or by an image builder) or
+// comes from a repository without an OSV ecosystem, the package keeps the OS ecosystem: BaseOS on RHEL 8 and 9,
+// where the base system comes from. A history database that exists but cannot be read fails the collection
+// instead: the ecosystem is part of the package identity on the server, which would replace every AppStream
+// package with a BaseOS one and close its findings, then do the reverse on the next good read.
 func assignRedHatEcosystems(ctx context.Context, root, versionID string, packages []Package) error {
 	repositories, err := dnfRepositories(ctx, root)
-	if err != nil {
-		return ctx.Err()
+	if errors.Is(err, fs.ErrNotExist) {
+		repositories = nil
+	} else if err != nil {
+		return fmt.Errorf("dnf history %s: %w", dnfHistoryPath, err)
 	}
 	for i, p := range packages {
 		if ecosystem := redHatPackageEcosystem(versionID, repositories[rpmNEVRA{p.Name, p.Version, p.Architecture}]); ecosystem != "" {

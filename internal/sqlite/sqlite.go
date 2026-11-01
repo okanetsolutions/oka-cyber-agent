@@ -2,9 +2,11 @@
 // cgo, and the pure Go SQLite drivers are far larger than reading a few tables needs, so this follows the documented
 // file format (https://www.sqlite.org/fileformat2.html) instead.
 //
-// It is read only: it opens the database and its write-ahead log with O_RDONLY, never takes a lock and ignores the
-// shared memory index. It applies the committed frames of the write-ahead log, as SQLite's own recovery does, so
-// it sees transactions that were not checkpointed yet. It reads rowid tables with UTF-8 text only.
+// It is read only: it opens the database, its write-ahead log and its rollback journal with O_RDONLY, never takes
+// a lock and never touches the shared memory index. Without a lock a writer can commit or checkpoint while the files
+// are read, so Open copies them into memory and keeps the copy only when they did not change during the read. It
+// applies the committed frames of the write-ahead log, as SQLite's own recovery does, so it sees transactions that
+// were not checkpointed yet. It reads rowid tables with UTF-8 text only.
 package sqlite
 
 import (
@@ -13,56 +15,171 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"os"
 	"strings"
+	"time"
 )
 
-// ErrMalformed means the file is not a database this reader understands, or was changed while it was read.
+// ErrMalformed means the files are not a database this reader understands, or the database is damaged on disk.
+// A database that changes while Open reads it is not reported as malformed: Open reads it again, then returns
+// ErrBusy.
 var ErrMalformed = errors.New("malformed database")
+
+// ErrBusy means that Open never got a consistent copy of the database: on every attempt a writer changed its files
+// during the read, or a rollback journal held a transaction that was not committed.
+var ErrBusy = errors.New("database is being written")
+
+var errChanged = errors.New("changed while it was read")
 
 const (
 	headerMagic   = "SQLite format 3\x00"
+	journalMagic  = "\xd9\xd5\x05\xf9\x20\xa1\x63\xd7"
 	walMagicLE    = 0x377f0682
 	walMagicBE    = 0x377f0683
 	walVersion    = 3007000
 	walHeaderSize = 32
 	walFrameSize  = 24
 	maxTreeDepth  = 32
+	readAttempts  = 5
 
 	pageInteriorTable = 0x05
 	pageLeafTable     = 0x0d
 )
 
+// retryDelay is the wait before the second read of a database that changed; it doubles before each later one.
+var retryDelay = 100 * time.Millisecond
+
+// afterMainRead runs between the reads of the main file and of the write-ahead log, so tests can change the files
+// there as a concurrent writer would.
+var afterMainRead = func() {}
+
+// DB is a consistent copy of a database, held in memory.
 type DB struct {
-	file     *os.File
-	wal      *os.File
+	main     []byte
+	wal      []byte
 	pageSize int
 	usable   int
 	pages    uint32
-	// walPages maps a page number to the offset of its latest committed copy in the write-ahead log.
-	walPages map[uint32]int64
+	// walPages maps a page number to the offset of its latest committed copy in wal.
+	walPages map[uint32]int
 }
 
-func Open(path string) (*DB, error) {
+// Open reads a consistent copy of the database at path and of its write-ahead log into memory, retrying with a
+// short backoff while a writer changes them, and returns ErrBusy when every attempt saw a change. The main file is
+// read before the log: a checkpoint that rewrites pages of the main file during the read copies them from the log,
+// so the log read afterwards still holds every one of them, unless the log was restarted in between, which changes
+// its header.
+func Open(ctx context.Context, path string) (*DB, error) {
+	delay := retryDelay
+	for attempt := 1; ; attempt++ {
+		db, err := readConsistent(path)
+		if !errors.Is(err, errChanged) {
+			return db, err
+		}
+		if attempt == readAttempts {
+			return nil, fmt.Errorf("%w: %d reads: %w", ErrBusy, attempt, err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
+}
+
+func readConsistent(path string) (*DB, error) {
+	before, err := readFileState(path)
+	if err != nil {
+		return nil, err
+	}
+	main, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	afterMainRead()
+	wal, err := os.ReadFile(path + "-wal")
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("write-ahead log: %w", err)
+	}
+	after, err := readFileState(path)
+	if err != nil {
+		return nil, err
+	}
+	if before.hotJournal || after.hotJournal {
+		return nil, fmt.Errorf("%w: the rollback journal holds an uncommitted transaction", errChanged)
+	}
+	if !before.same(after) {
+		return nil, errChanged
+	}
+	return parse(main, wal)
+}
+
+// fileState is what a writer changes in the files of a database. A commit in rollback journal mode, and a
+// checkpoint that copies page 1, change the change counter in the main file header; any write to the main file
+// changes its modification time; restarting the write-ahead log after a checkpoint gives it new salts, and so a
+// new header. Appending frames to the log changes none of these, and needs not to: a frame being written fails
+// its checksum and the frames before it stay valid.
+type fileState struct {
+	main       os.FileInfo
+	mainHeader string
+	walHeader  string
+	hotJournal bool
+}
+
+func readFileState(path string) (fileState, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileState{}, err
+	}
+	mainHeader, err := readPrefix(path, 100)
+	if err != nil {
+		return fileState{}, err
+	}
+	walHeader, err := readPrefix(path+"-wal", walHeaderSize)
+	if err != nil {
+		return fileState{}, fmt.Errorf("write-ahead log: %w", err)
+	}
+	// A rollback journal starts with its magic number only while it holds pages of a transaction that has not
+	// committed: SQLite deletes it, truncates it or zeroes its header when the transaction ends.
+	journal, err := readPrefix(path+"-journal", len(journalMagic))
+	if err != nil {
+		return fileState{}, fmt.Errorf("rollback journal: %w", err)
+	}
+	return fileState{main: info, mainHeader: mainHeader, walHeader: walHeader, hotJournal: journal == journalMagic}, nil
+}
+
+// readPrefix returns up to n bytes from the start of the file at path, or "" when there is no such file.
+func readPrefix(path string, n int) (string, error) {
 	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
 	}
-	db, err := open(file, path)
 	if err != nil {
-		file.Close()
-		return nil, err
+		return "", err
 	}
-	return db, nil
+	defer file.Close()
+	b := make([]byte, n)
+	read, err := io.ReadFull(file, b)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", err
+	}
+	return string(b[:read]), nil
 }
 
-func open(file *os.File, path string) (*DB, error) {
-	header := make([]byte, 100)
-	if _, err := file.ReadAt(header, 0); err != nil {
-		return nil, fmt.Errorf("%w: header: %w", ErrMalformed, err)
+func (s fileState) same(other fileState) bool {
+	return os.SameFile(s.main, other.main) && s.main.Size() == other.main.Size() &&
+		s.main.ModTime().Equal(other.main.ModTime()) && s.mainHeader == other.mainHeader && s.walHeader == other.walHeader
+}
+
+func parse(main, wal []byte) (*DB, error) {
+	if len(main) < 100 {
+		return nil, fmt.Errorf("%w: header: file is %d bytes", ErrMalformed, len(main))
 	}
+	header := main[:100]
 	if string(header[:16]) != headerMagic {
 		return nil, fmt.Errorf("%w: not an SQLite 3 database", ErrMalformed)
 	}
@@ -77,52 +194,28 @@ func open(file *os.File, path string) (*DB, error) {
 	if usable < 480 {
 		return nil, fmt.Errorf("%w: usable page size %d", ErrMalformed, usable)
 	}
-	if encoding := binary.BigEndian.Uint32(header[56:60]); encoding != 1 {
-		return nil, fmt.Errorf("%w: text encoding %d is not UTF-8", ErrMalformed, encoding)
-	}
-	info, err := file.Stat()
+	db := &DB{main: main, pageSize: pageSize, usable: usable, pages: uint32(min(int64(len(main)/pageSize), math.MaxUint32))}
+	db.indexWAL(wal)
+	// SQLite sets the text encoding when it creates the first table. In a database switched to WAL mode before
+	// that, only the copy of page 1 in the log has it until a checkpoint, so it is read from the latest copy.
+	first, err := db.page(1)
 	if err != nil {
 		return nil, err
 	}
-	db := &DB{file: file, pageSize: pageSize, usable: usable, pages: uint32(min(info.Size()/int64(pageSize), math.MaxUint32))}
-	if err := db.openWAL(path + "-wal"); err != nil {
-		return nil, err
+	if encoding := binary.BigEndian.Uint32(first[56:60]); encoding != 1 {
+		return nil, fmt.Errorf("%w: text encoding %d is not UTF-8", ErrMalformed, encoding)
 	}
 	return db, nil
 }
 
-func (db *DB) Close() error {
-	if db.wal != nil {
-		db.wal.Close()
-	}
-	return db.file.Close()
-}
-
-// openWAL indexes the frames of the write-ahead log up to its last valid commit. A frame is valid when its salt
+// indexWAL indexes the frames of the write-ahead log up to its last valid commit. A frame is valid when its salt
 // matches the log header and its cumulative checksum is right: frames left over from before the last checkpoint
 // carry an old salt, and a frame being written fails the checksum, so both are ignored as SQLite ignores them.
-func (db *DB) openWAL(path string) error {
-	wal, err := os.Open(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+func (db *DB) indexWAL(wal []byte) {
+	if len(wal) < walHeaderSize {
+		return
 	}
-	if err != nil {
-		return fmt.Errorf("write-ahead log: %w", err)
-	}
-	committed, pages := db.readWAL(wal)
-	if len(committed) == 0 {
-		wal.Close()
-		return nil
-	}
-	db.wal, db.walPages, db.pages = wal, committed, pages
-	return nil
-}
-
-func (db *DB) readWAL(wal *os.File) (map[uint32]int64, uint32) {
-	header := make([]byte, walHeaderSize)
-	if _, err := wal.ReadAt(header, 0); err != nil {
-		return nil, 0
-	}
+	header := wal[:walHeaderSize]
 	var order binary.ByteOrder
 	switch binary.BigEndian.Uint32(header[0:4]) {
 	case walMagicLE:
@@ -130,25 +223,23 @@ func (db *DB) readWAL(wal *os.File) (map[uint32]int64, uint32) {
 	case walMagicBE:
 		order = binary.BigEndian
 	default:
-		return nil, 0
+		return
 	}
 	if binary.BigEndian.Uint32(header[4:8]) != walVersion || int(binary.BigEndian.Uint32(header[8:12])) != db.pageSize {
-		return nil, 0
+		return
 	}
 	s0, s1 := walChecksum(order, header[:24], 0, 0)
 	if s0 != binary.BigEndian.Uint32(header[24:28]) || s1 != binary.BigEndian.Uint32(header[28:32]) {
-		return nil, 0
+		return
 	}
 	salt := header[16:24]
 
-	committed := map[uint32]int64{}
-	pending := map[uint32]int64{}
+	committed := map[uint32]int{}
+	pending := map[uint32]int{}
 	var pages uint32
-	frame := make([]byte, walFrameSize+db.pageSize)
-	for offset := int64(walHeaderSize); ; offset += int64(len(frame)) {
-		if _, err := wal.ReadAt(frame, offset); err != nil {
-			break
-		}
+	frameSize := walFrameSize + db.pageSize
+	for offset := walHeaderSize; offset+frameSize <= len(wal); offset += frameSize {
+		frame := wal[offset : offset+frameSize]
 		if !bytes.Equal(frame[8:16], salt) {
 			break
 		}
@@ -170,7 +261,10 @@ func (db *DB) readWAL(wal *os.File) (map[uint32]int64, uint32) {
 			pages = size
 		}
 	}
-	return committed, pages
+	if len(committed) == 0 {
+		return
+	}
+	db.wal, db.walPages, db.pages = wal, committed, pages
 }
 
 func walChecksum(order binary.ByteOrder, b []byte, s0, s1 uint32) (uint32, uint32) {
@@ -181,21 +275,19 @@ func walChecksum(order binary.ByteOrder, b []byte, s0, s1 uint32) (uint32, uint3
 	return s0, s1
 }
 
+// page returns page n of the copy, which callers must not modify.
 func (db *DB) page(n uint32) ([]byte, error) {
 	if n == 0 || n > db.pages {
 		return nil, fmt.Errorf("%w: page %d out of range", ErrMalformed, n)
 	}
-	buf := make([]byte, db.pageSize)
-	var err error
 	if at, ok := db.walPages[n]; ok {
-		_, err = db.wal.ReadAt(buf, at)
-	} else {
-		_, err = db.file.ReadAt(buf, int64(n-1)*int64(db.pageSize))
+		return db.wal[at : at+db.pageSize], nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("%w: page %d: %w", ErrMalformed, n, err)
+	at := int64(n-1) * int64(db.pageSize)
+	if at+int64(db.pageSize) > int64(len(db.main)) {
+		return nil, fmt.Errorf("%w: page %d is past the end of the file", ErrMalformed, n)
 	}
-	return buf, nil
+	return db.main[at : at+int64(db.pageSize)], nil
 }
 
 // Scan calls fn with the values of columns for every row of table, in rowid order. Values are nil, int64,
