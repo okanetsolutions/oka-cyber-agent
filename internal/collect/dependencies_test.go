@@ -259,6 +259,9 @@ func TestGoBinariesOnlyWhenEnabled(t *testing.T) {
 		t.Skip("the test binary has no build information")
 	}
 	want := map[string]bool{"stdlib": true}
+	if p, ok := goModulePackage(&selfInfo.Main, ""); ok {
+		want[p.Name] = true
+	}
 	for _, dep := range selfInfo.Deps {
 		want[dep.Path] = true
 	}
@@ -274,6 +277,72 @@ func TestGoBinariesOnlyWhenEnabled(t *testing.T) {
 	}
 	if !mapsEqualBool(got, want) {
 		t.Fatalf("modules = %v, want %v", got, want)
+	}
+}
+
+// The build information of real binaries, as debug/buildinfo reads it: staticcheck installed with go install at
+// v0.8.2, and a module built by Go 1.26 from git at the tag v1.2.0 (tagged), at that tag with an uncommitted
+// change (dirty) and one commit after it (pseudo).
+func TestGoBuildPackagesReportTheMainModule(t *testing.T) {
+	tests := []struct {
+		fixture, main, version string
+	}{
+		{"staticcheck.txt", "honnef.co/go/tools", "0.8.2"},
+		{"tagged.txt", "example.com/acme/tool", "1.2.0"},
+		{"pseudo.txt", "example.com/acme/tool", "1.2.1-0.20261101203445-395da2043f88"},
+		{"dirty.txt", "example.com/acme/tool", ""},
+	}
+	for _, tt := range tests {
+		data, err := os.ReadFile(filepath.Join("testdata", "gobuildinfo", tt.fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		build, err := debug.ParseBuildInfo(string(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		packages := GoBuildPackages(build, "/opt/bin/tool")
+		versions := map[string]string{}
+		for _, p := range packages {
+			if p.Ecosystem != "Go" || p.ManifestPath != "/opt/bin/tool" {
+				t.Fatalf("%s: unexpected package %+v", tt.fixture, p)
+			}
+			versions[p.Name] = p.Version
+		}
+		if versions[tt.main] != tt.version {
+			t.Errorf("%s: main module %s = %q, want %q", tt.fixture, tt.main, versions[tt.main], tt.version)
+		}
+		// ParseBuildInfo leaves GoVersion empty, so there is no stdlib here.
+		if want := 1 + len(build.Deps); tt.version != "" && len(packages) != want {
+			t.Errorf("%s: %d packages, want the main module and %d dependencies", tt.fixture, len(packages), len(build.Deps))
+		}
+	}
+}
+
+func TestGoBuildPackagesSkipUnpublishedVersions(t *testing.T) {
+	build := &debug.BuildInfo{
+		GoVersion: "go1.26.0",
+		Main:      debug.Module{Path: "example.com/app", Version: "v2.0.0", Replace: &debug.Module{Path: "example.com/fork", Version: "v2.0.1"}},
+		Deps: []*debug.Module{
+			{Path: "example.com/devel", Version: "(devel)"},
+			{Path: "example.com/empty"},
+			{Path: "example.com/local", Version: "v1.0.0", Replace: &debug.Module{Path: "../local"}},
+			{Path: "example.com/forked", Version: "v1.0.0", Replace: &debug.Module{Path: "example.com/fork2", Version: "v1.0.1"}},
+		},
+	}
+	var got []string
+	for _, p := range GoBuildPackages(build, "/opt/bin/app") {
+		got = append(got, p.Name+"@"+p.Version)
+	}
+	want := []string{"stdlib@1.26.0", "example.com/fork@2.0.1", "example.com/fork2@1.0.1"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("packages = %v, want %v", got, want)
+	}
+	build.Main = debug.Module{Path: "example.com/app", Version: "(devel)"}
+	for _, p := range GoBuildPackages(build, "/opt/bin/app") {
+		if p.Name == "example.com/app" {
+			t.Fatalf("a (devel) main module has no published version: %+v", p)
+		}
 	}
 }
 

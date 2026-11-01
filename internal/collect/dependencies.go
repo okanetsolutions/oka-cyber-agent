@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"syscall"
@@ -239,26 +240,40 @@ func (s *scan) goBinary(rel, hostPath string, d fs.DirEntry) {
 	s.inv.Packages = append(s.inv.Packages, GoBuildPackages(build, hostPath)...)
 }
 
-// GoBuildPackages lists the modules compiled into a Go binary, plus the standard library as "stdlib", the
-// name OSV.dev uses for Go toolchain vulnerabilities.
+// GoBuildPackages lists the binary's own module and the modules compiled into it, plus the standard library as
+// "stdlib", the name OSV.dev uses for Go toolchain vulnerabilities. The main module comes first so that it wins
+// if a dependency ever carries the same path.
 func GoBuildPackages(build *buildinfo.BuildInfo, manifestPath string) []Package {
 	var packages []Package
 	if version, ok := strings.CutPrefix(build.GoVersion, "go"); ok {
 		version, _, _ = strings.Cut(version, " ")
 		packages = append(packages, Package{Ecosystem: lockfile.Go, Name: "stdlib", Version: version, ManifestPath: manifestPath})
 	}
-	for _, dep := range build.Deps {
-		module := dep
-		if dep.Replace != nil {
-			module = dep.Replace
+	for _, m := range append([]*debug.Module{&build.Main}, build.Deps...) {
+		if p, ok := goModulePackage(m, manifestPath); ok {
+			packages = append(packages, p)
 		}
-		version := strings.TrimPrefix(module.Version, "v")
-		if module.Path == "" || version == "" || version == "(devel)" {
-			continue
-		}
-		packages = append(packages, Package{Ecosystem: lockfile.Go, Name: module.Path, Version: version, ManifestPath: manifestPath})
 	}
 	return packages
+}
+
+// goModulePackage reports a module under its replacement when go.mod replaced it, and only when the version
+// names published code. Go stamps the main module with the release it was installed at (go install m@v1.2.0)
+// or, since Go 1.24, with the version control state of the build: a tag (v1.2.0), a pseudo-version for an
+// untagged commit, "+dirty" when the working tree had uncommitted changes, and "(devel)" or nothing when it
+// cannot tell. A pseudo-version (v1.2.1-0.20261101203445-395da2043f88) is kept, as it is for dependencies: it
+// names one commit and sorts as a pre-release of the next version, which is how the Go vulnerability database
+// and OSV.dev compare it. A dirty build is left out because its code is no published version, and a directory
+// replacement has no version at all.
+func goModulePackage(m *debug.Module, manifestPath string) (Package, bool) {
+	if m.Replace != nil {
+		m = m.Replace
+	}
+	version := strings.TrimPrefix(m.Version, "v")
+	if m.Path == "" || version == "" || version == "(devel)" || strings.HasSuffix(version, "+dirty") {
+		return Package{}, false
+	}
+	return Package{Ecosystem: lockfile.Go, Name: m.Path, Version: version, ManifestPath: manifestPath}, true
 }
 
 // reportManifestsWithoutLockFiles records manifests such as package.json that have no lock file next to

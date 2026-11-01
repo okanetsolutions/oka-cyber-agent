@@ -100,12 +100,13 @@ func npmFromRegistry(p npmPackage, name string) bool {
 	return strings.Contains(u.Path, "/"+name+"/-/") && strings.HasSuffix(u.Path, ".tgz")
 }
 
+// npmV1 visits every node of the version 1 tree, nested copies of a name and their own subtrees included,
+// ranked by how deep they sit: a top level entry is the hoisted install.
 func npmV1(dependencies map[string]npmV1Dependency) Result {
 	var r Result
 	var candidates []candidate
-	level := dependencies
-	for depth := 0; len(level) > 0; depth++ {
-		next := map[string]npmV1Dependency{}
+	var walk func(level map[string]npmV1Dependency, depth int)
+	walk = func(level map[string]npmV1Dependency, depth int) {
 		for _, name := range sortedKeys(level) {
 			d := level[name]
 			if looksLikeVersion(d.Version) {
@@ -113,14 +114,10 @@ func npmV1(dependencies map[string]npmV1Dependency) Result {
 			} else {
 				r.Unresolved++
 			}
-			for child, dep := range d.Dependencies {
-				if _, seen := next[child]; !seen {
-					next[child] = dep
-				}
-			}
+			walk(d.Dependencies, depth+1)
 		}
-		level = next
 	}
+	walk(dependencies, 0)
 	r.Dependencies = onePerName(candidates)
 	return r
 }

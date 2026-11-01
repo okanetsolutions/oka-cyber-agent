@@ -1,0 +1,14 @@
+go	go1.26.0
+path	example.com/acme/tool
+mod	example.com/acme/tool	v1.2.1-0.20261101203445-395da2043f88	
+build	-buildmode=exe
+build	-compiler=gc
+build	-trimpath=true
+build	CGO_ENABLED=1
+build	GOARCH=amd64
+build	GOOS=linux
+build	GOAMD64=v1
+build	vcs=git
+build	vcs.revision=395da2043f88b427deb37b38e8dac333d486ca97
+build	vcs.time=2026-11-01T20:34:45Z
+build	vcs.modified=false

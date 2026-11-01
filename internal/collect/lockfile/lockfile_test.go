@@ -2,6 +2,7 @@ package lockfile
 
 import (
 	"cmp"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,6 +42,9 @@ func TestParsersAgainstRealLockFiles(t *testing.T) {
 		{"npm-v3/package-lock.json", 73, 0, []spot{{"express", "4.19.2", yes}, {"@sentry/node", "7.100.0", yes}, {"lodash", "4.17.20", yes}, {"accepts", "1.3.8", no}}},
 		{"npm-shrinkwrap/npm-shrinkwrap.json", 73, 0, []spot{{"express", "4.19.2", yes}}},
 		{"npm-v1/package-lock.json", -1, 0, []spot{{"express", "4.17.1", unknown}, {"mocha", "8.0.1", unknown}}},
+		// npm 6 with --legacy-bundling: debug 2.6.9 pulls ms 2.0.0 and send 0.18.0 pulls ms 2.1.3, both one level
+		// deep; tar 6 pulls mkdirp 1.0.4 and write 1.0.3 pulls mkdirp 0.5.6, whose minimist sits nowhere else.
+		{"npm-v1-nested/package-lock.json", 27, 0, []spot{{"debug", "2.6.9", unknown}, {"ms", "2.1.3", unknown}, {"mkdirp", "1.0.4", unknown}, {"minimist", "1.2.8", unknown}}},
 		{"yarn-v1/yarn.lock", 79, 0, []spot{{"express", "4.19.2", unknown}, {"@babel/code-frame", "7.24.2", unknown}}},
 		{"yarn-v1-sources/yarn.lock", 8, 0, []spot{{"string-width", "5.1.2", unknown}, {"@types/node", "20.19.43", unknown}, {"undici-types", "6.21.0", unknown}}},
 		{"yarn-berry/yarn.lock", 86, 0, []spot{{"express", "4.19.2", unknown}, {"resolve", "1.22.8", unknown}}},
@@ -222,6 +226,25 @@ func TestNPMV1PrefersTopLevelVersion(t *testing.T) {
 	}
 	if len(names) != 223 {
 		t.Fatalf("names = %d, want the 223 installed package names", len(names))
+	}
+}
+
+func TestNPMV1VisitsEveryNestedCopy(t *testing.T) {
+	data := []byte(`{"lockfileVersion":1,"dependencies":{
+		"a":{"version":"1.0.0","dependencies":{"x":{"version":"1.0.0"}}},
+		"b":{"version":"1.0.0","dependencies":{"x":{"version":"2.0.0","dependencies":{"z":{"version":"3.0.0"},"w":{"version":"github:acme/w#abc123"}}}}}
+	}}`)
+	r, err := ParseNPMLock(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"a": "1.0.0", "b": "1.0.0", "x": "2.0.0", "z": "3.0.0"}
+	got := map[string]string{}
+	for _, d := range r.Dependencies {
+		got[d.Name] = d.Version
+	}
+	if !maps.Equal(got, want) || r.Unresolved != 1 {
+		t.Fatalf("dependencies = %v, unresolved = %d, want %v and the git dependency under the second x", got, r.Unresolved, want)
 	}
 }
 
