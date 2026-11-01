@@ -159,6 +159,7 @@ func (s *scan) lockFile(rel, hostPath string, format lockfile.Format, symlink bo
 		return
 	}
 	if result.Unresolved > 0 {
+		// Normalize drops this record when some packages of the file are sent (see Inventory.Normalize).
 		s.inv.Skip(hostPath, ReasonUnresolvedVersions)
 	}
 	for _, d := range result.Dependencies {
@@ -205,17 +206,25 @@ func (s *scan) read(rel string, symlink bool) ([]byte, string) {
 	return data, ""
 }
 
-// goBinary reads the module list Go embeds in executables (only when collect_go_binaries is on).
+// goBinary reads the module list Go embeds in executables (only when collect_go_binaries is on). The lock file
+// size limit does not apply: buildinfo.Read reads the headers and searches the data segment in small chunks
+// through io.ReaderAt, so a large binary (terraform, kubectl) costs no more memory than a small one. Like a lock
+// file it is opened with O_NONBLOCK, and once open it must still be the regular file the walk listed, so a FIFO
+// or a symlink swapped in after the walk cannot block the inventory or be read in its place.
 func (s *scan) goBinary(rel, hostPath string, d fs.DirEntry) {
-	info, err := d.Info()
-	if err != nil || info.Mode().Perm()&0o111 == 0 || info.Size() > s.options.MaxFileSize || info.Size() < 4 || s.seen[hostPath] {
+	listed, err := d.Info()
+	if err != nil || listed.Mode().Perm()&0o111 == 0 || listed.Size() < 4 || s.seen[hostPath] {
 		return
 	}
-	f, err := s.root.Open(rel)
+	f, err := s.root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return
 	}
 	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(listed, opened) {
+		return
+	}
 	build, err := buildinfo.Read(f)
 	if err != nil {
 		return

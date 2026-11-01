@@ -30,14 +30,17 @@ func TestParsersAgainstRealLockFiles(t *testing.T) {
 		{"npm-shrinkwrap/npm-shrinkwrap.json", 74, 0, []spot{{"express", "4.19.2", yes}}},
 		{"npm-v1/package-lock.json", -1, 0, []spot{{"express", "4.17.1", unknown}, {"mocha", "8.0.1", unknown}}},
 		{"yarn-v1/yarn.lock", 80, 0, []spot{{"express", "4.19.2", unknown}, {"@babel/code-frame", "7.24.2", unknown}}},
+		{"yarn-v1-sources/yarn.lock", 12, 0, []spot{{"string-width", "4.2.3", unknown}, {"@types/node", "20.19.43", unknown}, {"undici-types", "6.21.0", unknown}}},
 		{"yarn-berry/yarn.lock", 87, 0, []spot{{"express", "4.19.2", unknown}, {"resolve", "1.22.8", unknown}}},
 		{"pnpm-v5/pnpm-lock.yaml", 73, 0, []spot{{"express", "4.18.2", yes}, {"react-dom", "18.2.0", yes}, {"accepts", "1.3.8", no}}},
 		{"pnpm-v6/pnpm-lock.yaml", 74, 0, []spot{{"express", "4.19.2", yes}, {"react-dom", "18.3.1", yes}, {"typescript", "5.4.5", yes}, {"accepts", "1.3.8", no}}},
 		{"pnpm-v9/pnpm-lock.yaml", 74, 0, []spot{{"express", "4.19.2", yes}, {"react-dom", "18.3.1", yes}, {"typescript", "5.4.5", yes}, {"accepts", "1.3.8", no}}},
 		{"poetry-1/poetry.lock", 14, 0, []spot{{"django", "4.2.11", unknown}, {"requests", "2.31.0", unknown}, {"pytest", "8.1.1", unknown}}},
 		{"poetry-2/poetry.lock", 14, 0, []spot{{"django", "4.2.11", unknown}, {"requests", "2.31.0", unknown}}},
+		{"poetry-sources/poetry.lock", 4, 0, []spot{{"idna", "3.7", unknown}, {"urllib3", "2.8.0", unknown}}},
 		{"pipenv/Pipfile.lock", 16, 0, []spot{{"requests", "2.31.0", unknown}, {"flask", "3.0.3", unknown}, {"pytest", "8.1.1", unknown}}},
 		{"uv/uv.lock", 18, 0, []spot{{"fastapi", "0.110.1", yes}, {"requests", "2.31.0", yes}, {"pytest", "8.1.1", yes}, {"starlette", "", no}}},
+		{"uv-sources/uv.lock", 4, 0, []spot{{"idna", "3.7", yes}, {"urllib3", "2.8.0", no}}},
 		{"requirements-hashes/requirements.txt", 12, 0, []spot{{"requests", "2.31.0", unknown}, {"charset-normalizer", "3.5.2", unknown}}},
 		{"requirements-freeze/requirements.txt", 12, 0, []spot{{"pyproject-hooks", "1.3.3", unknown}}},
 		{"requirements-mixed/requirements.txt", 5, 4, []spot{{"django", "4.2.11", unknown}, {"django-environ", "0.11.2", unknown}, {"psycopg2-binary", "2.9.9", unknown}, {"requests", "2.31.0", unknown}, {"pillow", "10.3.0", unknown}}},
@@ -130,6 +133,60 @@ func TestNPMV1PrefersTopLevelVersion(t *testing.T) {
 	}
 	if len(names) != 223 {
 		t.Fatalf("names = %d, want the 223 installed package names", len(names))
+	}
+}
+
+// Real lock files from yarn 1.22, Poetry 2.2 and uv 0.9 with an npm alias, a scoped alias, a tarball URL, a git
+// dependency, a URL and a local directory: only registry packages are reported, under their registry names.
+func TestNonRegistrySourcesAreLeftOut(t *testing.T) {
+	for fixture, names := range map[string][]string{
+		"yarn-v1-sources/yarn.lock":  {"string-width-cjs", "node-types", "@sindresorhus/is", "left-pad", "local-lib"},
+		"poetry-sources/poetry.lock": {"requests", "six", "locallib"},
+		"uv-sources/uv.lock":         {"requests", "six", "locallib", "app"},
+	} {
+		format, _ := ForFile(filepath.Base(fixture))
+		data, err := os.ReadFile(filepath.Join("testdata", fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := format.Parse(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range names {
+			if d, found := first(r.Dependencies, name); found {
+				t.Errorf("%s: %+v is not a registry release", fixture, d)
+			}
+		}
+	}
+}
+
+func TestYarnClassicHeader(t *testing.T) {
+	tests := []struct {
+		header, name string
+		local        bool
+	}{
+		{`lodash@^4.17.21`, "lodash", false},
+		{`"@babel/code-frame@^7.0.0", "@babel/code-frame@^7.10.4"`, "@babel/code-frame", false},
+		{`"string-width-cjs@npm:string-width@^4.2.0"`, "string-width", false},
+		{`"node-types@npm:@types/node@^20.11.0"`, "@types/node", false},
+		{`"alias@npm:real"`, "real", false},
+		{`"range@>= 1.0.0 < 2"`, "range", false},
+		{`"@scope/foo@https://registry.npmjs.org/@scope/foo/-/foo-1.0.0.tgz"`, "@scope/foo", true},
+		{`"left-pad@github:stevemao/left-pad#v1.3.0"`, "left-pad", true},
+		{`"lib@git+ssh://git@github.com/me/lib.git"`, "lib", true},
+		{`"repo@me/repo#main"`, "repo", true},
+		{`"local@file:./local"`, "local", true},
+		{`"pkg@./vendor/pkg.tgz"`, "pkg", true},
+		{`"ws@workspace:packages/ws"`, "ws", true},
+		{`"@scope"`, "", true},
+		{`""`, "", true},
+	}
+	for _, tt := range tests {
+		name, local := yarnClassicHeader(tt.header)
+		if name != tt.name || local != tt.local {
+			t.Errorf("yarnClassicHeader(%s) = %q, %v, want %q, %v", tt.header, name, local, tt.name, tt.local)
+		}
 	}
 }
 

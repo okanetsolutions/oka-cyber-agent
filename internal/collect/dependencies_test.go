@@ -66,6 +66,7 @@ func TestDependencyDiscovery(t *testing.T) {
 	tr.copy(lockFixture("bundler/Gemfile.lock"), "/var/www/deep/a/b/c/d/Gemfile.lock")
 	tr.copy(lockFixture("npm-v3/package-lock.json"), "/var/www/deep/a/b/c/d/e/package-lock.json")
 	tr.copy(lockFixture("requirements-mixed/requirements.txt"), "/srv/api/requirements.txt")
+	tr.write("/srv/unpinned/requirements.txt", "django>=4.2\nrequests\n")
 	tr.copy(lockFixture("npm-v3/package-lock.json"), "/srv/api/node_modules/x/package-lock.json")
 	tr.copy(lockFixture("npm-v3/package-lock.json"), "/srv/api/.git/package-lock.json")
 	tr.write("/home/forge/.bun/install/cache/accepts@1.3.8@@@1/package.json", "{}")
@@ -104,11 +105,13 @@ func TestDependencyDiscovery(t *testing.T) {
 	if got := manifests(inv); !mapsEqual(got, wantManifests) {
 		t.Fatalf("manifests = %v\nwant %v", got, wantManifests)
 	}
+	// /srv/api/requirements.txt has unpinned lines too, but it is sent with its 5 pinned packages and not listed,
+	// so the server deletes a package removed from it instead of keeping everything stored for a skipped path.
 	wantSkipped := []SkippedFile{
-		{"/srv/api/requirements.txt", ReasonUnresolvedVersions},
 		{"/srv/big/yarn.lock", ReasonTooLarge},
 		{"/srv/broken/Pipfile.lock", ReasonParseError},
 		{"/srv/escape/go.mod", ReasonOutsideScanRoot},
+		{"/srv/unpinned/requirements.txt", ReasonUnresolvedVersions},
 		{"/var/www/legacy/package.json", ReasonNoLockFile},
 	}
 	if !slices.Equal(inv.SkippedFiles, wantSkipped) {
@@ -176,7 +179,8 @@ func TestGoBinariesOnlyWhenEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	off, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/opt"}, MaxFileSize: 1 << 30}})
+	// max_file_size is for lock files: a Go binary far larger than it (terraform, kubectl) is still read.
+	off, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/opt"}, MaxFileSize: 1024}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +188,7 @@ func TestGoBinariesOnlyWhenEnabled(t *testing.T) {
 		t.Fatalf("Go binaries must not be read unless enabled: %+v", off.Packages)
 	}
 
-	on, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/opt"}, MaxFileSize: 1 << 30, GoBinaries: true}})
+	on, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/opt"}, MaxFileSize: 1024, GoBinaries: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

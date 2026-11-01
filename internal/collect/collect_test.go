@@ -244,15 +244,15 @@ func TestNormalizeCutsDependenciesByManifestAboveTheLimit(t *testing.T) {
 	if !slices.Equal(forward.Packages, reversed.Packages) || !slices.Equal(forward.SkippedFiles, reversed.SkippedFiles) {
 		t.Fatal("the packages kept depend on collector order")
 	}
-	if len(forward.Packages) != MaxPackages {
-		t.Fatalf("len = %d, want %d", len(forward.Packages), MaxPackages)
+	if len(forward.Packages) != MaxPackages-5 {
+		t.Fatalf("len = %d, want %d", len(forward.Packages), MaxPackages-5)
 	}
 	manifests := map[string]int{}
 	for _, p := range forward.Packages {
 		manifests[p.ManifestPath]++
 	}
-	if manifests[""] != MaxPackages-15 || manifests["/srv/a/package-lock.json"] != 10 || manifests["/srv/b/package-lock.json"] != 5 || manifests["/srv/c/package-lock.json"] != 0 {
-		t.Fatalf("packages per manifest = %v, want every OS package, all of a, half of b and none of c", manifests)
+	if manifests[""] != MaxPackages-15 || manifests["/srv/a/package-lock.json"] != 10 || manifests["/srv/b/package-lock.json"] != 0 || manifests["/srv/c/package-lock.json"] != 0 {
+		t.Fatalf("packages per manifest = %v, want every OS package, all of a and none of b or c: a manifest sent in part would also be skipped", manifests)
 	}
 	want := []SkippedFile{
 		{Path: "/srv/b/package-lock.json", Reason: ReasonPackageLimit},
@@ -260,6 +260,30 @@ func TestNormalizeCutsDependenciesByManifestAboveTheLimit(t *testing.T) {
 	}
 	if !slices.Equal(forward.SkippedFiles, want) {
 		t.Fatalf("skipped files = %v, want %v", forward.SkippedFiles, want)
+	}
+}
+
+// InventoryIngestionService::syncPackages keeps every stored package whose manifest path is skipped, so a manifest
+// both sent and skipped would keep packages removed from it forever.
+func TestNormalizeNeverSendsAndSkipsTheSameManifest(t *testing.T) {
+	inv := &Inventory{
+		Packages: []Package{
+			{Ecosystem: "PyPI", Name: "django", Version: "3.2", ManifestPath: "/srv/api/requirements.txt"},
+			{Ecosystem: "Go", Name: "example.com/tools", Version: "1.0.0", ManifestPath: "/srv/tool/go.mod"},
+		},
+		SkippedFiles: []SkippedFile{
+			{Path: "/srv/api/requirements.txt", Reason: ReasonUnresolvedVersions},
+			{Path: "/srv/tool/go.mod", Reason: ReasonUnresolvedVersions},
+			{Path: "/srv/tool/go.mod", Reason: ReasonInvalidEntries},
+			{Path: "/srv/web/requirements.txt", Reason: ReasonUnresolvedVersions},
+		},
+	}
+	if err := inv.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	want := []SkippedFile{{Path: "/srv/web/requirements.txt", Reason: ReasonUnresolvedVersions}}
+	if len(inv.Packages) != 2 || !slices.Equal(inv.SkippedFiles, want) {
+		t.Fatalf("inventory = %+v, want both packages sent and only the manifest without packages skipped", inv)
 	}
 }
 
@@ -373,6 +397,7 @@ func TestNormalizeDropsEntriesTheServerWouldReject(t *testing.T) {
 		{Ecosystem: "npm", Name: "ok", Version: "1.0.0\n", ManifestPath: "/srv/app/package-lock.json"},
 		{Ecosystem: "npm", Name: strings.Repeat("a", 256), Version: "1.0.0"},
 		{Ecosystem: "npm", Name: "fine", Version: "1.0.0", ManifestPath: "/srv/app/package-lock.json"},
+		{Ecosystem: "npm", Name: "bad name", Version: "1.0.0", ManifestPath: "/srv/odd/package-lock.json"},
 	}, SkippedFiles: []SkippedFile{{Path: "relative/path", Reason: "x"}}}
 	if err := inv.Normalize(); err != nil {
 		t.Fatal(err)
@@ -380,7 +405,8 @@ func TestNormalizeDropsEntriesTheServerWouldReject(t *testing.T) {
 	if len(inv.Packages) != 2 {
 		t.Fatalf("packages = %+v, want bash and fine", inv.Packages)
 	}
-	want := []SkippedFile{{Path: "/srv/app/package-lock.json", Reason: ReasonInvalidEntries}}
+	// /srv/app is sent with its valid package and not listed, so the server still deletes what was removed from it.
+	want := []SkippedFile{{Path: "/srv/odd/package-lock.json", Reason: ReasonInvalidEntries}}
 	if !slices.Equal(inv.SkippedFiles, want) {
 		t.Fatalf("skipped = %v, want %v", inv.SkippedFiles, want)
 	}

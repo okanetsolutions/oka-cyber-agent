@@ -125,7 +125,7 @@ collect_dependency_files: true                 # set to false to stop scanning f
 scan_paths: [/var/www, /srv, /opt, /home]       # where to look
 exclude_paths: []                              # absolute paths to leave out
 max_depth: 6                                   # path components below a scan path, like find -maxdepth
-max_file_size: 20971520                        # bytes; larger lock files are skipped
+max_file_size: 20971520                        # bytes; larger lock files are skipped (not Go executables)
 collect_go_binaries: false                     # also read module lists from Go executables
 ```
 
@@ -148,7 +148,7 @@ The agent looks for these files under `scan_paths` and reports the resolved vers
 
 It opens only those file names (and executables, when `collect_go_binaries` is on). It skips installed dependency trees (`node_modules`, `vendor`, `site-packages` and similar), hidden directories (`.git` and package manager caches such as `.npm` or `.cargo`), the Go module cache, `/proc`, `/sys` and `/dev`, and it never follows a symlink out of the scan path it started from.
 
-Versions are never guessed. A file it cannot use is reported to the dashboard with a reason instead: `unresolved_versions` (for example unpinned `requirements.txt` lines), `no_lock_file` (a `package.json`, `composer.json`, `Gemfile`, `Pipfile` or `Cargo.toml` without its lock file), `too_large`, `parse_error`, `permission_denied` or `symlink_outside_scan_root`. When one name appears in several versions in one lock file, the top level (hoisted) version is reported.
+Versions are never guessed. Entries without a pinned version are left out, and so are packages that do not come from their registry (a git repository, a URL, a local path or workspace), because their version is not a registry release; an npm alias is reported under the real package name. A file the agent reports no package from is listed on the dashboard with a reason instead: `unresolved_versions` (for example a `requirements.txt` with only unpinned lines), `invalid_entries` (names or versions the server does not accept), `no_lock_file` (a `package.json`, `composer.json`, `Gemfile`, `Pipfile` or `Cargo.toml` without its lock file), `too_large`, `parse_error`, `permission_denied`, `symlink_outside_scan_root` or `package_limit` (left out to stay within the server limits). Oka Cyber keeps what it last stored for a listed file. A file the agent reports packages from is never listed, even when some of its entries were left out, so a package removed from it disappears from the inventory and its findings close. When one name appears in several versions in one lock file, the top level (hoisted) version is reported.
 
 ## Uninstall
 

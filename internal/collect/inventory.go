@@ -131,9 +131,16 @@ func (inv *Inventory) Skip(path, reason string) {
 }
 
 // Normalize dedupes and sorts the inventory and applies the server limits, so an unchanged host always produces the same snapshot.
-// Above MaxPackages it keeps every OS package and cuts dependency packages by manifest path, recording each manifest
-// it cuts as skipped so the server keeps what it stored for it. Those records are never dropped by MaxSkippedFiles:
-// the other skipped files are capped first.
+//
+// A manifest path is sent either through its packages or in skipped_files, never both. The server keeps every stored
+// package whose manifest path is skipped and replaces the others with what the snapshot sends, so a manifest the agent can
+// read only in part (entries without a pinned version, entries the server would reject) is sent with the packages it
+// resolves and is not listed: a package removed from it is then deleted and its findings close. Such a manifest is
+// listed only when none of its packages can be sent, and the server then keeps what it last stored for it.
+//
+// Above MaxPackages it keeps every OS package and cuts whole dependency manifests, recording each one it cuts as skipped
+// so the server keeps what it stored for it. Those records are never dropped by MaxSkippedFiles: the other skipped
+// files are capped first.
 func (inv *Inventory) Normalize() error {
 	seen := make(map[packageIdentity]bool, len(inv.Packages))
 	packages := make([]Package, 0, len(inv.Packages))
@@ -155,20 +162,31 @@ func (inv *Inventory) Normalize() error {
 		slices.SortFunc(packages, func(a, b Package) int {
 			return cmp.Or(cmp.Compare(a.ManifestPath, b.ManifestPath), a.identity().compare(b.identity()))
 		})
-		if packages[MaxPackages].ManifestPath == "" {
+		boundary := packages[MaxPackages].ManifestPath
+		if boundary == "" {
 			return fmt.Errorf("%w: limit %d", ErrTooManyOSPackages, MaxPackages)
 		}
-		for i, p := range packages[MaxPackages:] {
-			if i == 0 || p.ManifestPath != packages[MaxPackages+i-1].ManifestPath {
+		cut := MaxPackages
+		for cut > 0 && packages[cut-1].ManifestPath == boundary {
+			cut--
+		}
+		for i, p := range packages[cut:] {
+			if i == 0 || p.ManifestPath != packages[cut+i-1].ManifestPath {
 				inv.Skip(p.ManifestPath, ReasonPackageLimit)
 			}
 		}
-		packages = packages[:MaxPackages]
+		packages = packages[:cut]
 	}
 	slices.SortFunc(packages, func(a, b Package) int { return a.identity().compare(b.identity()) })
 	inv.Packages = packages
 
-	inv.SkippedFiles = slices.DeleteFunc(inv.SkippedFiles, func(f SkippedFile) bool { return !validPath(f.Path) || f.Reason == "" })
+	sent := map[string]bool{}
+	for _, p := range packages {
+		sent[p.ManifestPath] = true
+	}
+	inv.SkippedFiles = slices.DeleteFunc(inv.SkippedFiles, func(f SkippedFile) bool {
+		return !validPath(f.Path) || f.Reason == "" || sent[f.Path]
+	})
 	slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
 	inv.SkippedFiles = slices.Compact(inv.SkippedFiles)
 	if len(inv.SkippedFiles) > MaxSkippedFiles {

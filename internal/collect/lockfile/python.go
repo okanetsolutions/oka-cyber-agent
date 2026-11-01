@@ -59,16 +59,15 @@ func requirement(line string, r *Result) {
 }
 
 type pythonSource struct {
-	Type      string `toml:"type"`
-	Registry  string `toml:"registry"`
-	Editable  string `toml:"editable"`
-	Virtual   string `toml:"virtual"`
-	Directory string `toml:"directory"`
-	Path      string `toml:"path"`
+	Type     string `toml:"type"`
+	Registry string `toml:"registry"`
+	Editable string `toml:"editable"`
+	Virtual  string `toml:"virtual"`
 }
 
-// ParsePoetryLock reads poetry.lock from Poetry 1.x and 2.x. Packages from a local directory or file are the
-// project's own code and are left out.
+// ParsePoetryLock reads poetry.lock from Poetry 1.x and 2.x. Only packages from a package index (no source
+// table, or a "legacy" index) are reported: a git, url, file or directory source is not a registry release,
+// so its version says nothing about which advisories apply.
 func ParsePoetryLock(data []byte) (Result, error) {
 	var lock struct {
 		Package []struct {
@@ -82,7 +81,7 @@ func ParsePoetryLock(data []byte) (Result, error) {
 	}
 	var r Result
 	for _, p := range lock.Package {
-		if p.Source.Type == "directory" || p.Source.Type == "file" {
+		if p.Source.Type != "" && p.Source.Type != "legacy" {
 			continue
 		}
 		if p.Name == "" || !looksLikeVersion(p.Version) {
@@ -122,8 +121,9 @@ func ParsePipfileLock(data []byte) (Result, error) {
 	return r, nil
 }
 
-// ParseUVLock reads uv.lock. The project itself (an editable or virtual source) is left out, and its
-// dependencies and dependency groups are the direct ones.
+// ParseUVLock reads uv.lock. Only packages from a registry are reported: the project itself (an editable or
+// virtual source) and git, url, directory and path sources are left out. The project's dependencies and
+// dependency groups are the direct ones.
 func ParseUVLock(data []byte) (Result, error) {
 	type reference struct {
 		Name string `toml:"name"`
@@ -161,7 +161,7 @@ func ParseUVLock(data []byte) (Result, error) {
 	}
 	var r Result
 	for _, p := range lock.Package {
-		if p.Source.Editable != "" || p.Source.Virtual != "" || p.Source.Directory != "" || p.Source.Path != "" {
+		if p.Source.Registry == "" {
 			continue
 		}
 		if p.Name == "" || !looksLikeVersion(p.Version) {

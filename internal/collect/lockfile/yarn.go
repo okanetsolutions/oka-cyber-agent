@@ -53,27 +53,41 @@ func parseYarnClassic(data []byte) (Result, error) {
 }
 
 // yarnClassicHeader returns the package name of an entry header such as
-// `"@babel/code-frame@^7.0.0", "@babel/code-frame@^7.10.4"`, and whether the entry is local (file, link,
-// workspace) rather than from the registry.
+// `"@babel/code-frame@^7.0.0", "@babel/code-frame@^7.10.4"`, and whether the entry comes from somewhere
+// other than the registry (file, link, workspace, git, a URL), whose version is not a registry release.
+// An npm alias (`string-width-cjs@npm:string-width@^4.2.0`) is reported under the real package name.
 func yarnClassicHeader(header string) (string, bool) {
 	first, _, _ := strings.Cut(header, ",")
-	first = strings.Trim(strings.TrimSpace(first), `"`)
-	at := strings.LastIndex(first, "@")
-	if at <= 0 {
+	name, spec, ok := yarnDescriptor(strings.Trim(strings.TrimSpace(first), `"`))
+	if !ok {
 		return "", true
 	}
-	name, spec := first[:at], first[at+1:]
-	if real, ok := strings.CutPrefix(spec, "npm:"); ok {
-		if i := strings.LastIndex(real, "@"); i > 0 {
-			name = real[:i]
+	if target, alias := strings.CutPrefix(spec, "npm:"); alias {
+		if name, spec, ok = yarnDescriptor(target); !ok {
+			if name, spec = target, ""; !validYarnName(name) {
+				return "", true
+			}
 		}
 	}
-	for _, local := range []string{"file:", "link:", "workspace:", "portal:", "patch:", "git", "http:", "https:", "github:"} {
-		if strings.HasPrefix(spec, local) {
-			return name, true
-		}
+	return name, strings.ContainsAny(spec, ":/") || strings.HasPrefix(spec, ".")
+}
+
+// yarnDescriptor splits name@spec at the first @ after the name, which for a scoped package (@scope/name)
+// is the second one: the spec itself may contain @ (an alias target, a URL to a scoped tarball).
+func yarnDescriptor(descriptor string) (string, string, bool) {
+	at := strings.Index(descriptor[min(1, len(descriptor)):], "@") + 1
+	if at <= 0 || !validYarnName(descriptor[:at]) {
+		return "", "", false
 	}
-	return name, false
+	return descriptor[:at], descriptor[at+1:], true
+}
+
+func validYarnName(name string) bool {
+	scope, rest, scoped := strings.Cut(name, "/")
+	if scoped {
+		return len(scope) > 1 && scope[0] == '@' && rest != "" && !strings.ContainsAny(rest, "/@")
+	}
+	return name != "" && !strings.ContainsAny(name, "@:")
 }
 
 func parseYarnBerry(data []byte) (Result, error) {
