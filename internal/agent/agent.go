@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
 	"time"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
@@ -154,7 +155,8 @@ func (a *Agent) inventory(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("collect inventory: %w", err)
 	}
-	snapshot, err := inv.Marshal(api.MaxBodyBytes)
+	stored := a.storedManifest()
+	snapshot, err := inv.Marshal(api.MaxBodyBytes, stored)
 	if err != nil {
 		return fmt.Errorf("encode inventory: %w", err)
 	}
@@ -169,10 +171,40 @@ func (a *Agent) inventory(ctx context.Context) error {
 		return fmt.Errorf("inventory: %w", err)
 	}
 	a.Logger.Info("inventory sent", "packages", len(inv.Packages), "services", len(inv.Services), "changed", resp.Changed)
+	if len(inv.DroppedManifests) > 0 {
+		a.Logger.Warn("more skipped dependency files than the server accepts: Oka Cyber deleted the packages it stored for some of them",
+			"files", len(inv.DroppedManifests), "first", inv.DroppedManifests[0], "limit", collect.MaxSkippedFiles)
+	}
+	a.state.StoredManifests = manifestDigests(inv.StoredManifests(stored))
 	a.state.InventoryHash = hash
 	a.state.LastInventoryAt = now
 	a.setInterval(resp.ReportIntervalSeconds)
 	return nil
+}
+
+// storedManifest tells whether the server has packages stored for a manifest path, from the snapshots it accepted.
+func (a *Agent) storedManifest() func(path string) bool {
+	digests := make(map[string]bool, len(a.state.StoredManifests))
+	for _, d := range a.state.StoredManifests {
+		digests[d] = true
+	}
+	return func(path string) bool { return digests[manifestDigest(path)] }
+}
+
+func manifestDigests(paths []string) []string {
+	digests := make([]string, 0, len(paths))
+	for _, p := range paths {
+		digests = append(digests, manifestDigest(p))
+	}
+	slices.Sort(digests)
+	return digests
+}
+
+// manifestDigest keeps the state file small whatever the paths: up to MaxPackages+MaxSkippedFiles manifests of up to
+// 1024 bytes each would not fit, while 128 bits of SHA-256 are enough to tell paths apart.
+func manifestDigest(path string) string {
+	sum := sha256.Sum256([]byte(path))
+	return hex.EncodeToString(sum[:16])
 }
 
 func (a *Agent) setInterval(seconds int) {

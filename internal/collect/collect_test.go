@@ -302,7 +302,26 @@ func skippedFiles(n int, reason string) []SkippedFile {
 	return files
 }
 
-func TestNormalizeKeepsCutManifestsWhenCappingSkippedFiles(t *testing.T) {
+// noSizeLimit lets Marshal tests apply the skipped files limit without the body size limit.
+const noSizeLimit = 1 << 30
+
+func storedSet(paths ...string) func(string) bool {
+	set := map[string]bool{}
+	for _, p := range paths {
+		set[p] = true
+	}
+	return func(path string) bool { return set[path] }
+}
+
+func skippedReasons(inv *Inventory) map[string]string {
+	skipped := map[string]string{}
+	for _, f := range inv.SkippedFiles {
+		skipped[f.Path] = f.Reason
+	}
+	return skipped
+}
+
+func TestMarshalKeepsCutManifestsWhenCappingSkippedFiles(t *testing.T) {
 	inv := &Inventory{
 		Packages: slices.Concat(
 			osPackages(MaxPackages-1),
@@ -315,45 +334,61 @@ func TestNormalizeKeepsCutManifestsWhenCappingSkippedFiles(t *testing.T) {
 	if err := inv.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	if len(inv.SkippedFiles) != MaxSkippedFiles {
-		t.Fatalf("skipped files = %d, want %d", len(inv.SkippedFiles), MaxSkippedFiles)
+	if _, err := inv.Marshal(noSizeLimit, storedSet("/srv/b/package-lock.json", "/z/package-lock.json")); err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.SkippedFiles) != MaxSkippedFiles || len(inv.DroppedManifests) != 0 {
+		t.Fatalf("skipped files = %d, dropped %v; want %d and none", len(inv.SkippedFiles), inv.DroppedManifests, MaxSkippedFiles)
 	}
 	if !slices.IsSortedFunc(inv.SkippedFiles, compareSkippedFiles) {
 		t.Fatal("skipped files are not sorted")
 	}
-	sent := map[string]bool{}
-	for _, p := range inv.Packages {
-		sent[p.ManifestPath] = true
-	}
-	skipped := map[string]string{}
-	for _, f := range inv.SkippedFiles {
-		skipped[f.Path] = f.Reason
-	}
-	want := map[string]string{"/srv/b/package-lock.json": ReasonPackageLimit, "/z/package-lock.json": ReasonPackageLimit}
-	for manifest, reason := range want {
-		if sent[manifest] || skipped[manifest] != reason {
-			t.Errorf("%s: sent %v, skipped as %q; want it skipped as %q so the server keeps what it stored for it", manifest, sent[manifest], skipped[manifest], reason)
+	sent := manifests(inv)
+	skipped := skippedReasons(inv)
+	for _, manifest := range []string{"/srv/b/package-lock.json", "/z/package-lock.json"} {
+		if sent[manifest] > 0 || skipped[manifest] != ReasonPackageLimit {
+			t.Errorf("%s: sent %v, skipped as %q; want it skipped as package_limit so the server keeps what it stored for it", manifest, sent[manifest], skipped[manifest])
 		}
 	}
-	if !sent["/a/package-lock.json"] {
+	if sent["/a/package-lock.json"] == 0 {
 		t.Error("/a/package-lock.json fits under the package limit and must be sent")
 	}
 }
 
-func TestNormalizeFailsWhenCutManifestsExceedTheSkippedFilesLimit(t *testing.T) {
-	packages := osPackages(MaxPackages)
+// A local user can plant any number of unreadable, unparsable or symlinked lock files under a scan path. Their skip
+// records keep nothing on the server, because it never had packages for those paths, so they must never fail the
+// inventory nor push out a record that keeps what the server stored for another lock file.
+func TestPlantedLockFilesCannotBlockTheInventory(t *testing.T) {
+	tr := tree{t, t.TempDir()}
+	tr.copy(lockFixture("composer/composer.lock"), "/srv/shop/composer.lock")
+	tr.write("/srv/blog/composer.lock", "{not json")
 	for i := range MaxSkippedFiles + 1 {
-		packages = append(packages, dependencyPackages(fmt.Sprintf("/srv/m/%05d/package-lock.json", i), 1)...)
+		tr.write(fmt.Sprintf("/home/mallory/%04d/composer.lock", i), "garbage")
 	}
-	inv, err := Run(context.Background(), packagesCollector(packages))
-	if !errors.Is(err, ErrTooManyRetainedManifests) || inv != nil {
-		t.Fatalf("Run returned an inventory: %v, err = %v; want none and ErrTooManyRetainedManifests", inv != nil, err)
+	osCollector := packagesCollector(osPackages(3))
+	deps := DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/home", "/srv"}}}
+	inv, err := Run(context.Background(), osCollector, deps)
+	if err != nil {
+		t.Fatalf("planted lock files failed the inventory: %v", err)
+	}
+	if _, err := inv.Marshal(noSizeLimit, storedSet("/srv/shop/composer.lock", "/srv/blog/composer.lock")); err != nil {
+		t.Fatalf("planted lock files failed the snapshot: %v", err)
+	}
+	if len(inv.SkippedFiles) != MaxSkippedFiles || len(inv.DroppedManifests) != 0 {
+		t.Fatalf("skipped files = %d, dropped %v; want %d and none", len(inv.SkippedFiles), inv.DroppedManifests, MaxSkippedFiles)
+	}
+	sent := manifests(inv)
+	if sent[""] != 3 || sent["/srv/shop/composer.lock"] == 0 {
+		t.Fatalf("packages by manifest = %v, want the OS packages and the shop lock file", sent)
+	}
+	if reason := skippedReasons(inv)["/srv/blog/composer.lock"]; reason != ReasonParseError {
+		t.Fatalf("/srv/blog/composer.lock skipped as %q, want parse_error so the server keeps what it stored for it", reason)
 	}
 }
 
-// A record that keeps what the server stored (parse_error here) must survive the cap even when it sorts after more
-// than MaxSkippedFiles no_lock_file records, which keep nothing.
-func TestNormalizeCapsRecordsThatKeepNothingFirst(t *testing.T) {
+// Without a record of what the server stored (a lost state file), records whose reason would keep packages still win
+// over those that keep nothing.
+func TestMarshalCapsRecordsThatKeepNothingFirst(t *testing.T) {
 	var files []SkippedFile
 	for i := range MaxSkippedFiles + 1 {
 		files = append(files, SkippedFile{Path: fmt.Sprintf("/home/u/.bun/%05d/package.json", i), Reason: ReasonNoLockFile})
@@ -366,23 +401,63 @@ func TestNormalizeCapsRecordsThatKeepNothingFirst(t *testing.T) {
 	if err := inv.Normalize(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := inv.Marshal(noSizeLimit, nil); err != nil {
+		t.Fatal(err)
+	}
 	if len(inv.SkippedFiles) != MaxSkippedFiles {
 		t.Fatalf("skipped files = %d, want %d", len(inv.SkippedFiles), MaxSkippedFiles)
 	}
-	if !slices.IsSortedFunc(inv.SkippedFiles, compareSkippedFiles) {
-		t.Fatal("skipped files are not sorted")
-	}
 	if !slices.Contains(inv.SkippedFiles, SkippedFile{Path: "/var/www/app/composer.lock", Reason: ReasonParseError}) {
-		t.Fatal("the parse_error record was dropped, so the server would delete what it stored for that lock file")
+		t.Fatal("the parse_error record was dropped")
 	}
 }
 
-func TestNormalizeFailsWhenRecordsThatKeepStoredPackagesExceedTheLimit(t *testing.T) {
-	for _, reason := range []string{ReasonParseError, ReasonPermissionDenied, ReasonTooLarge, ReasonUnresolvedVersions, ReasonSymlink, ReasonInvalidEntries} {
-		inv := &Inventory{SkippedFiles: slices.Concat(skippedFiles(MaxSkippedFiles, reason), []SkippedFile{{Path: "/home/u/package.json", Reason: ReasonNoLockFile}, {Path: "/z/package-lock.json", Reason: ReasonPackageLimit}})}
-		if err := inv.Normalize(); !errors.Is(err, ErrTooManyRetainedManifests) {
-			t.Errorf("%s: err = %v, want ErrTooManyRetainedManifests", reason, err)
-		}
+// When more than MaxSkippedFiles manifests the server stored packages for are skipped at once, the snapshot is still
+// sent with the OS packages and everything that fits, and the manifests whose record did not fit are reported.
+func TestMarshalDegradesWhenStoredManifestsExceedTheSkippedFilesLimit(t *testing.T) {
+	packages := osPackages(MaxPackages)
+	var stored []string
+	for i := range MaxSkippedFiles + 2 {
+		manifest := fmt.Sprintf("/srv/m/%05d/package-lock.json", i)
+		packages = append(packages, dependencyPackages(manifest, 1)...)
+		stored = append(stored, manifest)
+	}
+	inv, err := Run(context.Background(), packagesCollector(packages))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv.Skip("/home/u/package.json", ReasonNoLockFile)
+	if _, err := inv.Marshal(noSizeLimit, storedSet(stored...)); err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Packages) != MaxPackages || len(inv.SkippedFiles) != MaxSkippedFiles {
+		t.Fatalf("packages = %d, skipped = %d; want every OS package and %d skip records", len(inv.Packages), len(inv.SkippedFiles), MaxSkippedFiles)
+	}
+	want := []string{"/srv/m/01000/package-lock.json", "/srv/m/01001/package-lock.json"}
+	if !slices.Equal(inv.DroppedManifests, want) {
+		t.Fatalf("dropped = %v, want %v", inv.DroppedManifests, want)
+	}
+	if skippedReasons(inv)["/home/u/package.json"] != "" {
+		t.Fatal("a record that keeps nothing took the place of one that keeps stored packages")
+	}
+}
+
+func TestStoredManifestsAfterASnapshot(t *testing.T) {
+	inv := &Inventory{
+		Packages: slices.Concat(osPackages(1), dependencyPackages("/srv/a/package-lock.json", 2)),
+		SkippedFiles: []SkippedFile{
+			{Path: "/srv/b/package-lock.json", Reason: ReasonParseError},
+			{Path: "/home/u/composer.lock", Reason: ReasonParseError},
+			{Path: "/srv/c/package-lock.json", Reason: ReasonPackageLimit},
+		},
+	}
+	got := inv.StoredManifests(storedSet("/srv/b/package-lock.json", "/srv/c/package-lock.json", "/srv/gone/package-lock.json"))
+	want := []string{"/srv/a/package-lock.json", "/srv/b/package-lock.json", "/srv/c/package-lock.json"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("stored = %v, want %v", got, want)
+	}
+	if got := inv.StoredManifests(nil); !slices.Equal(got, []string{"/srv/a/package-lock.json"}) {
+		t.Fatalf("stored without a previous snapshot = %v", got)
 	}
 }
 
@@ -465,7 +540,7 @@ func TestMarshalLeavesOutLargestDependencyFilesToFitTheLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := inv.Marshal(len(full) - 1)
+	data, err := inv.Marshal(len(full)-1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +551,7 @@ func TestMarshalLeavesOutLargestDependencyFilesToFitTheLimit(t *testing.T) {
 		t.Fatalf("skipped = %v", inv.SkippedFiles)
 	}
 
-	if _, err := inv.Marshal(10); err == nil {
+	if _, err := inv.Marshal(10, nil); err == nil {
 		t.Fatal("OS packages alone over the limit must be an error")
 	}
 }

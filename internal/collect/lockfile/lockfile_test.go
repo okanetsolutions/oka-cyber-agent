@@ -1,7 +1,9 @@
 package lockfile
 
 import (
+	"bytes"
 	"cmp"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -83,6 +85,11 @@ func TestParsersAgainstRealLockFiles(t *testing.T) {
 		{"cargo-duplicates/Cargo.lock", -1, 0, []spot{{"syn", "2.0.119", yes}, {"heck", "0.4.1", yes}, {"thiserror-impl", "1.0.30", no}}},
 		{"gradle/gradle.lockfile", 11, 0, []spot{{"org.apache.logging.log4j:log4j-core", "2.14.1", unknown}, {"com.google.guava:guava", "32.1.3-jre", unknown}}},
 		{"maven/pom.xml", 3, 3, []spot{{"org.apache.logging.log4j:log4j-core", "2.14.1", yes}, {"org.postgresql:postgresql", "42.7.3", yes}, {"junit:junit", "4.13.2", yes}}},
+		// The same project with the encodings older Maven projects declare, and accented or typographic characters in
+		// its description.
+		{"maven-iso-8859-1/pom.xml", 3, 3, []spot{{"org.apache.logging.log4j:log4j-core", "2.14.1", yes}, {"junit:junit", "4.13.2", yes}}},
+		{"maven-windows-1252/pom.xml", 3, 3, []spot{{"org.apache.logging.log4j:log4j-core", "2.14.1", yes}, {"junit:junit", "4.13.2", yes}}},
+		{"maven-us-ascii/pom.xml", 3, 3, []spot{{"org.apache.logging.log4j:log4j-core", "2.14.1", yes}, {"junit:junit", "4.13.2", yes}}},
 		{"nuget/packages.lock.json", 8, 0, []spot{{"Newtonsoft.Json", "13.0.3", yes}, {"Serilog", "3.1.1", yes}, {"Microsoft.Extensions.Primitives", "8.0.0", no}}},
 	}
 	for _, tt := range tests {
@@ -386,4 +393,36 @@ func show(b *bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func TestPOMSingleByteEncodings(t *testing.T) {
+	tests := []struct {
+		encoding string
+		text     []byte
+		want     string
+	}{
+		{"ISO-8859-1", []byte("Caf\xe9 M\xfcller"), "Caf\u00e9 M\u00fcller"},
+		{"latin1", []byte("\xa9 \xff"), "\u00a9 \u00ff"},
+		{"windows-1252", []byte("\x80 \x93shop\x94 \x81"), "\u20ac \u201cshop\u201d \u0081"},
+		{"us-ascii", []byte("plain"), "plain"},
+	}
+	for _, tt := range tests {
+		data := slices.Concat([]byte(`<?xml version="1.0" encoding="`+tt.encoding+`"?><project><name>`), tt.text,
+			[]byte(`</name><dependencies><dependency><groupId>g</groupId><artifactId>a</artifactId><version>1.0</version></dependency></dependencies></project>`))
+		r, err := ParsePOM(data)
+		if err != nil || len(r.Dependencies) != 1 {
+			t.Errorf("%s: %+v, %v; want one dependency", tt.encoding, r, err)
+		}
+		decoded, err := singleByteCharsetReader(tt.encoding, bytes.NewReader(tt.text))
+		if err != nil {
+			t.Fatalf("%s: %v", tt.encoding, err)
+		}
+		if got, _ := io.ReadAll(decoded); string(got) != tt.want {
+			t.Errorf("%s: decoded %q, want %q", tt.encoding, got, tt.want)
+		}
+	}
+
+	if _, err := ParsePOM([]byte(`<?xml version="1.0" encoding="Shift_JIS"?><project/>`)); err == nil {
+		t.Error("an encoding the parser cannot decode must be a parse error")
+	}
 }

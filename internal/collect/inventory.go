@@ -24,11 +24,6 @@ const (
 // skipped, and the server deletes every stored package missing from a snapshot, so the inventory fails instead.
 var ErrTooManyOSPackages = errors.New("more OS packages than the server accepts")
 
-// ErrTooManyRetainedManifests means more skipped manifests keep what the server stored for them (cut by MaxPackages,
-// unreadable, unparsable, ...) than MaxSkippedFiles can list. A manifest left out of skipped_files would have everything
-// the server stored for it deleted and its findings closed, so the inventory fails instead.
-var ErrTooManyRetainedManifests = errors.New("more skipped manifests to keep on the server than it accepts as skipped")
-
 const (
 	ReasonUnsupportedDistribution = "unsupported_distribution"
 	ReasonPermissionDenied        = "permission_denied"
@@ -41,6 +36,9 @@ type Inventory struct {
 	Packages     []Package     `json:"packages"`
 	SkippedFiles []SkippedFile `json:"skipped_files"`
 	Services     []Service     `json:"services"`
+	// DroppedManifests lists the manifests with packages stored on the server whose skip record Marshal had to leave
+	// out of skipped_files (see limitSkippedFiles): the server deletes what it stored for them.
+	DroppedManifests []string `json:"-"`
 }
 
 type OS struct {
@@ -140,8 +138,7 @@ func (inv *Inventory) Skip(path, reason string) {
 // listed only when none of its packages can be sent, and the server then keeps what it last stored for it.
 //
 // Above MaxPackages it keeps every OS package and cuts whole dependency manifests, recording each one it cuts as skipped
-// so the server keeps what it stored for it. Above MaxSkippedFiles it drops first the records that keep nothing stored
-// (see retainsStoredPackages), and fails rather than drop one that does.
+// so the server keeps what it stored for it. MaxSkippedFiles is applied by Marshal, which knows what the server stored.
 func (inv *Inventory) Normalize() error {
 	seen := make(map[packageIdentity]bool, len(inv.Packages))
 	packages := make([]Package, 0, len(inv.Packages))
@@ -190,15 +187,6 @@ func (inv *Inventory) Normalize() error {
 	})
 	slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
 	inv.SkippedFiles = slices.Compact(inv.SkippedFiles)
-	if len(inv.SkippedFiles) > MaxSkippedFiles {
-		retained := slices.DeleteFunc(slices.Clone(inv.SkippedFiles), func(f SkippedFile) bool { return !retainsStoredPackages(f.Reason) })
-		if len(retained) > MaxSkippedFiles {
-			return fmt.Errorf("%w: %d manifests, limit %d", ErrTooManyRetainedManifests, len(retained), MaxSkippedFiles)
-		}
-		others := slices.DeleteFunc(inv.SkippedFiles, func(f SkippedFile) bool { return retainsStoredPackages(f.Reason) })
-		inv.SkippedFiles = slices.Concat(retained, others[:MaxSkippedFiles-len(retained)])
-		slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
-	}
 
 	slices.SortFunc(inv.Services, compareServices)
 	inv.Services = slices.CompactFunc(inv.Services, func(a, b Service) bool {
@@ -210,11 +198,73 @@ func (inv *Inventory) Normalize() error {
 	return nil
 }
 
-// retainsStoredPackages tells whether a skip record makes the server keep packages it stored for that path. A
-// no_lock_file record names a package.json (or similar) that never has packages of its own, and an
-// unsupported_distribution record a package database whose packages have no manifest path, so they keep nothing.
+// limitSkippedFiles keeps at most MaxSkippedFiles skip records. A record keeps something on the server only when the
+// server has packages stored for its path (stored), so those come first. Every other record keeps nothing, so a user
+// who plants many unreadable or unparsable lock files under a scan path can only crowd out records that protect
+// nothing, never fail the inventory. Among those, the ones whose reason would keep packages (see
+// retainsStoredPackages) come first, which only matters when stored is incomplete (a lost state file).
+//
+// When the records with stored packages alone exceed the limit (more than MaxSkippedFiles manifests the server has
+// packages for, all skipped at once), the ones that sort last are dropped and listed in DroppedManifests: the server
+// deletes their packages and closes their findings, but the OS packages and every other manifest are still reported.
+func (inv *Inventory) limitSkippedFiles(stored func(path string) bool) {
+	if len(inv.SkippedFiles) <= MaxSkippedFiles {
+		return
+	}
+	type ranked struct {
+		file SkippedFile
+		rank int
+	}
+	records := make([]ranked, 0, len(inv.SkippedFiles))
+	for _, f := range inv.SkippedFiles {
+		rank := 2
+		switch {
+		case stored != nil && stored(f.Path):
+			rank = 0
+		case retainsStoredPackages(f.Reason):
+			rank = 1
+		}
+		records = append(records, ranked{f, rank})
+	}
+	slices.SortStableFunc(records, func(a, b ranked) int { return cmp.Compare(a.rank, b.rank) })
+	for _, r := range records[MaxSkippedFiles:] {
+		if r.rank == 0 {
+			inv.DroppedManifests = append(inv.DroppedManifests, r.file.Path)
+		}
+	}
+	slices.Sort(inv.DroppedManifests)
+	inv.DroppedManifests = slices.Compact(inv.DroppedManifests)
+	inv.SkippedFiles = inv.SkippedFiles[:0]
+	for _, r := range records[:MaxSkippedFiles] {
+		inv.SkippedFiles = append(inv.SkippedFiles, r.file)
+	}
+	slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
+}
+
+// retainsStoredPackages tells whether a skip record would keep packages stored for that path. A no_lock_file record
+// names a package.json (or similar) that never has packages of its own, and an unsupported_distribution record a
+// package database whose packages have no manifest path, so they keep nothing.
 func retainsStoredPackages(reason string) bool {
 	return reason != ReasonNoLockFile && reason != ReasonUnsupportedDistribution
+}
+
+// StoredManifests returns the manifest paths the server has packages stored for once it accepts this snapshot: those
+// sent with packages, and those it had packages for (stored, the same function Marshal got) that are listed in
+// skipped_files, because the server keeps the stored packages of every listed path.
+func (inv *Inventory) StoredManifests(stored func(path string) bool) []string {
+	var paths []string
+	for _, p := range inv.Packages {
+		if p.ManifestPath != "" {
+			paths = append(paths, p.ManifestPath)
+		}
+	}
+	for _, f := range inv.SkippedFiles {
+		if stored != nil && stored(f.Path) {
+			paths = append(paths, f.Path)
+		}
+	}
+	slices.Sort(paths)
+	return slices.Compact(paths)
 }
 
 func compareSkippedFiles(a, b SkippedFile) int {
@@ -274,9 +324,12 @@ func (a packageIdentity) compare(b packageIdentity) int {
 	)
 }
 
-// Marshal encodes the inventory for upload. When it is larger than limit bytes, the dependency files with
-// the most packages are left out one at a time and recorded as skipped (package_limit) until it fits.
-func (inv *Inventory) Marshal(limit int) ([]byte, error) {
+// Marshal encodes the inventory for upload within the server limits. stored tells whether the server has packages
+// stored for a manifest path, which decides the skip records kept when there are more than MaxSkippedFiles (see
+// limitSkippedFiles); nil means none. When the snapshot is larger than limit bytes, the dependency files with the most
+// packages are left out one at a time and recorded as skipped (package_limit) until it fits.
+func (inv *Inventory) Marshal(limit int, stored func(path string) bool) ([]byte, error) {
+	inv.limitSkippedFiles(stored)
 	for {
 		data, err := json.Marshal(inv)
 		if err != nil || len(data) <= limit {
@@ -291,6 +344,7 @@ func (inv *Inventory) Marshal(limit int) ([]byte, error) {
 		if err := inv.Normalize(); err != nil {
 			return nil, err
 		}
+		inv.limitSkippedFiles(stored)
 	}
 }
 

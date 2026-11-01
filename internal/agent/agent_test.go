@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -305,7 +307,7 @@ func TestUnreadableOrCorruptStateStartsFresh(t *testing.T) {
 			if err := breakState(path); err != nil {
 				t.Fatal(err)
 			}
-			if state, err := LoadState(a.StateDir, "42"); err == nil || state != (State{ServerID: "42"}) {
+			if state, err := LoadState(a.StateDir, "42"); err == nil || !reflect.DeepEqual(state, State{ServerID: "42"}) {
 				t.Fatalf("LoadState = %+v, %v; want an empty state and an error to warn about", state, err)
 			}
 			if err := a.Cycle(context.Background()); err != nil {
@@ -373,7 +375,7 @@ func TestLoadStateRefusesASymlink(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(dir, stateFileName)); err != nil {
 		t.Fatal(err)
 	}
-	if state, err := LoadState(dir, "42"); err == nil || state != (State{ServerID: "42"}) {
+	if state, err := LoadState(dir, "42"); err == nil || !reflect.DeepEqual(state, State{ServerID: "42"}) {
 		t.Fatalf("LoadState = %+v, %v; want an empty state and an error to warn about", state, err)
 	}
 }
@@ -439,5 +441,55 @@ func TestServerIntervalIsClamped(t *testing.T) {
 		if got := a.interval(); got != time.Duration(tt.want)*time.Second {
 			t.Errorf("server interval %d: interval = %v, want %ds", tt.server, got, tt.want)
 		}
+	}
+}
+
+// A local user who plants more than MaxSkippedFiles unparsable lock files must not stop the inventory, and a lock file
+// the server stored packages for keeps its skip record, also after a restart.
+func TestPlantedSkipRecordsCannotBlockTheInventory(t *testing.T) {
+	client := &fakeClient{}
+	osPackage := collect.Package{Ecosystem: "Debian:12", Name: "bash", Version: "1"}
+	shop := collect.Package{Ecosystem: "Packagist", Name: "monolog/monolog", Version: "3.12.1", ManifestPath: "/srv/shop/composer.lock"}
+	inv := &collect.Inventory{Packages: []collect.Package{osPackage, shop}}
+	a, clk := newTestAgent(t, client, nil)
+	a.Collect = func(context.Context) (*collect.Inventory, error) {
+		c := &collect.Inventory{Packages: slices.Clone(inv.Packages), SkippedFiles: slices.Clone(inv.SkippedFiles)}
+		return c, c.Normalize()
+	}
+	if err := a.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := os.ReadFile(filepath.Join(a.StateDir, stateFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(state), shop.ManifestPath) {
+		t.Fatal("the state file holds the manifest path itself, not its digest")
+	}
+
+	inv.Packages = []collect.Package{osPackage}
+	inv.SkippedFiles = []collect.SkippedFile{{Path: shop.ManifestPath, Reason: collect.ReasonParseError}}
+	for i := range collect.MaxSkippedFiles + 1 {
+		inv.SkippedFiles = append(inv.SkippedFiles, collect.SkippedFile{Path: fmt.Sprintf("/home/mallory/%04d/composer.lock", i), Reason: collect.ReasonParseError})
+	}
+	restarted := &Agent{Config: a.Config, StateDir: a.StateDir, Client: client, Collect: a.Collect, Logger: a.Logger, Now: clk.Now}
+	if err := restarted.Cycle(context.Background()); err != nil {
+		t.Fatalf("planted lock files failed the cycle: %v", err)
+	}
+	if len(client.inventories) != 2 {
+		t.Fatalf("inventories = %d, want 2", len(client.inventories))
+	}
+	var sent collect.Inventory
+	if err := json.Unmarshal(client.inventories[1], &sent); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sent.Packages, []collect.Package{osPackage}) || len(sent.SkippedFiles) != collect.MaxSkippedFiles {
+		t.Fatalf("sent %d packages and %d skip records, want the OS package and %d", len(sent.Packages), len(sent.SkippedFiles), collect.MaxSkippedFiles)
+	}
+	if !slices.Contains(sent.SkippedFiles, collect.SkippedFile{Path: shop.ManifestPath, Reason: collect.ReasonParseError}) {
+		t.Fatal("the shop lock file lost its skip record, so the server would delete what it stored for it")
+	}
+	if got := restarted.state.StoredManifests; !slices.Equal(got, []string{manifestDigest(shop.ManifestPath)}) {
+		t.Fatalf("stored manifests = %v, want only the shop lock file", got)
 	}
 }
