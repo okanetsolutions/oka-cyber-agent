@@ -1,0 +1,27 @@
+GIT
+  remote: /w/gitgem
+  revision: d0d8dab8c54faaff3abea178601c61a07c7c14f7
+  specs:
+    gitgem (0.4.0)
+
+PATH
+  remote: vendor/localgem
+  specs:
+    localgem (1.2.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    rack (3.0.10)
+
+PLATFORMS
+  ruby
+  x86_64-linux
+
+DEPENDENCIES
+  gitgem!
+  localgem!
+  rack (= 3.0.10)
+
+BUNDLED WITH
+   2.5.22

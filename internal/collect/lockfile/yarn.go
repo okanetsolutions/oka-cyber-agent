@@ -171,7 +171,9 @@ func parseYarnBerry(data []byte) (Result, error) {
 		if key == "__metadata" {
 			continue
 		}
-		resolution := entries[key].Resolution
+		// Yarn appends binding parameters after "::" (::__archiveUrl=<tarball> when a registry serves a tarball from a
+		// nonstandard URL), which are not part of the version.
+		resolution, _, _ := strings.Cut(entries[key].Resolution, "::")
 		i := strings.LastIndex(resolution, "@npm:")
 		if i <= 0 {
 			continue

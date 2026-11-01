@@ -24,9 +24,10 @@ const (
 // skipped, and the server deletes every stored package missing from a snapshot, so the inventory fails instead.
 var ErrTooManyOSPackages = errors.New("more OS packages than the server accepts")
 
-// ErrTooManyCutManifests means more manifests were cut by MaxPackages than MaxSkippedFiles can list. A cut manifest
-// left out of skipped_files would have everything the server stored for it deleted, so the inventory fails instead.
-var ErrTooManyCutManifests = errors.New("more manifests cut by the package limit than the server accepts as skipped")
+// ErrTooManyRetainedManifests means more skipped manifests keep what the server stored for them (cut by MaxPackages,
+// unreadable, unparsable, ...) than MaxSkippedFiles can list. A manifest left out of skipped_files would have everything
+// the server stored for it deleted and its findings closed, so the inventory fails instead.
+var ErrTooManyRetainedManifests = errors.New("more skipped manifests to keep on the server than it accepts as skipped")
 
 const (
 	ReasonUnsupportedDistribution = "unsupported_distribution"
@@ -139,8 +140,8 @@ func (inv *Inventory) Skip(path, reason string) {
 // listed only when none of its packages can be sent, and the server then keeps what it last stored for it.
 //
 // Above MaxPackages it keeps every OS package and cuts whole dependency manifests, recording each one it cuts as skipped
-// so the server keeps what it stored for it. Those records are never dropped by MaxSkippedFiles: the other skipped
-// files are capped first.
+// so the server keeps what it stored for it. Above MaxSkippedFiles it drops first the records that keep nothing stored
+// (see retainsStoredPackages), and fails rather than drop one that does.
 func (inv *Inventory) Normalize() error {
 	seen := make(map[packageIdentity]bool, len(inv.Packages))
 	packages := make([]Package, 0, len(inv.Packages))
@@ -190,12 +191,12 @@ func (inv *Inventory) Normalize() error {
 	slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
 	inv.SkippedFiles = slices.Compact(inv.SkippedFiles)
 	if len(inv.SkippedFiles) > MaxSkippedFiles {
-		cut := slices.DeleteFunc(slices.Clone(inv.SkippedFiles), func(f SkippedFile) bool { return f.Reason != ReasonPackageLimit })
-		if len(cut) > MaxSkippedFiles {
-			return fmt.Errorf("%w: %d manifests, limit %d", ErrTooManyCutManifests, len(cut), MaxSkippedFiles)
+		retained := slices.DeleteFunc(slices.Clone(inv.SkippedFiles), func(f SkippedFile) bool { return !retainsStoredPackages(f.Reason) })
+		if len(retained) > MaxSkippedFiles {
+			return fmt.Errorf("%w: %d manifests, limit %d", ErrTooManyRetainedManifests, len(retained), MaxSkippedFiles)
 		}
-		others := slices.DeleteFunc(inv.SkippedFiles, func(f SkippedFile) bool { return f.Reason == ReasonPackageLimit })
-		inv.SkippedFiles = slices.Concat(others[:MaxSkippedFiles-len(cut)], cut)
+		others := slices.DeleteFunc(inv.SkippedFiles, func(f SkippedFile) bool { return retainsStoredPackages(f.Reason) })
+		inv.SkippedFiles = slices.Concat(retained, others[:MaxSkippedFiles-len(retained)])
 		slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
 	}
 
@@ -207,6 +208,13 @@ func (inv *Inventory) Normalize() error {
 		inv.Services = inv.Services[:MaxServices]
 	}
 	return nil
+}
+
+// retainsStoredPackages tells whether a skip record makes the server keep packages it stored for that path. A
+// no_lock_file record names a package.json (or similar) that never has packages of its own, and an
+// unsupported_distribution record a package database whose packages have no manifest path, so they keep nothing.
+func retainsStoredPackages(reason string) bool {
+	return reason != ReasonNoLockFile && reason != ReasonUnsupportedDistribution
 }
 
 func compareSkippedFiles(a, b SkippedFile) int {

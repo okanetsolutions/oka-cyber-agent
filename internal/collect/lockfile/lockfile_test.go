@@ -35,12 +35,18 @@ func TestParsersAgainstRealLockFiles(t *testing.T) {
 		spots      []spot
 	}{
 		{"composer/composer.lock", 7, 0, []spot{{"monolog/monolog", "3.12.1", unknown}, {"symfony/deprecation-contracts", "3.7.1", unknown}, {"phpunit/php-timer", "", unknown}}},
+		// Composer 2.11 with a path repository (acme/http 2.1.0), a VCS repository (acme/vcs-lib v1.4.0) and an inline
+		// package repository (acme/inline 3.0.0) next to psr/log from Packagist.
+		{"composer-sources/composer.lock", 1, 3, []spot{{"psr/log", "3.0.2", unknown}}},
 		{"npm-v3/package-lock.json", 73, 0, []spot{{"express", "4.19.2", yes}, {"@sentry/node", "7.100.0", yes}, {"lodash", "4.17.20", yes}, {"accepts", "1.3.8", no}}},
 		{"npm-shrinkwrap/npm-shrinkwrap.json", 73, 0, []spot{{"express", "4.19.2", yes}}},
 		{"npm-v1/package-lock.json", -1, 0, []spot{{"express", "4.17.1", unknown}, {"mocha", "8.0.1", unknown}}},
 		{"yarn-v1/yarn.lock", 79, 0, []spot{{"express", "4.19.2", unknown}, {"@babel/code-frame", "7.24.2", unknown}}},
 		{"yarn-v1-sources/yarn.lock", 8, 0, []spot{{"string-width", "5.1.2", unknown}, {"@types/node", "20.19.43", unknown}, {"undici-types", "6.21.0", unknown}}},
 		{"yarn-berry/yarn.lock", 86, 0, []spot{{"express", "4.19.2", unknown}, {"resolve", "1.22.8", unknown}}},
+		// Yarn 4.5.3 against a registry that serves lodash from a nonstandard tarball URL writes its resolution as
+		// lodash@npm:4.17.21::__archiveUrl=<url encoded tarball URL>.
+		{"yarn-berry-archive-url/yarn.lock", 2, 0, []spot{{"lodash", "4.17.21", unknown}, {"left-pad", "1.3.0", unknown}}},
 		{"pnpm-v5/pnpm-lock.yaml", 72, 0, []spot{{"express", "4.18.2", yes}, {"react-dom", "18.2.0", yes}, {"accepts", "1.3.8", no}}},
 		{"pnpm-v6/pnpm-lock.yaml", 73, 0, []spot{{"express", "4.19.2", yes}, {"react-dom", "18.3.1", yes}, {"typescript", "5.4.5", yes}, {"accepts", "1.3.8", no}}},
 		{"pnpm-v9/pnpm-lock.yaml", 73, 0, []spot{{"express", "4.19.2", yes}, {"react-dom", "18.3.1", yes}, {"typescript", "5.4.5", yes}, {"accepts", "1.3.8", no}}},
@@ -63,6 +69,8 @@ func TestParsersAgainstRealLockFiles(t *testing.T) {
 		{"requirements-hashes/requirements.txt", 12, 0, []spot{{"requests", "2.31.0", unknown}, {"charset-normalizer", "3.5.2", unknown}}},
 		{"requirements-freeze/requirements.txt", 12, 0, []spot{{"pyproject-hooks", "1.3.3", unknown}}},
 		{"requirements-mixed/requirements.txt", 5, 4, []spot{{"django", "4.2.11", unknown}, {"django-environ", "0.11.2", unknown}, {"psycopg2-binary", "2.9.9", unknown}, {"requests", "2.31.0", unknown}, {"pillow", "10.3.0", unknown}}},
+		// Bundler 2.5 with a git gem (gitgem 0.4.0) and a path gem (localgem 1.2.0) next to rack from rubygems.org.
+		{"bundler-sources/Gemfile.lock", 1, 2, []spot{{"rack", "3.0.10", yes}}},
 		{"bundler/Gemfile.lock", 9, 0, []spot{{"sinatra", "4.0.0", yes}, {"nokogiri", "1.16.4", yes}, {"rack", "3.0.10", yes}, {"tilt", "2.9.0", no}}},
 		{"gomod/go.mod", 25, 0, []spot{{"github.com/gin-gonic/gin", "1.9.1", yes}, {"golang.org/x/text", "0.14.0", yes}, {"golang.org/x/net", "0.10.0", no}, {"github.com/ugorji/go/codec", "1.2.12", no}}},
 		{"cargo/Cargo.lock", 9, 0, []spot{{"serde", "1.0.229", yes}, {"tokio", "1.54.1", yes}, {"proc-macro2", "", no}}},
@@ -224,6 +232,8 @@ func TestNPMV1PrefersTopLevelVersion(t *testing.T) {
 // last segment starts with a digit like a version does.
 func TestNonRegistrySourcesAreLeftOut(t *testing.T) {
 	for fixture, names := range map[string][]string{
+		"bundler-sources/Gemfile.lock":      {"gitgem", "localgem"},
+		"composer-sources/composer.lock":    {"acme/http", "acme/vcs-lib", "acme/inline"},
 		"yarn-v1-sources/yarn.lock":         {"string-width-cjs", "node-types", "@sindresorhus/is", "left-pad", "local-lib"},
 		"poetry-sources/poetry.lock":        {"requests", "six", "locallib"},
 		"uv-sources/uv.lock":                {"requests", "six", "locallib", "app"},
@@ -280,7 +290,7 @@ func TestYarnClassicHeader(t *testing.T) {
 }
 
 func TestComposerDevBranchesAreUnresolved(t *testing.T) {
-	r, err := ParseComposerLock([]byte(`{"packages":[{"name":"acme/lib","version":"dev-main"},{"name":"acme/other","version":"2.x-dev"},{"name":"psr/log","version":"v3.0.0"}]}`))
+	r, err := ParseComposerLock([]byte(`{"packages":[{"name":"acme/lib","version":"dev-main","notification-url":"https://packagist.org/downloads/"},{"name":"acme/other","version":"2.x-dev","notification-url":"https://packagist.org/downloads/"},{"name":"psr/log","version":"v3.0.0","notification-url":"https://packagist.org/downloads/"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}

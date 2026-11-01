@@ -310,7 +310,7 @@ func TestNormalizeKeepsCutManifestsWhenCappingSkippedFiles(t *testing.T) {
 			dependencyPackages("/srv/b/package-lock.json", 1),
 			dependencyPackages("/z/package-lock.json", 1),
 		),
-		SkippedFiles: skippedFiles(MaxSkippedFiles, ReasonPermissionDenied),
+		SkippedFiles: skippedFiles(MaxSkippedFiles, ReasonNoLockFile),
 	}
 	if err := inv.Normalize(); err != nil {
 		t.Fatal(err)
@@ -346,8 +346,43 @@ func TestNormalizeFailsWhenCutManifestsExceedTheSkippedFilesLimit(t *testing.T) 
 		packages = append(packages, dependencyPackages(fmt.Sprintf("/srv/m/%05d/package-lock.json", i), 1)...)
 	}
 	inv, err := Run(context.Background(), packagesCollector(packages))
-	if !errors.Is(err, ErrTooManyCutManifests) || inv != nil {
-		t.Fatalf("Run returned an inventory: %v, err = %v; want none and ErrTooManyCutManifests", inv != nil, err)
+	if !errors.Is(err, ErrTooManyRetainedManifests) || inv != nil {
+		t.Fatalf("Run returned an inventory: %v, err = %v; want none and ErrTooManyRetainedManifests", inv != nil, err)
+	}
+}
+
+// A record that keeps what the server stored (parse_error here) must survive the cap even when it sorts after more
+// than MaxSkippedFiles no_lock_file records, which keep nothing.
+func TestNormalizeCapsRecordsThatKeepNothingFirst(t *testing.T) {
+	var files []SkippedFile
+	for i := range MaxSkippedFiles + 1 {
+		files = append(files, SkippedFile{Path: fmt.Sprintf("/home/u/.bun/%05d/package.json", i), Reason: ReasonNoLockFile})
+	}
+	files = append(files,
+		SkippedFile{Path: "/var/lib/dpkg/status", Reason: ReasonUnsupportedDistribution},
+		SkippedFile{Path: "/var/www/app/composer.lock", Reason: ReasonParseError},
+	)
+	inv := &Inventory{SkippedFiles: files}
+	if err := inv.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.SkippedFiles) != MaxSkippedFiles {
+		t.Fatalf("skipped files = %d, want %d", len(inv.SkippedFiles), MaxSkippedFiles)
+	}
+	if !slices.IsSortedFunc(inv.SkippedFiles, compareSkippedFiles) {
+		t.Fatal("skipped files are not sorted")
+	}
+	if !slices.Contains(inv.SkippedFiles, SkippedFile{Path: "/var/www/app/composer.lock", Reason: ReasonParseError}) {
+		t.Fatal("the parse_error record was dropped, so the server would delete what it stored for that lock file")
+	}
+}
+
+func TestNormalizeFailsWhenRecordsThatKeepStoredPackagesExceedTheLimit(t *testing.T) {
+	for _, reason := range []string{ReasonParseError, ReasonPermissionDenied, ReasonTooLarge, ReasonUnresolvedVersions, ReasonOutsideScanRoot, ReasonInvalidEntries} {
+		inv := &Inventory{SkippedFiles: slices.Concat(skippedFiles(MaxSkippedFiles, reason), []SkippedFile{{Path: "/home/u/package.json", Reason: ReasonNoLockFile}, {Path: "/z/package-lock.json", Reason: ReasonPackageLimit}})}
+		if err := inv.Normalize(); !errors.Is(err, ErrTooManyRetainedManifests) {
+			t.Errorf("%s: err = %v, want ErrTooManyRetainedManifests", reason, err)
+		}
 	}
 }
 

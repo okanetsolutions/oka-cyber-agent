@@ -12,8 +12,9 @@ var (
 	gemPlatform = regexp.MustCompile(`-(x86|x64|i386|i686|arm|aarch64|java|jruby|mingw|mswin|darwin|linux|universal|freebsd|solaris).*$`)
 )
 
-// ParseGemfileLock reads the rubygems.org specs (GEM section) of Gemfile.lock. Gems from GIT and PATH
-// sections are not registry releases and are left out. A platform suffix (1.16.4-x86_64-linux) is removed.
+// ParseGemfileLock reads the specs of the GEM sections of Gemfile.lock, whatever their remote (rubygems.org or a
+// private gem server). Gems from GIT and PATH sections are not registry releases and are counted as unresolved. A
+// platform suffix (1.16.4-x86_64-linux) is removed.
 func ParseGemfileLock(data []byte) (Result, error) {
 	var r Result
 	var section string
@@ -34,6 +35,10 @@ func ParseGemfileLock(data []byte) (Result, error) {
 		case "GEM":
 			if m := gemSpec.FindStringSubmatch(line); m != nil {
 				specs = append(specs, Dependency{Name: m[1], Version: gemPlatform.ReplaceAllString(m[2], "")})
+			}
+		case "GIT", "PATH":
+			if gemSpec.MatchString(line) {
+				r.Unresolved++
 			}
 		case "DEPENDENCIES":
 			name, _, _ := strings.Cut(strings.TrimSpace(line), " ")
