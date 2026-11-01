@@ -63,7 +63,7 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 		Wait:          reportWait,
 		ConfigChanged: watcher.Changed,
 		Collect: func(ctx context.Context) (*collect.Inventory, error) {
-			collectors, err := collect.Defaults(collect.Options{Root: collectRoot, CollectServices: cfg.CollectServices})
+			collectors, err := collect.Defaults(collectOptions(cfg))
 			if err != nil {
 				return nil, err
 			}
@@ -92,4 +92,18 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 		return exitFailure
 	}
 	return exitOK
+}
+
+func collectOptions(cfg config.Config) collect.Options {
+	o := collect.Options{Root: collectRoot, CollectServices: cfg.CollectServices}
+	if cfg.CollectDependencyFiles {
+		o.Dependencies = &collect.DependencyOptions{
+			ScanPaths:    cfg.ScanPaths,
+			ExcludePaths: cfg.ExcludePaths,
+			MaxDepth:     cfg.MaxDepth,
+			MaxFileSize:  cfg.MaxFileSize,
+			GoBinaries:   cfg.CollectGoBinaries,
+		}
+	}
+	return o
 }

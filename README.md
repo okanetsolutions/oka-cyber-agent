@@ -10,7 +10,7 @@ It is a single static binary with no runtime dependencies. This repository is pu
 
 - OS facts: hostname, OS family, name and version, kernel version, CPU architecture.
 - Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine). On Red Hat Enterprise Linux it also reads which repository each package was installed from in the dnf history database, never the commands recorded there.
-- Application dependencies: name and resolved version of the libraries listed in common lock files (`composer.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `Gemfile.lock`, `go.sum`, `Cargo.lock` and others), with the path of the file each one came from. You can turn this off.
+- Application dependencies: name and resolved version of the libraries listed in common lock files, with the path of the file each one came from (see [Dependency files](#dependency-files)). You can turn this off.
 - Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. The process ID is not sent, so restarting a service does not count as an inventory change. You can turn this off.
 - Security log events, only when an admin turns log collection on for that server in the dashboard: SSH logins, sudo and su use, account and cron changes, suspicious web requests and application errors. Lines are redacted on your server before they are sent, and normal web traffic is only sent as counts per IP and minute.
 
@@ -118,7 +118,37 @@ report_interval_seconds: 300     # the server may change it, between 60 and 8640
 collect_services: true           # set to false to stop reporting listening services
 ```
 
+Dependency file options, with their defaults:
+
+```yaml
+collect_dependency_files: true                 # set to false to stop scanning for lock files
+scan_paths: [/var/www, /srv, /opt, /home]       # where to look
+exclude_paths: []                              # absolute paths (directories or files) never opened
+max_depth: 6                                   # path components below a scan path, like find -maxdepth
+max_file_size: 20971520                        # bytes; larger lock files are skipped (not Go executables)
+collect_go_binaries: false                     # also read module lists from Go executables
+```
+
 Unknown keys are rejected, so a typo cannot silently turn an option off. The agent token lives in `/etc/oka-cyber-agent/token` (mode 0600, owned by root) and is never written to the configuration file or the logs. The running service checks the file and the token every 30 seconds and, when either changed, exits so systemd restarts it with the new settings. An edit that does not load is ignored with a warning in the journal, and the service keeps its current settings.
+
+## Dependency files
+
+The agent looks for these files under `scan_paths` and reports the resolved versions they list:
+
+| File | Ecosystem |
+| --- | --- |
+| `composer.lock` | Packagist |
+| `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` (v1 and berry), `pnpm-lock.yaml` (5.x, 6.x, 9.x) | npm |
+| `requirements.txt` (pinned `==` only), `poetry.lock`, `Pipfile.lock`, `uv.lock` | PyPI |
+| `Gemfile.lock` | RubyGems |
+| `go.mod`, plus Go executables when `collect_go_binaries` is on | Go |
+| `Cargo.lock` | crates.io |
+| `gradle.lockfile`, `pom.xml` (literal versions only) | Maven |
+| `packages.lock.json` | NuGet |
+
+It opens only those file names (and executables, when `collect_go_binaries` is on). It skips installed dependency trees (`node_modules`, `vendor`, `site-packages` and similar), hidden directories (`.git` and package manager caches such as `.npm` or `.cargo`), the Go module cache, `/proc`, `/sys` and `/dev`. It never follows a symlink below a scan path: a symlinked lock file is listed with the reason `symlink` without being opened (its target is reported under its own path when a scan path reaches it), and a symlinked directory or executable is skipped. Nothing under `exclude_paths` is ever opened, whatever path leads to it: an excluded directory is also recognised when the walk reaches it under another name (an exclude path or a scan path that goes through a symlink, or a bind mount).
+
+Versions are never guessed. Entries without a pinned version are left out, and so are packages that do not come from their registry (a git repository, a URL, a local path or workspace), because their version is not a registry release; an npm alias is reported under the real package name. A file the agent reports no package from is listed on the dashboard with a reason instead: `unresolved_versions` (for example a `requirements.txt` with only unpinned lines), `invalid_entries` (names or versions the server does not accept), `no_lock_file` (a `package.json`, `composer.json`, `Gemfile`, `Pipfile` or `Cargo.toml` without its lock file), `too_large`, `parse_error`, `permission_denied`, `symlink` or `package_limit` (left out to stay within the server limits). Oka Cyber keeps what it last stored for a listed file. It accepts at most 1000 listed files per server. Above that, the agent lists first the files Oka Cyber has packages stored for (it keeps a digest of their paths in its state file), so lock files someone plants under a scan path can never make Oka Cyber drop what it stored for another file, nor stop the inventory. In the unlikely case that more than 1000 such files are skipped at once, the inventory is still sent and the agent logs a warning naming how many files lost their stored packages. A file the agent reports packages from is never listed, even when some of its entries were left out, so a package removed from it disappears from the inventory and its findings close. When one name appears in several versions in one lock file, one version is reported, because Oka Cyber stores one per name and file: the direct dependency when the file says which one it is (pnpm, Cargo, Bundler, uv, NuGet, Go), the top level (hoisted) install in an npm lock file, the entry a workspace or the project's `package.json` asks for in a yarn lock file when the file shows it, and otherwise the highest version.
 
 ## Uninstall
 

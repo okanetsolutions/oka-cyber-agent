@@ -14,7 +14,7 @@ import (
 
 const (
 	stateFileName = "state.json"
-	maxStateSize  = 1 << 20
+	maxStateSize  = 4 << 20
 )
 
 type State struct {
@@ -25,6 +25,9 @@ type State struct {
 	ReportIntervalSeconds int       `json:"report_interval_seconds,omitempty"`
 	LastError             string    `json:"last_error,omitempty"`
 	LastErrorAt           time.Time `json:"last_error_at,omitzero"`
+	// StoredManifests holds a digest (see manifestDigest) of every manifest path the server has packages stored for
+	// after the last snapshot it accepted, so skip records that keep them win over the others (see collect.Inventory.Marshal).
+	StoredManifests []string `json:"stored_manifests,omitempty"`
 }
 
 // LoadState returns the state saved for serverID, or an empty state when the file is missing or belongs to

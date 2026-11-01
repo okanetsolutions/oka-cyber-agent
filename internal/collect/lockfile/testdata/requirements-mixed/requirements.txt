@@ -1,0 +1,14 @@
+# Production requirements for the shop API
+-r base.txt
+--index-url https://pypi.org/simple
+
+Django==4.2.11
+django-environ==0.11.2  # loads settings from .env
+psycopg2-binary==2.9.9 ; sys_platform == "linux"
+requests[security]==2.31.0
+gunicorn>=21.2
+celery~=5.3
+redis
+-e git+https://github.com/acme/shop-utils.git@v1.4.0#egg=shop-utils
+shop-reports @ https://files.example.com/shop_reports-2.0.0-py3-none-any.whl
+Pillow===10.3.0

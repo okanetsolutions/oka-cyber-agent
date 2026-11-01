@@ -1,0 +1,103 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "33dce2054b467d96f9cdffb4fbd18017",
+    "packages": [
+        {
+            "name": "acme/http",
+            "version": "2.1.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/http",
+                "reference": "5310cdb330558ded4123900c8388669dc609d015"
+            },
+            "type": "library",
+            "transport-options": {
+                "relative": true
+            }
+        },
+        {
+            "name": "acme/inline",
+            "version": "3.0.0",
+            "dist": {
+                "type": "zip",
+                "url": "https://downloads.example.com/acme-inline-3.0.0.zip"
+            },
+            "type": "library"
+        },
+        {
+            "name": "acme/vcs-lib",
+            "version": "v1.4.0",
+            "source": {
+                "type": "git",
+                "url": "/w/vcslib",
+                "reference": "e38f581d98c95276a8b628c832d534d30800e4ac"
+            },
+            "type": "library",
+            "time": "2026-11-01T20:12:31+00:00"
+        },
+        {
+            "name": "psr/log",
+            "version": "3.0.2",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/php-fig/log.git",
+                "reference": "f16e1d5863e37f8d8c2a01719f5b34baa2b714d3"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/php-fig/log/zipball/f16e1d5863e37f8d8c2a01719f5b34baa2b714d3",
+                "reference": "f16e1d5863e37f8d8c2a01719f5b34baa2b714d3",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=8.0.0"
+            },
+            "type": "library",
+            "extra": {
+                "branch-alias": {
+                    "dev-master": "3.x-dev"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Psr\\Log\\": "src"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "PHP-FIG",
+                    "homepage": "https://www.php-fig.org/"
+                }
+            ],
+            "description": "Common interface for logging libraries",
+            "homepage": "https://github.com/php-fig/log",
+            "keywords": [
+                "log",
+                "psr",
+                "psr-3"
+            ],
+            "support": {
+                "source": "https://github.com/php-fig/log/tree/3.0.2"
+            },
+            "time": "2024-09-11T13:17:53+00:00",
+            "published-time": "2024-09-11T13:21:14+00:00"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.11.0"
+}

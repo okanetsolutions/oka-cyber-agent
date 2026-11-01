@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"syscall"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func TestLoadStateDoesNotBlockOnAFIFO(t *testing.T) {
 	}()
 	select {
 	case got := <-done:
-		if got.err == nil || got.state != (State{ServerID: "42"}) {
+		if got.err == nil || !reflect.DeepEqual(got.state, State{ServerID: "42"}) {
 			t.Fatalf("LoadState = %+v, %v; want an empty state and an error to warn about", got.state, got.err)
 		}
 	case <-time.After(5 * time.Second):
