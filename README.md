@@ -9,14 +9,20 @@ It is a single static binary with no runtime dependencies. This repository is pu
 ## What it collects
 
 - OS facts: hostname, OS family, name and version, kernel version, CPU architecture.
-- Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine).
+- Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine). On Red Hat Enterprise Linux it also reads which repository each package was installed from in the dnf history database, never the commands recorded there.
 - Application dependencies: name and resolved version of the libraries listed in common lock files (`composer.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `Gemfile.lock`, `go.sum`, `Cargo.lock` and others), with the path of the file each one came from. You can turn this off.
-- Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. You can turn this off.
+- Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. The process ID is not sent, so restarting a service does not count as an inventory change. You can turn this off.
 - Security log events, only when an admin turns log collection on for that server in the dashboard: SSH logins, sudo and su use, account and cron changes, suspicious web requests and application errors. Lines are redacted on your server before they are sent, and normal web traffic is only sent as counts per IP and minute.
+
+To see exactly what the agent would report from a server, without sending anything:
+
+```bash
+oka-cyber-agent inventory
+```
 
 ## What it never collects
 
-- The contents of your files, other than the package databases, the dependency lock files and the log files listed above.
+- The contents of your files, other than the package databases, the dnf history database, the dependency lock files and the log files listed above.
 - Secrets, passwords, keys or tokens, environment variables, shell history or command line arguments of other processes.
 - Your users' data: databases, uploads, mail or application data.
 - Anything from a path chosen by the dashboard. The dashboard can only switch built in sources on and off; every file path the agent reads comes from its local configuration on your server.
