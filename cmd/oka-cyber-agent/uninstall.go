@@ -31,6 +31,25 @@ var executablePath = func() (string, error) {
 	return filepath.EvalSymlinks(self)
 }
 
+var geteuid = os.Geteuid
+
+// newUninstaller returns the uninstaller for the real host; self is the resolved path of the running binary.
+var newUninstaller = func(self string) agent.Uninstaller {
+	u := agent.Uninstaller{
+		ConfigDir:  config.DefaultDir,
+		StateDir:   config.DefaultStateDir,
+		UnitPath:   installedUnitPath,
+		User:       serviceUser,
+		Systemctl:  systemctl(),
+		UserExists: userExists,
+		DeleteUser: deleteUser,
+	}
+	if self == installedBinaryPath {
+		u.BinaryPath = installedBinaryPath
+	}
+	return u
+}
+
 func uninstallCommand(ctx context.Context, args []string, io streams) int {
 	flags := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	flags.SetOutput(io.stderr)
@@ -43,22 +62,11 @@ func uninstallCommand(ctx context.Context, args []string, io streams) int {
 		fmt.Fprintln(io.stderr, "uninstall: this agent was installed from a package. Remove it with your package manager: apt purge oka-cyber-agent, or dnf remove oka-cyber-agent")
 		return exitFailure
 	}
-	if os.Geteuid() != 0 {
+	if geteuid() != 0 {
 		fmt.Fprintln(io.stderr, "uninstall: run as root, for example: sudo oka-cyber-agent uninstall")
 		return exitFailure
 	}
-	u := agent.Uninstaller{
-		ConfigDir:  config.DefaultDir,
-		StateDir:   config.DefaultStateDir,
-		UnitPath:   installedUnitPath,
-		User:       serviceUser,
-		UserExists: userExists,
-		DeleteUser: deleteUser,
-	}
-	if self == installedBinaryPath {
-		u.BinaryPath = installedBinaryPath
-	}
-	u.Systemctl = systemctl()
+	u := newUninstaller(self)
 	if !*yes {
 		fmt.Fprintf(io.stdout, "This stops the agent and removes %s, %s, %s and the %s user. Continue? [y/N] ", u.ConfigDir, u.StateDir, u.UnitPath, u.User)
 		answer, _ := bufio.NewReader(io.stdin).ReadString('\n')

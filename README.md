@@ -72,7 +72,7 @@ sudo oka-cyber-agent enroll --url https://<your tenant> --token <enrollment toke
 sudo systemctl enable --now oka-cyber-agent
 ```
 
-Upgrading the package restarts the service on the new binary. Installing it again on an enrolled server (for example after `apt remove`) enables and starts the service.
+Upgrading the package restarts the service on the new binary, and leaves it disabled if you disabled it. Installing the package on a server that is already enrolled enables and starts the service. After `apt remove`, which keeps the enrollment, installing it again starts the service only if it was enabled before the removal.
 
 ### Verify a release
 
