@@ -30,8 +30,10 @@ These are product promises written in the README. A change that breaks one is a 
 - `cmd/oka-cyber-agent`: the CLI entry point and subcommand wiring only. No business logic.
 - `internal/collect`: collectors (OS facts, package databases, listening services, dependency file discovery). Each collector implements the collector interface and is tested against fixture files.
 - `internal/collect/lockfile`: one parser per dependency file format, pure functions from bytes to resolved versions. Fixtures under its `testdata` were produced by the real tools (composer, npm, yarn, pnpm, poetry, pipenv, uv, bundler, go, cargo, gradle, dotnet).
+- `internal/logs`: log sources (journald through `journalctl`, auth and cron log files, nginx and Apache access logs, configured application logs), the polling file tailer and the parsers that turn lines into the event kinds of okanetsolutions/oka-core#3779. Parsers are tested against real lines captured per distribution under `testdata`.
 - `internal/api`: the HTTP client for the Oka Cyber agent API and the wire types.
 - `internal/config`: the local configuration file and token storage.
+- `internal/trustedcmd`: finds the system commands the agent runs (`rpm`, `journalctl`) in fixed system directories only, never through the agent's own `PATH`.
 - `internal/sqlite`: a minimal read-only reader of SQLite database files, for the dnf history database (release builds have no cgo).
 - `internal/agent`: the run loop (heartbeat, inventory, log shipping) and its persisted state.
 - `testdata` directories next to the code they feed: real sample files, never generated at test time.
