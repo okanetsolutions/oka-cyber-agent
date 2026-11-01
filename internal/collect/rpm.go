@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,10 @@ import (
 const rpmQueryFormat = `%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{SOURCERPM}\t%{INSTALLTIME}\n`
 
 var rpmDatabasePaths = []string{"/var/lib/rpm", "/usr/lib/sysimage/rpm"}
+
+// trustedCommandDirs are the only directories commands are run from. The agent's own PATH is never searched,
+// since it runs as root and a PATH kept by sudo can contain a directory other users can write to.
+var trustedCommandDirs = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
 
 type CommandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
@@ -64,8 +70,12 @@ func (c RPMCollector) Collect(ctx context.Context, inv *Inventory) error {
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = []string{"LC_ALL=C", "PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
+	path, err := lookTrustedCommand(name)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = []string{"LC_ALL=C", "PATH=" + strings.Join(trustedCommandDirs, ":")}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
@@ -73,6 +83,19 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return output, nil
+}
+
+func lookTrustedCommand(name string) (string, error) {
+	if name == "" || strings.ContainsRune(name, '/') {
+		return "", fmt.Errorf("command %q: %w", name, exec.ErrNotFound)
+	}
+	for _, dir := range trustedCommandDirs {
+		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("%s in %s: %w", name, strings.Join(trustedCommandDirs, ":"), exec.ErrNotFound)
 }
 
 // ParseRPMQuery parses the output of rpm -qa with rpmQueryFormat. Versions are [epoch:]version-release, as in
