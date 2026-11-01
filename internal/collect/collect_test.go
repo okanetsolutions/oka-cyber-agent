@@ -378,7 +378,7 @@ func TestNormalizeCapsRecordsThatKeepNothingFirst(t *testing.T) {
 }
 
 func TestNormalizeFailsWhenRecordsThatKeepStoredPackagesExceedTheLimit(t *testing.T) {
-	for _, reason := range []string{ReasonParseError, ReasonPermissionDenied, ReasonTooLarge, ReasonUnresolvedVersions, ReasonOutsideScanRoot, ReasonInvalidEntries} {
+	for _, reason := range []string{ReasonParseError, ReasonPermissionDenied, ReasonTooLarge, ReasonUnresolvedVersions, ReasonSymlink, ReasonInvalidEntries} {
 		inv := &Inventory{SkippedFiles: slices.Concat(skippedFiles(MaxSkippedFiles, reason), []SkippedFile{{Path: "/home/u/package.json", Reason: ReasonNoLockFile}, {Path: "/z/package-lock.json", Reason: ReasonPackageLimit}})}
 		if err := inv.Normalize(); !errors.Is(err, ErrTooManyRetainedManifests) {
 			t.Errorf("%s: err = %v, want ErrTooManyRetainedManifests", reason, err)

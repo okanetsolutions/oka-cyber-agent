@@ -99,7 +99,6 @@ func TestDependencyDiscovery(t *testing.T) {
 		"/var/www/deep/a/b/c/d/Gemfile.lock": 9,
 		"/srv/api/requirements.txt":          5,
 		"/srv/rust/Cargo.lock":               9,
-		"/srv/inside/Cargo.lock":             9,
 		"/opt/dotnet/packages.lock.json":     8,
 	}
 	if got := manifests(inv); !mapsEqual(got, wantManifests) {
@@ -110,7 +109,9 @@ func TestDependencyDiscovery(t *testing.T) {
 	wantSkipped := []SkippedFile{
 		{"/srv/big/yarn.lock", ReasonTooLarge},
 		{"/srv/broken/Pipfile.lock", ReasonParseError},
-		{"/srv/escape/go.mod", ReasonOutsideScanRoot},
+		{"/srv/dangling/uv.lock", ReasonSymlink},
+		{"/srv/escape/go.mod", ReasonSymlink},
+		{"/srv/inside/Cargo.lock", ReasonSymlink},
 		{"/srv/unpinned/requirements.txt", ReasonUnresolvedVersions},
 		{"/var/www/legacy/package.json", ReasonNoLockFile},
 	}
@@ -158,6 +159,64 @@ func TestDependencyDiscoveryExcludesFiles(t *testing.T) {
 	// Opening an unreadable excluded file would have listed it as permission_denied (when not root).
 	if len(inv.SkippedFiles) != 0 {
 		t.Fatalf("skipped = %v, want none", inv.SkippedFiles)
+	}
+}
+
+// symlinkedIntoExcluded builds a tree where /srv/secret is excluded and every way of reaching a file under it
+// goes through a symlink: file symlinks with relative and absolute targets, directory symlinks with relative and
+// absolute targets, a file symlink through a directory symlink, a symlinked executable and a scan path that is a
+// symlink into the excluded directory. /srv/current/storage is excluded too, though the walk only meets it as
+// /srv/releases/5/storage because /srv/current is a symlink.
+func symlinkedIntoExcluded(t *testing.T) (tree, DependencyOptions) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tree{t, t.TempDir()}
+	abs := func(hostPath string) string { return filepath.Join(tr.root, hostPath) }
+	tr.copy(lockFixture("composer/composer.lock"), "/srv/secret/composer.lock")
+	tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/secret/Cargo.lock")
+	tr.copy(lockFixture("npm-v3/package-lock.json"), "/srv/secret/app/package-lock.json")
+	tr.copy(self, "/srv/secret/bin/tool")
+	if err := os.Chmod(abs("/srv/secret/bin/tool"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tr.symlink("../secret/composer.lock", "/srv/app/composer.lock")
+	tr.symlink(abs("/srv/secret/Cargo.lock"), "/srv/abs/Cargo.lock")
+	tr.symlink("secret/app", "/srv/web")
+	tr.symlink(abs("/srv/secret/app"), "/srv/webabs")
+	tr.symlink("secret/app", "/srv/link")
+	tr.symlink("../link/package-lock.json", "/srv/through/package-lock.json")
+	tr.symlink("../secret/bin/tool", "/srv/bin/tool")
+	tr.symlink("srv/secret/app", "/data")
+	tr.copy(lockFixture("composer/composer.lock"), "/srv/releases/5/storage/composer.lock")
+	tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/releases/5/Cargo.lock")
+	tr.symlink("releases/5", "/srv/current")
+	return tr, DependencyOptions{
+		ScanPaths:    []string{"/srv", "/data"},
+		ExcludePaths: []string{"/srv/secret", "/srv/current/storage"},
+		GoBinaries:   true,
+	}
+}
+
+// A file under an excluded path is never read or reported, whatever symlink leads to it. A symlinked lock file
+// is listed without being opened, and a symlinked directory or executable is not entered or read.
+func TestDependencyDiscoveryNeverFollowsSymlinksIntoExcludedPaths(t *testing.T) {
+	tr, options := symlinkedIntoExcluded(t)
+	inv, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]int{"/srv/releases/5/Cargo.lock": 9}; !mapsEqual(manifests(inv), want) {
+		t.Fatalf("manifests = %v, want %v", manifests(inv), want)
+	}
+	wantSkipped := []SkippedFile{
+		{"/srv/abs/Cargo.lock", ReasonSymlink},
+		{"/srv/app/composer.lock", ReasonSymlink},
+		{"/srv/through/package-lock.json", ReasonSymlink},
+	}
+	if !slices.Equal(inv.SkippedFiles, wantSkipped) {
+		t.Fatalf("skipped = %v\nwant %v", inv.SkippedFiles, wantSkipped)
 	}
 }
 

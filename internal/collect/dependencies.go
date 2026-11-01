@@ -22,7 +22,7 @@ const (
 	ReasonParseError         = "parse_error"
 	ReasonUnresolvedVersions = "unresolved_versions"
 	ReasonNoLockFile         = "no_lock_file"
-	ReasonOutsideScanRoot    = "symlink_outside_scan_root"
+	ReasonSymlink            = "symlink"
 	ReasonNotFound           = "not_found"
 )
 
@@ -44,8 +44,9 @@ type DependencyOptions struct {
 }
 
 // DependencyCollector finds dependency lock files under the scan paths. It opens only the file names in
-// lockfile.Formats (plus executables when GoBinaries is on), does not descend into symlinked directories,
-// and reads files through os.Root, so a symlink cannot lead it outside the scan root it was found in.
+// lockfile.Formats (plus executables when GoBinaries is on) and never follows a symlink below a scan path: every
+// directory and file is opened relative to its parent directory without following one (see openAt), so the path
+// it checks against exclude_paths is the path of what it opens.
 type DependencyCollector struct {
 	Root    string
 	Options DependencyOptions
@@ -61,6 +62,7 @@ func (c DependencyCollector) Collect(ctx context.Context, inv *Inventory) error 
 	if o.MaxFileSize <= 0 {
 		o.MaxFileSize = DefaultMaxFileSize
 	}
+	excluded := excludedFiles(c.Root, o.ExcludePaths)
 	seen := map[string]bool{}
 	for _, scanPath := range o.ScanPaths {
 		if err := ctx.Err(); err != nil {
@@ -70,7 +72,7 @@ func (c DependencyCollector) Collect(ctx context.Context, inv *Inventory) error 
 		if !filepath.IsAbs(scanPath) || isExcluded(scanPath, o.ExcludePaths) {
 			continue
 		}
-		s := &scan{collector: c, options: o, hostRoot: scanPath, inv: inv, seen: seen, dirs: map[string][]string{}}
+		s := &scan{collector: c, options: o, hostRoot: scanPath, excluded: excluded, inv: inv, seen: seen, dirs: map[string][]string{}}
 		if err := s.run(ctx); err != nil {
 			return err
 		}
@@ -78,66 +80,151 @@ func (c DependencyCollector) Collect(ctx context.Context, inv *Inventory) error 
 	return nil
 }
 
+// excludedFiles lists the files and directories that exclude_paths name, so that one reached under another
+// path is excluded too: an exclude path that goes through a symlink (/var/www/current/storage with current a
+// symlink to a release directory), a scan path that is a symlink into an excluded directory, or a bind mount.
+func excludedFiles(root string, excludePaths []string) []fs.FileInfo {
+	var infos []fs.FileInfo
+	for _, p := range excludePaths {
+		if info, err := os.Stat(filepath.Join(root, p)); err == nil {
+			infos = append(infos, info)
+		}
+	}
+	return infos
+}
+
 type scan struct {
 	collector DependencyCollector
 	options   DependencyOptions
 	hostRoot  string
-	root      *os.Root
+	excluded  []fs.FileInfo
 	inv       *Inventory
 	seen      map[string]bool
 	dirs      map[string][]string
 }
 
 func (s *scan) run(ctx context.Context) error {
-	root, err := os.OpenRoot(filepath.Join(s.collector.Root, s.hostRoot))
+	full := filepath.Join(s.collector.Root, s.hostRoot)
+	resolved, ok := s.resolveScanPath(full)
+	if !ok {
+		return nil
+	}
+	dir, err := os.OpenFile(full, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil
 	}
-	defer root.Close()
-	s.root = root
-	err = fs.WalkDir(root.FS(), ".", func(rel string, d fs.DirEntry, err error) error {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		hostPath := path.Join(s.hostRoot, rel)
-		if err != nil || d == nil {
-			return nil
-		}
-		if d.IsDir() {
-			return s.directory(rel, hostPath, d)
-		}
-		format, isLockFile := lockfile.ForFile(d.Name())
-		_, isManifest := lockfile.Manifests[d.Name()]
-		excluded := isExcluded(hostPath, s.options.ExcludePaths)
-		// An excluded lock file is never opened, but it still resolves the manifests next to it.
-		if isLockFile || isManifest && !excluded {
-			s.dirs[path.Dir(rel)] = append(s.dirs[path.Dir(rel)], d.Name())
-		}
-		if excluded {
-			return nil
-		}
-		if isLockFile {
-			s.lockFile(rel, hostPath, format, d.Type()&fs.ModeSymlink != 0)
-		} else if s.options.GoBinaries && d.Type().IsRegular() {
-			s.goBinary(rel, hostPath, d)
-		}
+	defer dir.Close()
+	if !s.isFileAt(dir, resolved) {
 		return nil
-	})
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	}
+	if err := s.walk(ctx, dir, "."); err != nil {
 		return err
 	}
 	s.reportManifestsWithoutLockFiles()
 	return nil
 }
 
-func (s *scan) directory(rel, hostPath string, d fs.DirEntry) error {
-	if rel == "." {
-		return nil
+// resolveScanPath resolves the symlinks of a scan path and refuses it when it is an excluded directory or lies
+// inside one. It only looks up file metadata, so nothing under an excluded directory is opened.
+func (s *scan) resolveScanPath(full string) (string, bool) {
+	if len(s.excluded) == 0 {
+		return full, true
 	}
-	if skippedDirectory(rel, d.Name()) || strings.Count(rel, "/")+1 >= s.options.MaxDepth || isExcluded(hostPath, s.options.ExcludePaths) || isExcluded(hostPath, pseudoFilesystems) {
-		return fs.SkipDir
+	resolved, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return "", false
+	}
+	for p := resolved; ; p = filepath.Dir(p) {
+		if info, err := os.Stat(p); err == nil && s.isExcludedFile(info) {
+			return "", false
+		}
+		if p == filepath.Dir(p) {
+			return resolved, true
+		}
+	}
+}
+
+// isFileAt makes sure the scan path did not change between resolveScanPath and the open.
+func (s *scan) isFileAt(dir *os.File, resolved string) bool {
+	if len(s.excluded) == 0 {
+		return true
+	}
+	opened, err := dir.Stat()
+	if err != nil {
+		return false
+	}
+	current, err := os.Stat(resolved)
+	return err == nil && os.SameFile(opened, current)
+}
+
+func (s *scan) isExcludedFile(info fs.FileInfo) bool {
+	return slices.ContainsFunc(s.excluded, func(e fs.FileInfo) bool { return os.SameFile(e, info) })
+}
+
+// isExcludedEntry looks the entry up without opening it (the type of a listed entry is that of the entry
+// itself, never of a symlink target) and tells whether it is one of the excluded files or directories.
+func (s *scan) isExcludedEntry(d fs.DirEntry) bool {
+	if len(s.excluded) == 0 {
+		return false
+	}
+	info, err := d.Info()
+	return err != nil || s.isExcludedFile(info)
+}
+
+// walk lists dir, reached at rel, in name order. A symlinked directory is listed as a symlink, not a directory,
+// so the walk never descends into one; and because a subdirectory is opened relative to dir without following
+// a symlink, one swapped in after the listing is refused rather than followed.
+func (s *scan) walk(ctx context.Context, dir *os.File, rel string) error {
+	entries, _ := dir.ReadDir(-1)
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	for _, d := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entryRel := path.Join(rel, d.Name())
+		hostPath := path.Join(s.hostRoot, entryRel)
+		if d.IsDir() {
+			if err := s.directory(ctx, dir, entryRel, hostPath, d); err != nil {
+				return err
+			}
+			continue
+		}
+		s.file(dir, entryRel, hostPath, d)
 	}
 	return nil
+}
+
+func (s *scan) directory(ctx context.Context, parent *os.File, rel, hostPath string, d fs.DirEntry) error {
+	if skippedDirectory(rel, d.Name()) || strings.Count(rel, "/")+1 >= s.options.MaxDepth || isExcluded(hostPath, s.options.ExcludePaths) || isExcluded(hostPath, pseudoFilesystems) || s.isExcludedEntry(d) {
+		return nil
+	}
+	dir, err := openAt(parent, d.Name(), os.O_RDONLY|syscall.O_DIRECTORY)
+	if err != nil {
+		return nil
+	}
+	defer dir.Close()
+	if info, err := dir.Stat(); err != nil || s.isExcludedFile(info) {
+		return nil
+	}
+	return s.walk(ctx, dir, rel)
+}
+
+func (s *scan) file(dir *os.File, rel, hostPath string, d fs.DirEntry) {
+	format, isLockFile := lockfile.ForFile(d.Name())
+	_, isManifest := lockfile.Manifests[d.Name()]
+	excluded := isExcluded(hostPath, s.options.ExcludePaths)
+	// An excluded lock file is never opened, but it still resolves the manifests next to it.
+	if isLockFile || isManifest && !excluded {
+		s.dirs[path.Dir(rel)] = append(s.dirs[path.Dir(rel)], d.Name())
+	}
+	if excluded {
+		return
+	}
+	if isLockFile {
+		s.lockFile(dir, hostPath, format, d)
+	} else if s.options.GoBinaries && d.Type().IsRegular() {
+		s.goBinary(dir, hostPath, d)
+	}
 }
 
 // skippedDirectory leaves out installed dependency trees (their own lock files describe libraries, not the
@@ -147,12 +234,18 @@ func skippedDirectory(rel, name string) bool {
 	return slices.Contains(skippedDirectories, name) || strings.HasPrefix(name, ".") || rel == "pkg/mod" || strings.HasSuffix(rel, "/pkg/mod")
 }
 
-func (s *scan) lockFile(rel, hostPath string, format lockfile.Format, symlink bool) {
-	if s.seen[hostPath] {
+// lockFile reports a symlinked lock file without opening it: its target may be outside the scan path or under
+// an excluded path. A target inside a scan path is reported under its own path.
+func (s *scan) lockFile(dir *os.File, hostPath string, format lockfile.Format, d fs.DirEntry) {
+	if s.seen[hostPath] || s.isExcludedEntry(d) {
 		return
 	}
 	s.seen[hostPath] = true
-	data, reason := s.read(rel, symlink)
+	if d.Type()&fs.ModeSymlink != 0 {
+		s.inv.Skip(hostPath, ReasonSymlink)
+		return
+	}
+	data, reason := s.read(dir, d.Name())
 	if reason == ReasonNotFound {
 		return
 	}
@@ -180,18 +273,18 @@ func (s *scan) lockFile(rel, hostPath string, format lockfile.Format, symlink bo
 	}
 }
 
-// read opens a lock file through the scan root. A symlink that resolves outside the root cannot be opened
-// (os.Root refuses it) and is reported; a dangling one is ignored. O_NONBLOCK keeps a FIFO given a lock file
-// name by any local user from blocking the open, and with it the whole inventory.
-func (s *scan) read(rel string, symlink bool) ([]byte, string) {
-	f, err := s.root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+// read opens a lock file the walk listed as a regular file. A symlink swapped in since is refused (ELOOP), a
+// file removed since is ignored, and openAt's O_NONBLOCK keeps a FIFO given a lock file name by any local user
+// from blocking the open, and with it the whole inventory.
+func (s *scan) read(dir *os.File, name string) ([]byte, string) {
+	f, err := openAt(dir, name, os.O_RDONLY)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, ReasonNotFound
+	case errors.Is(err, syscall.ELOOP):
+		return nil, ReasonSymlink
 	case errors.Is(err, fs.ErrPermission):
 		return nil, ReasonPermissionDenied
-	case err != nil && symlink:
-		return nil, ReasonOutsideScanRoot
 	case err != nil:
 		return nil, ReasonParseError
 	}
@@ -216,14 +309,14 @@ func (s *scan) read(rel string, symlink bool) ([]byte, string) {
 // goBinary reads the module list Go embeds in executables (only when collect_go_binaries is on). The lock file
 // size limit does not apply: buildinfo.Read reads the headers and searches the data segment in small chunks
 // through io.ReaderAt, so a large binary (terraform, kubectl) costs no more memory than a small one. Like a lock
-// file it is opened with O_NONBLOCK, and once open it must still be the regular file the walk listed, so a FIFO
+// file it is opened with openAt, and once open it must still be the regular file the walk listed, so a FIFO
 // or a symlink swapped in after the walk cannot block the inventory or be read in its place.
-func (s *scan) goBinary(rel, hostPath string, d fs.DirEntry) {
+func (s *scan) goBinary(dir *os.File, hostPath string, d fs.DirEntry) {
 	listed, err := d.Info()
-	if err != nil || listed.Mode().Perm()&0o111 == 0 || listed.Size() < 4 || s.seen[hostPath] {
+	if err != nil || listed.Mode().Perm()&0o111 == 0 || listed.Size() < 4 || s.seen[hostPath] || s.isExcludedFile(listed) {
 		return
 	}
-	f, err := s.root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := openAt(dir, d.Name(), os.O_RDONLY)
 	if err != nil {
 		return
 	}
