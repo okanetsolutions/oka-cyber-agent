@@ -20,6 +20,10 @@ const (
 // skipped, and the server deletes every stored package missing from a snapshot, so the inventory fails instead.
 var ErrTooManyOSPackages = errors.New("more OS packages than the server accepts")
 
+// ErrTooManyCutManifests means more manifests were cut by MaxPackages than MaxSkippedFiles can list. A cut manifest
+// left out of skipped_files would have everything the server stored for it deleted, so the inventory fails instead.
+var ErrTooManyCutManifests = errors.New("more manifests cut by the package limit than the server accepts as skipped")
+
 const (
 	ReasonUnsupportedDistribution = "unsupported_distribution"
 	ReasonPermissionDenied        = "permission_denied"
@@ -114,7 +118,8 @@ func (inv *Inventory) Skip(path, reason string) {
 
 // Normalize dedupes and sorts the inventory and applies the server limits, so an unchanged host always produces the same snapshot.
 // Above MaxPackages it keeps every OS package and cuts dependency packages by manifest path, recording each manifest
-// it cuts as skipped so the server keeps what it stored for it.
+// it cuts as skipped so the server keeps what it stored for it. Those records are never dropped by MaxSkippedFiles:
+// the other skipped files are capped first.
 func (inv *Inventory) Normalize() error {
 	seen := make(map[packageIdentity]bool, len(inv.Packages))
 	packages := make([]Package, 0, len(inv.Packages))
@@ -143,12 +148,16 @@ func (inv *Inventory) Normalize() error {
 	slices.SortFunc(packages, func(a, b Package) int { return a.identity().compare(b.identity()) })
 	inv.Packages = packages
 
-	slices.SortFunc(inv.SkippedFiles, func(a, b SkippedFile) int {
-		return cmp.Or(cmp.Compare(a.Path, b.Path), cmp.Compare(a.Reason, b.Reason))
-	})
+	slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
 	inv.SkippedFiles = slices.Compact(inv.SkippedFiles)
 	if len(inv.SkippedFiles) > MaxSkippedFiles {
-		inv.SkippedFiles = inv.SkippedFiles[:MaxSkippedFiles]
+		cut := slices.DeleteFunc(slices.Clone(inv.SkippedFiles), func(f SkippedFile) bool { return f.Reason != ReasonPackageLimit })
+		if len(cut) > MaxSkippedFiles {
+			return fmt.Errorf("%w: %d manifests, limit %d", ErrTooManyCutManifests, len(cut), MaxSkippedFiles)
+		}
+		others := slices.DeleteFunc(inv.SkippedFiles, func(f SkippedFile) bool { return f.Reason == ReasonPackageLimit })
+		inv.SkippedFiles = slices.Concat(others[:MaxSkippedFiles-len(cut)], cut)
+		slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
 	}
 
 	slices.SortFunc(inv.Services, compareServices)
@@ -159,6 +168,10 @@ func (inv *Inventory) Normalize() error {
 		inv.Services = inv.Services[:MaxServices]
 	}
 	return nil
+}
+
+func compareSkippedFiles(a, b SkippedFile) int {
+	return cmp.Or(cmp.Compare(a.Path, b.Path), cmp.Compare(a.Reason, b.Reason))
 }
 
 func compareServices(a, b Service) int {

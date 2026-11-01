@@ -194,6 +194,63 @@ func TestNormalizeFailsWhenOSPackagesExceedTheLimit(t *testing.T) {
 	}
 }
 
+func skippedFiles(n int, reason string) []SkippedFile {
+	files := make([]SkippedFile, 0, n)
+	for i := range n {
+		files = append(files, SkippedFile{Path: fmt.Sprintf("/srv/m/%05d/package-lock.json", i), Reason: reason})
+	}
+	return files
+}
+
+func TestNormalizeKeepsCutManifestsWhenCappingSkippedFiles(t *testing.T) {
+	inv := &Inventory{
+		Packages: slices.Concat(
+			osPackages(MaxPackages-1),
+			dependencyPackages("/a/package-lock.json", 1),
+			dependencyPackages("/srv/b/package-lock.json", 1),
+			dependencyPackages("/z/package-lock.json", 1),
+		),
+		SkippedFiles: skippedFiles(MaxSkippedFiles, ReasonPermissionDenied),
+	}
+	if err := inv.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.SkippedFiles) != MaxSkippedFiles {
+		t.Fatalf("skipped files = %d, want %d", len(inv.SkippedFiles), MaxSkippedFiles)
+	}
+	if !slices.IsSortedFunc(inv.SkippedFiles, compareSkippedFiles) {
+		t.Fatal("skipped files are not sorted")
+	}
+	sent := map[string]bool{}
+	for _, p := range inv.Packages {
+		sent[p.ManifestPath] = true
+	}
+	skipped := map[string]string{}
+	for _, f := range inv.SkippedFiles {
+		skipped[f.Path] = f.Reason
+	}
+	want := map[string]string{"/srv/b/package-lock.json": ReasonPackageLimit, "/z/package-lock.json": ReasonPackageLimit}
+	for manifest, reason := range want {
+		if sent[manifest] || skipped[manifest] != reason {
+			t.Errorf("%s: sent %v, skipped as %q; want it skipped as %q so the server keeps what it stored for it", manifest, sent[manifest], skipped[manifest], reason)
+		}
+	}
+	if !sent["/a/package-lock.json"] {
+		t.Error("/a/package-lock.json fits under the package limit and must be sent")
+	}
+}
+
+func TestNormalizeFailsWhenCutManifestsExceedTheSkippedFilesLimit(t *testing.T) {
+	packages := osPackages(MaxPackages)
+	for i := range MaxSkippedFiles + 1 {
+		packages = append(packages, dependencyPackages(fmt.Sprintf("/srv/m/%05d/package-lock.json", i), 1)...)
+	}
+	inv, err := Run(context.Background(), packagesCollector(packages))
+	if !errors.Is(err, ErrTooManyCutManifests) || inv != nil {
+		t.Fatalf("Run returned an inventory: %v, err = %v; want none and ErrTooManyCutManifests", inv != nil, err)
+	}
+}
+
 type packagesCollector []Package
 
 func (packagesCollector) Name() string { return "packages" }

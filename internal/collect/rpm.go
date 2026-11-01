@@ -6,9 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,12 +28,12 @@ func (RPMCollector) Name() string { return "rpm" }
 func (c RPMCollector) Collect(ctx context.Context, inv *Inventory) error {
 	var found bool
 	for _, path := range rpmDatabasePaths {
-		if _, err := os.Stat(filepath.Join(c.Root, path)); err == nil {
-			ok, err := packageDatabase(c.Root, path, FamilyRHEL, inv)
-			if err != nil {
-				return err
-			}
-			found = ok
+		ok, err := packageDatabase(c.Root, path, FamilyRHEL, inv)
+		if err != nil {
+			return err
+		}
+		if ok {
+			found = true
 			break
 		}
 	}
