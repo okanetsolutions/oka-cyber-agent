@@ -1,0 +1,8 @@
+2026-11-02T11:33:48.427300+00:00 367706a7fec9 sudo:    alice : PWD=/ ; USER=root ; COMMAND=/bin/ls /root
+2026-11-02T11:33:48.446383+00:00 367706a7fec9 sudo:    alice : PWD=/tmp/x ; USER=bob ; COMMAND=/bin/true ; USER=root ; COMMAND=/bin/sh -c true
+2026-11-02T11:33:48.464754+00:00 367706a7fec9 sudo:    alice : PWD=/ ; USER=root ; COMMAND=/bin/echo ' ; USER=bob ; COMMAND=/bin/true'
+2026-11-02T11:33:48.483008+00:00 367706a7fec9 sudo:    alice : PWD=/ ; USER=root ; COMMAND=/bin/echo x ' ; USER=bob ; COMMAND=/bin/true'
+2026-11-02T11:33:48.501057+00:00 367706a7fec9 sudo:    alice : PWD=/tmp/x ; USER=bob ; COMMAND=/bin/true ; USER=root ; COMMAND=/bin/echo ' ; USER=root ; COMMAND=/bin/sh -c id'
+2026-11-02T11:33:48.519808+00:00 367706a7fec9 sudo:    alice : PWD=/ ; USER=root ; ENV=FOO=a ; COMMAND=/bin/true ; COMMAND=/bin/sh -c true
+2026-11-02T11:33:48.538242+00:00 367706a7fec9 sudo:    alice : PWD=/ ; USER=root ; GROUP=adm ; COMMAND=/bin/sh -c true
+2026-11-02T11:33:48.546709+00:00 367706a7fec9 sudo:    alice : PWD=/ ; USER=root ; TSID=01 ; COMMAND=/usr/bin/id

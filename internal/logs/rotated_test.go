@@ -298,3 +298,82 @@ func TestReadFilesContinuesOnlyTheSameRotatedFile(t *testing.T) {
 		t.Fatal("a released file must be readable")
 	}
 }
+
+// The agent is stopped after it read a and b, logrotate renames the files while it is stopped, and c was
+// written to app.log just before. The position saved under app.log is for the file now called app.log.1.
+func TestCollectorResumesAFileRotatedWhileStoppedUnderItsNewName(t *testing.T) {
+	for _, olderRotation := range []bool{false, true} {
+		t.Run(fmt.Sprintf("app.log.1 existed=%v", olderRotation), func(t *testing.T) {
+			h := newHost(t)
+			dir := "/var/log/myapp"
+			path := func(name string) string { return filepath.Join(h.root, dir, name) }
+			h.write(dir+"/app.log", "")
+			if olderRotation {
+				h.write(dir+"/app.log.1", appError("older"))
+			}
+			clock := &fakeClock{now: testNow}
+			c := NewCollector([]string{SourceApp}, h.options(false, dir+"/*"), Checkpoint{}, nil, clock.Now)
+			c.Poll(context.Background())
+			h.append(dir+"/app.log", appError("a")+appError("b"))
+			if got := messages(c.Poll(context.Background())); !slices.Equal(got, []string{"a", "b"}) {
+				t.Fatalf("before the restart: %v", got)
+			}
+			checkpoint := c.Checkpoint()
+			c.Close()
+
+			h.append(dir+"/app.log", appError("c"))
+			if olderRotation {
+				if err := os.Rename(path("app.log.1"), path("app.log.2")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Rename(path("app.log"), path("app.log.1")); err != nil {
+				t.Fatal(err)
+			}
+			h.write(dir+"/app.log", appError("d"))
+			restarted := NewCollector([]string{SourceApp}, h.options(false, dir+"/*"), checkpoint, nil, clock.Now)
+			defer restarted.Close()
+			if got := messages(restarted.Poll(context.Background())); !slices.Equal(got, []string{"d", "c"}) {
+				t.Fatalf("after the restart: %v, want the new app.log from its start and the rest of app.log.1", got)
+			}
+			clock.now = clock.now.Add(replanEvery)
+			h.append(dir+"/app.log", appError("e"))
+			if got := messages(restarted.Poll(context.Background())); !slices.Equal(got, []string{"e"}) {
+				t.Fatalf("next poll: %v", got)
+			}
+		})
+	}
+}
+
+// A file at the rotated name with the saved inode but other bytes before the saved offset is not the file
+// that was read, as when a deleted file's inode number is given to a new file: it is read from its start.
+func TestCollectorDoesNotResumeARenamedFileWhoseContentChanged(t *testing.T) {
+	h := newHost(t)
+	dir := "/var/log/myapp"
+	h.write(dir+"/app.log", "")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp}, h.options(false, dir+"/*"), Checkpoint{}, nil, clock.Now)
+	c.Poll(context.Background())
+	h.append(dir+"/app.log", appError("a")+appError("b"))
+	c.Poll(context.Background())
+	checkpoint := c.Checkpoint()
+	c.Close()
+
+	if err := os.Rename(filepath.Join(h.root, dir, "app.log"), filepath.Join(h.root, dir, "app.log.1")); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(h.root, dir, "app.log.1"), os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(appError("x") + appError("y") + appError("z")); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	h.write(dir+"/app.log", "")
+	restarted := NewCollector([]string{SourceApp}, h.options(false, dir+"/*"), checkpoint, nil, clock.Now)
+	defer restarted.Close()
+	if got := messages(restarted.Poll(context.Background())); !slices.Equal(got, []string{"x", "y", "z"}) {
+		t.Fatalf("events = %v, want the changed file from its start", got)
+	}
+}

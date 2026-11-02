@@ -1,0 +1,21 @@
+2026-11-02T11:34:13.054121+00:00 cbbe5343f1e2 useradd[3186]: new group: name=alice, GID=1001
+2026-11-02T11:34:13.054289+00:00 cbbe5343f1e2 useradd[3186]: new user: name=alice, UID=1001, GID=1001, home=/home/alice, shell=/bin/sh, from=none
+2026-11-02T11:34:13.127264+00:00 cbbe5343f1e2 useradd[3194]: new group: name=mallory, GID=1002
+2026-11-02T11:34:13.127420+00:00 cbbe5343f1e2 useradd[3194]: new user: name=mallory, UID=1002, GID=1002, home=/home/mallory, shell=/bin/sh, from=none
+2026-11-02T11:34:13.127623+00:00 cbbe5343f1e2 useradd[3194]: add 'mallory' to group 'adm'
+2026-11-02T11:34:13.127651+00:00 cbbe5343f1e2 useradd[3194]: add 'mallory' to group 'sudo'
+2026-11-02T11:34:13.127684+00:00 cbbe5343f1e2 useradd[3194]: add 'mallory' to shadow group 'adm'
+2026-11-02T11:34:13.127717+00:00 cbbe5343f1e2 useradd[3194]: add 'mallory' to shadow group 'sudo'
+2026-11-02T11:34:13.202207+00:00 cbbe5343f1e2 useradd[3201]: new group: name=trudy, GID=1003
+2026-11-02T11:34:13.202364+00:00 cbbe5343f1e2 useradd[3201]: new user: name=trudy, UID=1003, GID=1003, home=/home/trudy, shell=/bin/sh, from=none
+2026-11-02T11:34:13.202557+00:00 cbbe5343f1e2 useradd[3201]: add 'trudy' to group 'sudo'
+2026-11-02T11:34:13.202616+00:00 cbbe5343f1e2 useradd[3201]: add 'trudy' to shadow group 'sudo'
+2026-11-02T11:34:13.264290+00:00 cbbe5343f1e2 usermod[3209]: delete 'mallory' from group 'sudo'
+2026-11-02T11:34:13.264336+00:00 cbbe5343f1e2 usermod[3209]: delete 'mallory' from shadow group 'sudo'
+2026-11-02T11:34:13.285785+00:00 cbbe5343f1e2 groupmems[3216]: pam_unix(groupmems:auth): auth could not identify password for [root]
+2026-11-02T11:34:13.285938+00:00 cbbe5343f1e2 groupmems[3216]: Authentication failure
+2026-11-02T11:34:13.289920+00:00 cbbe5343f1e2 groupmems[3217]: pam_unix(groupmems:auth): auth could not identify password for [root]
+2026-11-02T11:34:13.290070+00:00 cbbe5343f1e2 groupmems[3217]: Authentication failure
+2026-11-02T11:34:13.315118+00:00 cbbe5343f1e2 gpasswd[3218]: members of group adm set by root to alice,mallory
+2026-11-02T11:34:13.332196+00:00 cbbe5343f1e2 usermod[3224]: add 'alice' to group 'sudo'
+2026-11-02T11:34:13.332240+00:00 cbbe5343f1e2 usermod[3224]: add 'alice' to shadow group 'sudo'

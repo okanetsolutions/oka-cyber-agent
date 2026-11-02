@@ -3,6 +3,7 @@ package logs
 import (
 	"bufio"
 	"errors"
+	"hash/crc32"
 	"io"
 	"io/fs"
 	"os"
@@ -20,10 +21,13 @@ const (
 )
 
 // Position is how far a file has been read: the byte offset after the last complete line of the file with
-// that inode.
+// that device and inode. Sum is the CRC-32 of the readEndCheckBytes before the offset, which must still be
+// the same for the position to be used again: a deleted file's inode number can be given to a new file.
 type Position struct {
+	Dev    uint64 `json:"dev"`
 	Inode  uint64 `json:"inode"`
 	Offset int64  `json:"offset"`
+	Sum    uint32 `json:"sum"`
 }
 
 // Tailer follows one file by path and inode. It is polled: every Poll returns the complete lines written
@@ -34,7 +38,8 @@ type Position struct {
 //
 // While a rotated file is still being read, Position is the position in that old file. The old file is known
 // only by the open descriptor, not by a path, so after a restart at that point the new file is read from its
-// start and the rest of the old one is not read.
+// start and the rest of the old one is not read, unless a glob pattern matches its new name (see
+// Collector.savedPosition).
 //
 // The tailers of a Collector share what they read by device and inode (see readFiles): a file another tailer
 // holds open is not opened, and one it finished reading after a rotation is continued where it stopped.
@@ -49,6 +54,7 @@ type Tailer struct {
 	id           fileID
 	inode        uint64
 	offset       int64
+	sum          uint32
 	skipping     bool
 	resume       *Position
 	startAtEnd   bool
@@ -75,7 +81,7 @@ type PollResult struct {
 }
 
 func (t *Tailer) Position() Position {
-	return Position{Inode: t.inode, Offset: t.offset}
+	return Position{Dev: t.id.dev, Inode: t.inode, Offset: t.offset, Sum: t.sum}
 }
 
 func (t *Tailer) Close() {
@@ -105,7 +111,7 @@ func (t *Tailer) Poll() PollResult {
 		}
 		t.files.finished(t.file, t.id, t.offset)
 		t.Close()
-		t.offset = 0
+		t.moveTo(0)
 		t.startAtEnd = false
 	}
 	if missing {
@@ -126,7 +132,7 @@ func (t *Tailer) Poll() PollResult {
 		}
 	}
 	if info.Size() < t.offset {
-		t.offset = 0
+		t.moveTo(0)
 		t.skipping = false
 	}
 	lines, _ := t.read()
@@ -138,7 +144,8 @@ func (t *Tailer) missing(r PollResult) PollResult {
 	r.Missing = true
 	// A recreated file may get the deleted file's inode number back, so the position is forgotten, also the
 	// saved one when the file is missing before it was ever opened.
-	t.inode, t.offset, t.skipping = 0, 0, false
+	t.inode, t.skipping = 0, false
+	t.moveTo(0)
 	t.resume = nil
 	if t.missingSince.IsZero() {
 		t.missingSince = t.Now()
@@ -174,19 +181,21 @@ func (t *Tailer) open() (fs.FileInfo, error) {
 	}
 	t.file, t.id = f, id
 	continued, ok := t.files.resume(f, id, size)
+	offset := t.offset
 	switch {
-	case t.resume != nil && t.resume.Inode == inode && t.resume.Offset <= size:
-		t.offset = t.resume.Offset
+	case t.resume != nil && t.resume.Dev == id.dev && t.resume.Inode == inode && t.resume.Offset <= size && checksumBefore(f, t.resume.Offset) == t.resume.Sum:
+		offset = t.resume.Offset
 	case ok:
-		t.offset = continued
+		offset = continued
 	case t.resume != nil:
-		t.offset = 0
+		offset = 0
 	case t.startAtEnd:
-		t.offset = size
+		offset = size
 	case t.inode == inode:
 	default:
-		t.offset = 0
+		offset = 0
 	}
+	t.moveTo(offset)
 	t.resume = nil
 	t.startAtEnd = false
 	t.inode = inode
@@ -225,10 +234,24 @@ func (t *Tailer) read() (lines []string, more bool) {
 			if t.skipping {
 				consumed += int64(len(chunk))
 			}
-			t.offset += consumed
+			if consumed > 0 {
+				t.moveTo(t.offset + consumed)
+			}
 			return lines, more
 		}
 	}
+}
+
+// moveTo sets the offset and the checksum of the bytes before it that a saved Position carries.
+func (t *Tailer) moveTo(offset int64) {
+	t.offset, t.sum = offset, 0
+	if offset > 0 && t.file != nil {
+		t.sum = checksumBefore(t.file, offset)
+	}
+}
+
+func checksumBefore(f *os.File, offset int64) uint32 {
+	return crc32.ChecksumIEEE(bytesBefore(f, offset))
 }
 
 func inodeOf(info fs.FileInfo) uint64 {

@@ -522,7 +522,7 @@ func TestCollectorForgetsSavedPositionOfAFileMissingAtStartup(t *testing.T) {
 	vhostLog := "/var/log/nginx/shop.example.com.access.log"
 	staged := filepath.Join(h.root, "/var/log/nginx/staged")
 	appendTo(t, staged, `203.0.113.7 - - [01/Nov/2026:00:00:02 +0000] "GET /.env HTTP/1.1" 404 0 "-" "zgrab"`+"\n"+strings.Repeat("x", 9000)+"\n")
-	checkpoint := Checkpoint{Sources: []string{SourceWeb}, Files: map[string]Position{vhostLog: {Inode: inodeOfPath(t, staged), Offset: 9000}}}
+	checkpoint := Checkpoint{Sources: []string{SourceWeb}, Files: map[string]Position{vhostLog: positionInPath(t, staged, 9000)}}
 	clock := &fakeClock{now: testNow}
 	c := NewCollector([]string{SourceWeb}, h.options(false), checkpoint, nil, clock.Now)
 	defer c.Close()

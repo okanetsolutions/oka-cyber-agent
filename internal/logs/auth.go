@@ -52,6 +52,8 @@ func ParseAuth(program, message string, at time.Time) (Event, bool) {
 			e.set("uid", uid)
 			return e, true
 		}
+		// useradd -G logs the supplementary groups of the new account the way usermod does.
+		return parseGroupChange(program, message, at)
 	case "usermod", "gpasswd":
 		return parseGroupChange(program, message, at)
 	case "passwd", "chpasswd":
@@ -109,22 +111,9 @@ func parseSudo(message string, at time.Time) (Event, bool) {
 		return Event{}, false
 	}
 	parts := strings.Split(m[2], " ; ")
-	values := map[string]string{}
 	var status string
-	for i, part := range parts {
-		key, value, ok := strings.Cut(part, "=")
-		if ok && (key == "TTY" || key == "PWD" || key == "USER" || key == "COMMAND" || key == "ENV" || key == "GROUP") {
-			if key == "COMMAND" {
-				value = strings.Join(parts[i:], " ; ")[len("COMMAND="):]
-				values[key] = value
-				break
-			}
-			values[key] = value
-			continue
-		}
-		if i == 0 {
-			status = part
-		}
+	if key, _, ok := strings.Cut(parts[0], "="); !ok || !sudoKeys[key] {
+		status = parts[0]
 	}
 	kind := KindSudoCommand
 	var reason string
@@ -139,21 +128,78 @@ func parseSudo(message string, at time.Time) (Event, bool) {
 	default:
 		kind, reason = KindSudoFailed, "other"
 	}
-	if values["COMMAND"] == "" && kind == KindSudoCommand {
+	splits := sudoSplits(parts)
+	if len(splits) == 0 && kind == KindSudoCommand {
 		return Event{}, false
 	}
 	e := authEvent(kind, "sudo", message, at)
 	e.Username = m[1]
-	if user := values["USER"]; user != "" {
+	if user, ok := agreed(splits, func(s sudoSplit) string { return s.user }); ok && user != "" {
 		e.set("target_user", user)
 	}
-	if command := values["COMMAND"]; command != "" {
+	if command, ok := agreed(splits, func(s sudoSplit) string { return s.command }); ok && command != "" {
 		e.set("command", command)
 	}
 	if reason != "" {
 		e.set("reason", reason)
 	}
 	return e, true
+}
+
+var sudoKeys = map[string]bool{"HOST": true, "TTY": true, "CHROOT": true, "PWD": true, "USER": true, "GROUP": true, "TSID": true, "ENV": true, "COMMAND": true}
+
+type sudoSplit struct{ user, command string }
+
+// sudoSplits returns every way the " ; " separated parts of a sudo line can be read as sudo's log format,
+// which writes its keys in a fixed order: ... PWD=cwd ; USER=runas ; [GROUP=group ; ] [TSID=id ; ]
+// [ENV=vars ; ] COMMAND=command and arguments. sudo does not escape " ; " or "KEY=" in the working directory,
+// the ENV values or the arguments, which a user chooses, so a crafted line can be read in more than one way.
+// The user and group names and the session ID are taken as single parts.
+func sudoSplits(parts []string) []sudoSplit {
+	var splits []sudoSplit
+	for i, part := range parts {
+		user, ok := strings.CutPrefix(part, "USER=")
+		if !ok || user == "" {
+			continue
+		}
+		k := i + 1
+		if k < len(parts) && strings.HasPrefix(parts[k], "GROUP=") {
+			k++
+		}
+		if k < len(parts) && strings.HasPrefix(parts[k], "TSID=") {
+			k++
+		}
+		commandAt := func(j int) {
+			if strings.HasPrefix(parts[j], "COMMAND=") {
+				splits = append(splits, sudoSplit{user: user, command: strings.TrimPrefix(strings.Join(parts[j:], " ; "), "COMMAND=")})
+			}
+		}
+		switch {
+		case k == len(parts):
+		case strings.HasPrefix(parts[k], "ENV="):
+			for j := k + 1; j < len(parts); j++ {
+				commandAt(j)
+			}
+		default:
+			commandAt(k)
+		}
+	}
+	return splits
+}
+
+// agreed returns the value every split gives, so a field is reported only when the line has one reading of
+// it and never a value the user who ran sudo planted in a working directory or an argument.
+func agreed(splits []sudoSplit, field func(sudoSplit) string) (string, bool) {
+	if len(splits) == 0 {
+		return "", false
+	}
+	value := field(splits[0])
+	for _, s := range splits[1:] {
+		if field(s) != value {
+			return "", false
+		}
+	}
+	return value, true
 }
 
 func parseSu(message string, at time.Time) (Event, bool) {

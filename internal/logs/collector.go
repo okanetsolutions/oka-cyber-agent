@@ -172,6 +172,7 @@ func (c *Collector) parseLine(plan FilePlan, line string) (Event, bool) {
 // the same file another tailer is reading or just read to its end: its tailer waits for that one and goes on
 // from where it stopped (see readFiles), so no line is read twice.
 func (c *Collector) plan(ctx context.Context) {
+	startup := c.lastPlan.IsZero()
 	previous := c.listed
 	c.listed = map[string]map[string]bool{}
 	c.listWatchedDirs()
@@ -197,8 +198,8 @@ func (c *Collector) plan(ctx context.Context) {
 			continue
 		}
 		var resume *Position
-		if pos, ok := c.resume.Files[path]; ok && !c.firstEnable[f.Source] {
-			resume = &pos
+		if !c.firstEnable[f.Source] {
+			resume = c.savedPosition(path, startup)
 		}
 		startAtEnd := resume == nil && !createdSince(previous, path)
 		t := NewTailer(c.options.path(path), resume, startAtEnd)
@@ -227,6 +228,41 @@ func (c *Collector) plan(ctx context.Context) {
 		}
 		c.startJournal(ctx, cursor)
 	}
+}
+
+// savedPosition is the position saved for path. At startup the file at path may also be one that was saved
+// under another name: a rotation while the agent was stopped renamed it to a name a glob pattern matches
+// (app.log saved, now app.log.1 for /var/log/myapp/*). It is recognized by device and inode when the position
+// saved for path is for another file and the file is no longer at the name it was saved under. Later plans do
+// not look, since saved positions are not updated while the agent runs and readFiles follows the renames.
+// The Tailer checks the inode, size and checksum again when it opens the file.
+func (c *Collector) savedPosition(path string, startup bool) *Position {
+	pos, saved := c.resume.Files[path]
+	if startup {
+		if id, ok := c.fileIDAt(path); ok && (!saved || pos.Dev != id.dev || pos.Inode != id.ino) {
+			for _, other := range slices.Sorted(maps.Keys(c.resume.Files)) {
+				moved := c.resume.Files[other]
+				if other == path || moved.Dev != id.dev || moved.Inode != id.ino {
+					continue
+				}
+				if at, ok := c.fileIDAt(other); !ok || at != id {
+					return &moved
+				}
+			}
+		}
+	}
+	if !saved {
+		return nil
+	}
+	return &pos
+}
+
+func (c *Collector) fileIDAt(path string) (fileID, bool) {
+	info, err := os.Lstat(c.options.path(path))
+	if err != nil || !info.Mode().IsRegular() {
+		return fileID{}, false
+	}
+	return fileIDOf(info), true
 }
 
 // listWatchedDirs records the names in each directory of a watched file that is not listed yet. A directory

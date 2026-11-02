@@ -217,13 +217,52 @@ func inodeOfPath(t *testing.T, path string) uint64 {
 	return inodeOf(info)
 }
 
+// positionInPath is a position a tailer reading path to offset would have saved.
+func positionInPath(t *testing.T, path string, offset int64) Position {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := fileIDOf(info)
+	return Position{Dev: id.dev, Inode: id.ino, Offset: offset, Sum: checksumBefore(f, offset)}
+}
+
+func TestTailerUsesASavedPositionOnlyWhenTheBytesBeforeItAreUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.log")
+	appendTo(t, path, "a\nb\n")
+	saved := positionInPath(t, path, 2)
+	appendTo(t, path, "c\n")
+	tail, _ := newTestTailer(path, &saved, false)
+	if got := lines(tail.Poll()); !slices.Equal(got, []string{"b", "c"}) {
+		t.Fatalf("lines = %q, want the lines after the saved position", got)
+	}
+
+	if err := os.WriteFile(path, []byte("x\ny\nz\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if inodeOfPath(t, path) != saved.Inode {
+		t.Fatal("the file must keep its inode")
+	}
+	tail, _ = newTestTailer(path, &saved, false)
+	if got := lines(tail.Poll()); !slices.Equal(got, []string{"x", "y", "z"}) {
+		t.Fatalf("lines = %q, want a file with other bytes before the saved offset read from its start", got)
+	}
+}
+
 // A rename keeps the inode number, so moving a prepared file into place recreates the watched file with the
 // inode of the saved position, as a filesystem that hands a freed inode number back does.
 func TestTailerForgetsSavedPositionOfAMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.log")
 	staged := path + ".new"
 	appendTo(t, staged, "first line\n"+strings.Repeat("x", 9000)+"\nlast line\n")
-	tail, _ := newTestTailer(path, &Position{Inode: inodeOfPath(t, staged), Offset: 9000}, false)
+	saved := positionInPath(t, staged, 9012)
+	tail, _ := newTestTailer(path, &saved, false)
 	if r := tail.Poll(); !r.Missing {
 		t.Fatalf("poll = %+v, want missing", r)
 	}
