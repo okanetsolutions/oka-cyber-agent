@@ -153,6 +153,70 @@ func TestCollectorDoesNotRereadADateextRotatedAccessLog(t *testing.T) {
 	}
 }
 
+// The end of a rotated file must be remembered until the plan that finds its new name was polled, however
+// long the caller waits between polls (an upload can block it for minutes).
+func TestCollectorContinuesARotatedFileWhateverTheTimeBetweenPolls(t *testing.T) {
+	request := func(path string) string {
+		return `203.0.113.7 - - [31/Oct/2026:19:00:02 +0000] "GET ` + path + ` HTTP/1.1" 404 0 "-" "zgrab"` + "\n"
+	}
+	for _, gap := range []time.Duration{time.Second, 2 * replanEvery, 10 * time.Minute} {
+		// held: the poll that plans the rotated name also reads the rotated file to its end, after the
+		// tailer of the rotated name, which sorts first, found it held. drained: the rotated file is read to
+		// its end in a poll without a plan, and the plan that finds its new name comes later.
+		for _, drainFirst := range []bool{false, true} {
+			name := fmt.Sprintf("held/%s", gap)
+			if drainFirst {
+				name = fmt.Sprintf("drained/%s", gap)
+			}
+			t.Run(name, func(t *testing.T) {
+				h := newHost(t)
+				nginx := "/var/log/nginx"
+				rotated := nginx + "/access-20261030.log"
+				h.write(nginx+"/access.log", "")
+				clock := &fakeClock{now: testNow}
+				c := NewCollector([]string{SourceWeb}, h.options(false), Checkpoint{}, nil, clock.Now)
+				defer c.Close()
+				c.Poll(context.Background())
+				h.append(nginx+"/access.log", request("/one"))
+				clock.now = clock.now.Add(time.Second)
+				got := messages(c.Poll(context.Background()))
+
+				h.append(nginx+"/access.log", request("/two"))
+				if err := os.Rename(filepath.Join(h.root, nginx, "access.log"), filepath.Join(h.root, rotated)); err != nil {
+					t.Fatal(err)
+				}
+				h.write(nginx+"/access.log", request("/new"))
+				if drainFirst {
+					clock.now = clock.now.Add(time.Second)
+					got = append(got, messages(c.Poll(context.Background()))...)
+					if _, ok := c.watches[rotated]; ok {
+						t.Fatal("the rotated name was planned before the rotated file was read to its end")
+					}
+					clock.now = clock.now.Add(max(gap, replanEvery))
+				} else {
+					clock.now = clock.now.Add(max(gap, replanEvery))
+					got = append(got, messages(c.Poll(context.Background()))...)
+					if _, ok := c.watches[rotated]; !ok {
+						t.Fatalf("watches = %v, want the rotated name planned", sortedWatchPaths(c.watches))
+					}
+				}
+				h.append(rotated, request("/late"))
+				for range 3 {
+					got = append(got, messages(c.Poll(context.Background()))...)
+					clock.now = clock.now.Add(gap)
+				}
+				want := []string{"/one", "/two", "/new", "/late"}
+				if !slices.Equal(got, want) {
+					t.Fatalf("events = %v, want %v: every line once", got, want)
+				}
+				if len(c.files.done) != 0 {
+					t.Fatalf("%d read ends remembered after the plan that found them was polled", len(c.files.done))
+				}
+			})
+		}
+	}
+}
+
 func TestCollectorReadsANewDailyFileFromItsStartAfterARotation(t *testing.T) {
 	h := newHost(t)
 	dir := "/var/www/shop/storage/logs"
@@ -197,25 +261,30 @@ func TestReadFilesContinuesOnlyTheSameRotatedFile(t *testing.T) {
 	other, _, otherSize := open("other.log", strings.Repeat("new line\n", 30))
 
 	r := newReadFiles()
-	r.finished(rotated, id, size, testNow)
-	if _, ok := r.resume(other, id, otherSize, testNow); ok {
+	r.planned()
+	r.finished(rotated, id, size)
+	if _, ok := r.resume(other, id, otherSize); ok {
 		t.Fatal("a new file that got the inode number back must not be continued")
 	}
-	r.finished(rotated, id, size, testNow)
-	if _, ok := r.resume(rotated, id, size, testNow.Add(readEndKeep)); ok {
-		t.Fatal("an old read end must be forgotten")
+	r.finished(rotated, id, size)
+	r.polled()
+	r.planned()
+	if offset, ok := r.resume(rotated, id, size); !ok || offset != size {
+		t.Fatalf("resume = %d, %v; want the end the other tailer reached, until the next plan was polled", offset, ok)
 	}
-	r.finished(rotated, id, size, testNow)
-	if offset, ok := r.resume(rotated, id, size, testNow.Add(replanEvery)); !ok || offset != size {
-		t.Fatalf("resume = %d, %v; want the end the other tailer reached", offset, ok)
-	}
-	if _, ok := r.resume(rotated, id, size, testNow.Add(replanEvery)); ok {
+	if _, ok := r.resume(rotated, id, size); ok {
 		t.Fatal("a read end is continued only once")
+	}
+	r.finished(rotated, id, size)
+	r.planned()
+	r.polled()
+	if _, ok := r.resume(rotated, id, size); ok || len(r.done) != 0 {
+		t.Fatal("a read end must be forgotten once the next plan was polled")
 	}
 
 	deleted, deletedID, deletedSize := open("deleted.log", "line\n")
 	os.Remove(deleted.Name())
-	r.finished(deleted, deletedID, deletedSize, testNow)
+	r.finished(deleted, deletedID, deletedSize)
 	if _, ok := r.done[deletedID]; ok {
 		t.Fatal("a deleted file cannot be found again and must not be remembered")
 	}

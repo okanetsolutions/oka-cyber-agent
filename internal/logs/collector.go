@@ -96,7 +96,8 @@ func (c *Collector) UntrustedEntries() int { return c.untrustedEntries }
 
 // Poll returns the events read since the previous call.
 func (c *Collector) Poll(ctx context.Context) []Event {
-	if c.lastPlan.IsZero() || c.now().Sub(c.lastPlan) >= replanEvery {
+	planned := c.lastPlan.IsZero() || c.now().Sub(c.lastPlan) >= replanEvery
+	if planned {
 		c.plan(ctx)
 	}
 	var events []Event
@@ -115,6 +116,9 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 		if result.Removed && w.plan.Pattern == "" {
 			events = append(events, RemovedEvent(w.plan.Source, w.plan.Path, c.now().UTC()))
 		}
+	}
+	if planned {
+		c.files.polled()
 	}
 	for {
 		select {
@@ -172,6 +176,7 @@ func (c *Collector) plan(ctx context.Context) {
 	c.listed = map[string]map[string]bool{}
 	c.listWatchedDirs()
 	c.lastPlan = c.now()
+	c.files.planned()
 	p := PlanSources(c.sources, c.options)
 	c.skipped = p.Skipped
 	planned := map[string]FilePlan{}

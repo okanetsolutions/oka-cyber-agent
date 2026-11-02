@@ -103,7 +103,7 @@ func (t *Tailer) Poll() PollResult {
 		if more {
 			return r
 		}
-		t.files.finished(t.file, t.id, t.offset, t.Now())
+		t.files.finished(t.file, t.id, t.offset)
 		t.Close()
 		t.offset = 0
 		t.startAtEnd = false
@@ -173,7 +173,7 @@ func (t *Tailer) open() (fs.FileInfo, error) {
 		return nil, errHeld
 	}
 	t.file, t.id = f, id
-	continued, ok := t.files.resume(f, id, size, t.Now())
+	continued, ok := t.files.resume(f, id, size)
 	switch {
 	case t.resume != nil && t.resume.Inode == inode && t.resume.Offset <= size:
 		t.offset = t.resume.Offset
