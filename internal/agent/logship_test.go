@@ -70,9 +70,10 @@ func validateLikeTheServer(rejectEvent func(logs.Event) bool, rejectSkipped func
 	}
 }
 
+// commandOf is the executable of a sudo event, which names the test lines: they run commands without arguments.
 func commandOf(e logs.Event) string {
 	command, _ := e.Fields["command"].(string)
-	return command
+	return strings.TrimSuffix(command, " [0 args]")
 }
 
 type shipperHost struct {
@@ -165,7 +166,7 @@ func TestShipperRedactsAggregatesAndCommitsAfterAck(t *testing.T) {
 		t.Fatalf("batch = %+v", b)
 	}
 	sudo, ssh := b.Events[0], b.Events[1]
-	if sudo.Kind != logs.KindSudoCommand || strings.Contains(sudo.Message, "S3cret") || strings.Contains(sudo.Fields["command"].(string), "S3cret") {
+	if sudo.Kind != logs.KindSudoCommand || strings.Contains(sudo.Message, "S3cret") || sudo.Fields["command"] != "/usr/bin/mysql [1 arg]" {
 		t.Fatalf("sudo = %+v", sudo)
 	}
 	if ssh.Kind != logs.KindSSHLoginFailed || ssh.Count != 5 || ssh.Username != logs.Redacted || strings.Contains(ssh.Message, "Hunter2") {
@@ -504,7 +505,7 @@ func TestLivenessBatchNeverSkipsUnflushedEventsAcrossARestart(t *testing.T) {
 	var commands []string
 	for _, b := range h.client.batches {
 		for _, e := range b.Events {
-			commands = append(commands, e.Fields["command"].(string))
+			commands = append(commands, commandOf(e))
 		}
 	}
 	if strings.Join(commands, ",") != "/usr/bin/id" {
@@ -600,7 +601,7 @@ func TestShipperResumesAfterRestartWithoutDuplicates(t *testing.T) {
 	var commands []string
 	for _, b := range h.client.batches[1:] {
 		for _, e := range b.Events {
-			commands = append(commands, e.Fields["command"].(string))
+			commands = append(commands, commandOf(e))
 		}
 	}
 	if strings.Join(commands, ",") != "/usr/bin/first,/usr/bin/second" {
@@ -692,7 +693,7 @@ func TestShipperStaysIdleWhenTheServerHasNoLogsEndpoint(t *testing.T) {
 	var commands []string
 	for _, b := range h.client.batches[1:] {
 		for _, e := range b.Events {
-			commands = append(commands, e.Fields["command"].(string))
+			commands = append(commands, commandOf(e))
 		}
 	}
 	if strings.Join(commands, ",") != "/usr/bin/first,/usr/bin/second" {
@@ -760,7 +761,7 @@ func storedCommands(batches []api.LogBatchRequest, failed int) []string {
 		}
 		last = b.BatchID
 		for _, e := range b.Events {
-			commands = append(commands, e.Fields["command"].(string))
+			commands = append(commands, commandOf(e))
 		}
 	}
 	return commands

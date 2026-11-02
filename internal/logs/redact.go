@@ -57,7 +57,6 @@ var (
 	jwtShaped      = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+`)
 	emailAddress   = regexp.MustCompile(`[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
 	urlUserinfo    = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^/?#\s:@'"]*)(:[^/?#\s'"]*)?@`)
-	secretHeader   = regexp.MustCompile(`(?i)(?:^|\s)(?:-H|--header)(?:=|\s*)(["']?)\s*([a-z0-9_.-]+)\s*:`)
 	// secretKeyValue finds a key and the separator after it: key=value, key: value, 'key' => value,
 	// [key] => value and "key": with its quotes escaped to any depth (\"key\": inside a JSON string), or a key
 	// followed by blanks or a parenthesis, which counts only when a quoted value follows (SQL PASSWORD 'x',
@@ -65,6 +64,11 @@ var (
 	secretKeyValue = regexp.MustCompile(`(\\*["']|\[)?([A-Za-z0-9_][A-Za-z0-9_.-]*)(\\*["']|\])?(\s*(?:=>|[:=])\s*|\s*\(\s*|\s+)`)
 	identifiedBy   = regexp.MustCompile(`(?i)\bidentified(?:\s+with\s+\S+)?\s+$`)
 	sshUserName    = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
+	// phpArray starts an array as print_r (Array) and var_export (array) write it, the parenthesis after blanks,
+	// line breaks or line breaks escaped in a JSON string.
+	phpArray = regexp.MustCompile(`^(?i:array)(?:\s|\\+[nrt])*\(`)
+	// emptyStructure is a structured value that holds nothing: [], {}, Array ( ).
+	emptyStructure = regexp.MustCompile(`^(?i:array)?(?:[\s\[\]{}()]|\\+[nrt])*$`)
 )
 
 // Redact removes secrets and personal data from an event before it reaches the spool. In every string of every
@@ -73,10 +77,9 @@ var (
 //     payloads in other parameters stay, they are evidence),
 //   - URL passwords, JWT shaped strings and email addresses,
 //   - the values of secret key/value pairs, JSON and PHP array entries (also JSON escaped inside a JSON
-//     string) and SQL password literals.
+//     string, and the whole value when it is a JSON array or object or a PHP array) and SQL password literals.
 //
-// Before that, by kind:
-//   - in sudo commands the values of secret options, variables, key/value pairs and headers read as a command line,
+// sudo events carry no command arguments and no variables at all (see sudoCommand). Before that, by kind:
 //   - in application errors also the secret options of a command line the text quotes,
 //   - SSH user names on failed logins that are not valid user names, since people type passwords into the user prompt.
 //
@@ -96,11 +99,6 @@ func Redact(e Event) Event {
 		if e.Username != "" && !sshUserName.MatchString(e.Username) {
 			e.Message = strings.Replace(e.Message, " "+e.Username+" from ", " "+Redacted+" from ", 1)
 			e.Username = Redacted
-		}
-	case KindSudoCommand, KindSudoFailed:
-		e.Message = RedactCommand(e.Message)
-		if command, ok := e.Fields["command"].(string); ok {
-			e.Fields["command"] = RedactCommand(command)
 		}
 	case KindHTTPRequest:
 		e.Suspicious = Suspicious(e)
@@ -122,7 +120,7 @@ func Redact(e Event) Event {
 // a password in a referer or a user agent is redacted like one in an application error.
 func redactEverywhere(s string) string {
 	s = RedactQuery(redactURLUserinfo(s))
-	s = redactSpans(s, keyValueSpans(s, false))
+	s = redactSpans(s, keyValueSpans(s))
 	s = jwtShaped.ReplaceAllString(s, Redacted)
 	return emailAddress.ReplaceAllString(s, Redacted)
 }
@@ -274,23 +272,13 @@ func sensitiveParameter(name, value string) bool {
 	return containsAny(strings.ToLower(name), personalParameterWords)
 }
 
-// RedactCommand replaces secrets in a command line: the values of secret options (--password, -storepass,
-// --api-key=, -p and the password options of a few programs, see secretArgument), of secret variables and
-// key/value pairs (MYSQL_PWD=, ENV=AWS_SECRET_ACCESS_KEY=, {"token":"x"}), the password of -u/--user
-// user:password, secret headers (Authorization, Cookie, Private-Token), SQL password literals, the password in a
-// URL and sensitive query parameters.
-func RedactCommand(s string) string {
-	s = RedactQuery(redactURLUserinfo(s))
-	return redactSpans(s, keyValueSpans(s, true), secretArgumentSpans(s, 0, maxQuotedCommands), secretHeaderSpans(s))
-}
-
 // RedactText redacts free text such as an application error: sensitive query parameters, passwords in URLs,
 // the values of secret key=value and key: value pairs, JSON and PHP array entries, quoted or not and with their
 // quotes escaped to any depth, SQL password literals, and secret options of a command line the text quotes
 // (a failed process).
 func RedactText(s string) string {
 	s = RedactQuery(redactURLUserinfo(s))
-	return redactSpans(s, keyValueSpans(s, false), secretArgumentSpans(s, 0, maxQuotedCommands))
+	return redactSpans(s, keyValueSpans(s), secretArgumentSpans(s, 0, maxQuotedCommands))
 }
 
 // redactSpans replaces the union of the spans every rule found in s, each run of overlapping or touching spans
@@ -529,57 +517,6 @@ func containsAny(s string, words []string) bool {
 	return false
 }
 
-// secretHeaderSpans finds the value of -H/--header headers whose name is secret (Authorization, Cookie,
-// X-Api-Key, Private-Token), keeping an authorization scheme such as Bearer. sudo logs the arguments of a
-// command without quotes on older versions, so an unquoted value runs up to the next option or URL.
-func secretHeaderSpans(s string) []span {
-	var spans []span
-	for _, loc := range secretHeader.FindAllStringSubmatchIndex(s, -1) {
-		if !secretName(s[loc[4]:loc[5]]) {
-			continue
-		}
-		rest := s[loc[1]:]
-		end := len(rest)
-		if quote := s[loc[2]:loc[3]]; quote != "" {
-			if i := strings.Index(rest, quote); i >= 0 {
-				end = i
-			}
-		} else {
-			end = unquotedArgumentsEnd(rest)
-		}
-		if start, ok := headerSecretStart(rest[:end]); ok {
-			spans = append(spans, span{loc[1] + start, loc[1] + end})
-		}
-	}
-	return spans
-}
-
-func unquotedArgumentsEnd(s string) int {
-	end := 0
-	for i, field := range strings.Fields(s) {
-		at := end + strings.Index(s[end:], field)
-		if i > 0 && (strings.HasPrefix(field, "-") || strings.Contains(field, "://")) {
-			return end
-		}
-		end = at + len(field)
-	}
-	return len(s)
-}
-
-// headerSecretStart is where the secret in a header value starts: after the blanks and an authorization scheme
-// such as Bearer. ok is false for an empty value.
-func headerSecretStart(value string) (int, bool) {
-	trimmed := strings.TrimLeft(value, " \t")
-	if trimmed == "" {
-		return 0, false
-	}
-	lead := len(value) - len(trimmed)
-	if scheme, rest, ok := strings.Cut(trimmed, " "); ok && strings.TrimSpace(rest) != "" && isAuthScheme(scheme) {
-		return lead + len(scheme) + 1, true
-	}
-	return lead, true
-}
-
 func isAuthScheme(word string) bool {
 	for _, scheme := range authSchemes {
 		if strings.EqualFold(word, scheme) {
@@ -589,16 +526,16 @@ func isAuthScheme(word string) bool {
 	return false
 }
 
-// keyValueSpans finds the value after every secret key found by secretKeyValue. In a command line (command set)
-// a value is a shell word and key = value with blanks is not an assignment; in text a bare value ends at the
-// next blank or punctuation, and a cookie runs to the end of its string. After a key that is not secret the
-// search goes on right after the separator, since a value may hold a key of its own (ENV=AWS_SECRET_KEY=x,
+// keyValueSpans finds the value after every secret key found by secretKeyValue. A bare value ends at the next
+// blank or punctuation, and a cookie runs to the end of its string. After a key, secret or not, the search goes
+// on right after the separator, since a value may hold a key of its own (ENV=AWS_SECRET_KEY=x,
 // "exception":"... {\"password\":\"x\"}").
-func keyValueSpans(s string, command bool) []span {
+func keyValueSpans(s string) []span {
 	if !mayHoldSecretName(s) && !strings.Contains(strings.ToLower(s), "identified") {
 		return nil
 	}
 	var spans []span
+	structures := structureEnds{}
 	for pos := 0; pos < len(s); {
 		loc := secretKeyValue.FindStringSubmatchIndex(s[pos:])
 		if loc == nil {
@@ -611,9 +548,10 @@ func keyValueSpans(s string, command bool) []span {
 		}
 		keyStart, sepStart, sepEnd := loc[4], loc[8], loc[9]
 		key, sep := s[keyStart:loc[5]], s[sepStart:sepEnd]
-		keyQuote := byte(0)
+		// The backslashes before the key's quote tell how deep the key is escaped, as in \"key\" inside a JSON string.
+		level := 0
 		if loc[2] >= 0 {
-			keyQuote = s[loc[3]-1]
+			level = loc[3] - loc[2] - 1
 		}
 		switch {
 		case loc[2] < 0 && keyStart > 0 && isWordByte(s[keyStart-1]):
@@ -623,8 +561,12 @@ func keyValueSpans(s string, command bool) []span {
 		case loc[2] < 0 && loc[6] >= 0 && strings.TrimSpace(sep) == "":
 			// A quoted string that ends in a secret word and the quoted string after it, as a referer ending in
 			// /auth and the user agent of an access log line, are not a key and its value.
-		case separatorFits(sep, command, loc[2] >= 0 || loc[6] >= 0) && (secretName(key) || strings.EqualFold(key, "by") && identifiedBy.MatchString(s[:keyStart])):
-			if start, end := secretValue(s[sepEnd:], key, strings.TrimSpace(sep), command, keyQuote); end > start {
+		case secretName(key) || strings.EqualFold(key, "by") && identifiedBy.MatchString(s[:keyStart]):
+			if end, ok := structures.valueEnd(s, sepEnd, strings.TrimSpace(sep), level); ok {
+				if !emptyStructure.MatchString(s[sepEnd:end]) {
+					spans = append(spans, span{sepEnd, end})
+				}
+			} else if start, end := secretValue(s[sepEnd:], key, strings.TrimSpace(sep)); end > start {
 				spans = append(spans, span{sepEnd + start, sepEnd + end})
 			}
 		}
@@ -647,26 +589,11 @@ func isWordByte(c byte) bool {
 	return isLetter(c) || '0' <= c && c <= '9' || c == '_'
 }
 
-// separatorFits rejects separators a command line cannot mean: a shell assignment has no blanks around its =,
-// and alice : TTY= in a sudo line is not a key. A quoted key ("key" : "x") may have blanks around its separator.
-func separatorFits(sep string, command, quotedKey bool) bool {
-	if !command || quotedKey {
-		return true
-	}
-	switch core := strings.TrimSpace(sep); core {
-	case "=":
-		return sep == "="
-	case ":":
-		return sep[0] == ':'
-	}
-	return true
-}
-
 // secretValue is where the value at the start of s after a secret key lies, start == end to keep it. A quoted
 // value keeps its quotes, escaped to any depth: the value of \"key\":\"x\" is closed by the next quote preceded by
 // the same escaping. After a blank or a parenthesis (sep "" or "(") only a quoted value counts. An authorization
-// scheme such as Bearer is kept. keyQuote is the quote before the key, which ends an unquoted value.
-func secretValue(s, key, sep string, command bool, keyQuote byte) (start, end int) {
+// scheme such as Bearer is kept.
+func secretValue(s, key, sep string) (start, end int) {
 	if strings.HasPrefix(s, Redacted) {
 		return 0, 0
 	}
@@ -684,10 +611,10 @@ func secretValue(s, key, sep string, command bool, keyQuote byte) (start, end in
 		}
 		return start, max(end, start)
 	}
-	if sep == "" || sep == "(" || strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
+	if sep == "" || sep == "(" {
 		return 0, 0
 	}
-	end = bareValueEnd(s, key, command, keyQuote)
+	end = bareValueEnd(s, key)
 	value := s[:end]
 	if end == 0 || harmlessValue(key, value) {
 		return 0, 0
@@ -696,7 +623,7 @@ func secretValue(s, key, sep string, command bool, keyQuote byte) (start, end in
 		if strings.HasPrefix(rest, Redacted) {
 			return 0, 0
 		}
-		if n := bareValueEnd(rest, key, command, keyQuote); n > 0 {
+		if n := bareValueEnd(rest, key); n > 0 {
 			return end + 1, end + 1 + n
 		}
 	}
@@ -729,17 +656,100 @@ func backslashesBefore(s string, i, from int) int {
 	return n
 }
 
-// bareValueEnd is the length of an unquoted value at the start of s: a shell word in a command line (up to the
-// quote that opened the key, as in -H 'Authorization: x'), otherwise a run up to a blank, punctuation or an
+// structureEnds remembers where the structured values of one text end, by their start and escaping level. A
+// scan records the end of every structure nested in the one it reads, so the secret keys nested in the value of
+// another ({"token":{"token":...) reuse it rather than each reading the rest of the text again.
+type structureEnds map[[2]int]int
+
+// valueEnd is where the JSON array or object, or the PHP print_r or var_export array (Array ( [0] => x ), also over
+// several lines or with its line breaks escaped in a JSON string), that starts s[at:] after a secret key and its
+// separator ends: at its matching bracket or parenthesis, or at the end of s when it is not closed. ok is false
+// when s[at:] is not one, so the value is read as a quoted or bare one. A bracket or parenthesis inside a string
+// does not count: a string opens and closes with a quote escaped level times, as in closesQuote, or with a single
+// quote when level is 0. A print_r array is not quoted, so its block closes at a parenthesis after a blank, the
+// way print_r and var_export write it.
+func (ends structureEnds) valueEnd(s string, at int, sep string, level int) (end int, ok bool) {
+	value := s[at:]
+	if sep == "" || sep == "(" || strings.HasPrefix(value, Redacted) {
+		return 0, false
+	}
+	if end, ok := ends[[2]int{at, level}]; ok {
+		return end, true
+	}
+	php := phpArray.MatchString(value)
+	if !php && !strings.HasPrefix(value, "[") && !strings.HasPrefix(value, "{") {
+		return 0, false
+	}
+	var open []int
+	closeAt := func(end int) bool {
+		ends[[2]int{open[len(open)-1], level}] = end
+		open = open[:len(open)-1]
+		return len(open) == 0
+	}
+scan:
+	for i := at; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"' || c == '\'' && level == 0:
+			if !closesQuote(backslashesBefore(s, i, at), level) {
+				continue
+			}
+			closing := -1
+			for j := i + 1; j < len(s); j++ {
+				if s[j] == c && closesQuote(backslashesBefore(s, j, i+1), level) {
+					closing = j
+					break
+				}
+			}
+			if closing < 0 {
+				break scan
+			}
+			i = closing
+		case php:
+			if (c == 'a' || c == 'A') && (i == at || !isWordByte(s[i-1])) {
+				if loc := phpArray.FindStringIndex(s[i:]); loc != nil {
+					open = append(open, i)
+					i += loc[1] - 1
+				}
+			} else if c == ')' && afterBlank(s, i) && closeAt(i+1) {
+				return i + 1, true
+			}
+		case c == '[' || c == '{':
+			open = append(open, i)
+		case c == ']' || c == '}':
+			if closeAt(i + 1) {
+				return i + 1, true
+			}
+		}
+	}
+	for len(open) > 0 {
+		closeAt(len(s))
+	}
+	return len(s), true
+}
+
+// afterBlank tells whether s[i] follows a blank, a line break or a line break escaped in a JSON string (\n), or
+// directly the parenthesis that opens an empty array.
+func afterBlank(s string, i int) bool {
+	if i == 0 {
+		return false
+	}
+	switch c := s[i-1]; {
+	case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '(':
+		return true
+	case c == 'n' || c == 'r' || c == 't':
+		return i >= 2 && s[i-2] == '\\'
+	}
+	return false
+}
+
+// bareValueEnd is the length of an unquoted value at the start of s: a run up to a blank, punctuation or an
 // escaped quote, and for a cookie the rest of its string.
-func bareValueEnd(s, key string, command bool, keyQuote byte) int {
+func bareValueEnd(s, key string) int {
 	cookie := strings.Contains(normalizedName(key), "cookie")
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case command && (c == ' ' || c == '\t' || keyQuote != 0 && c == keyQuote):
-			return i
-		case command:
 		case c == '\\' && i+1 < len(s) && strings.IndexByte(`"'nrt`, s[i+1]) >= 0:
 			return i
 		case c == '"' || c == '\'' || c == '\n':

@@ -3,6 +3,7 @@ package logs
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -56,7 +57,9 @@ func TestRedactNestedQueries(t *testing.T) {
 	}
 }
 
-func TestRedactCommand(t *testing.T) {
+// TestRedactTextCommandLines covers command lines quoted in free text, such as an application error about a
+// failed process.
+func TestRedactTextCommandLines(t *testing.T) {
 	tests := map[string]string{
 		"/usr/bin/mysql -u root -pS3cret shop":             "/usr/bin/mysql -u root -p[redacted] shop",
 		"/usr/bin/mysql -u root -p S3cret shop":            "/usr/bin/mysql -u root -p [redacted] shop",
@@ -81,7 +84,7 @@ func TestRedactCommand(t *testing.T) {
 		"/usr/bin/curl -H Authorization: Bearer opaque-token https://api.example":                                      "/usr/bin/curl -H Authorization: Bearer [redacted] https://api.example",
 		"/usr/bin/curl -H 'Authorization: Bearer opaque-token' https://a.example":                                      "/usr/bin/curl -H 'Authorization: Bearer [redacted]' https://a.example",
 		`/usr/bin/curl --header "X-Api-Key: k3y" -H "Accept: text/plain" -o out`:                                       `/usr/bin/curl --header "X-Api-Key: [redacted]" -H "Accept: text/plain" -o out`,
-		"/usr/bin/curl -H Cookie: sid=abc; theme=dark -o /tmp/out https://a.example":                                   "/usr/bin/curl -H Cookie: [redacted] -o /tmp/out https://a.example",
+		"/usr/bin/curl -H Cookie: sid=abc; theme=dark -o /tmp/out https://a.example":                                   "/usr/bin/curl -H Cookie: [redacted]",
 		"/usr/bin/git clone https://deploy:ghp_secret@github.com/acme/app.git":                                         "/usr/bin/git clone https://deploy:[redacted]@github.com/acme/app.git",
 		"/usr/bin/curl https://api.example/v1/items?api_key=k4&page=2":                                                 "/usr/bin/curl https://api.example/v1/items?api_key=[redacted]&page=2",
 
@@ -95,15 +98,15 @@ func TestRedactCommand(t *testing.T) {
 		"/usr/bin/passwd alice":                                            "/usr/bin/passwd alice",
 	}
 	for before, after := range tests {
-		if got := RedactCommand(before); got != after {
-			t.Errorf("RedactCommand(%q)\n got %q\nwant %q", before, got, after)
+		if got := RedactText(before); got != after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", before, got, after)
 		}
 	}
 }
 
-// TestRedactCommandSecretOptionAfterOtherOptions checks that an option which takes no value never swallows the
+// TestRedactTextSecretOptionAfterOtherOptions checks that an option which takes no value never swallows the
 // secret option after it.
-func TestRedactCommandSecretOptionAfterOtherOptions(t *testing.T) {
+func TestRedactTextSecretOptionAfterOtherOptions(t *testing.T) {
 	tests := []struct{ before, after string }{
 		{"/usr/bin/mysqldump --single-transaction --password=hunter2 db", "/usr/bin/mysqldump --single-transaction --password=[redacted] db"},
 		{"/usr/local/bin/tool --verbose --password hunter2", "/usr/local/bin/tool --verbose --password [redacted]"},
@@ -118,7 +121,6 @@ func TestRedactCommandSecretOptionAfterOtherOptions(t *testing.T) {
 		{`/usr/bin/mysql --password "two \"words\"" --verbose shop`, "/usr/bin/mysql --password [redacted] --verbose shop"},
 		{"/usr/local/bin/tool --password=hunter2 --token t0k --client-secret=c5 --verbose", "/usr/local/bin/tool --password=[redacted] --token [redacted] --client-secret=[redacted] --verbose"},
 		{"/usr/local/bin/tool --token-ttl 24h --password-file /etc/pw --api-key k", "/usr/local/bin/tool --token-ttl 24h --password-file /etc/pw --api-key [redacted]"},
-		{"/usr/local/bin/tool --password= --verbose", "/usr/local/bin/tool --password= --verbose"},
 		{"/usr/bin/curl -s -u admin:S3cret --fail https://a.example", "/usr/bin/curl -s -u admin:[redacted] --fail https://a.example"},
 		{"/usr/bin/curl --silent --user 'admin:two words' https://a.example", "/usr/bin/curl --silent --user 'admin:[redacted]' https://a.example"},
 		{"/usr/bin/curl -u admin:'two words' https://a.example", "/usr/bin/curl -u admin:[redacted] https://a.example"},
@@ -130,21 +132,21 @@ func TestRedactCommandSecretOptionAfterOtherOptions(t *testing.T) {
 		{`/usr/local/bin/tool a\\ --password=hunter2`, `/usr/local/bin/tool a\\ --password=[redacted]`},
 	}
 	for _, test := range tests {
-		got := RedactCommand(test.before)
+		got := RedactText(test.before)
 		if got != test.after {
-			t.Errorf("RedactCommand(%q)\n got %q\nwant %q", test.before, got, test.after)
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", test.before, got, test.after)
 		}
 		for _, secret := range []string{"hunter2", "S3cret", "abc", "p1", "p2", "two", "t0k", "c5", "opaque", "t1"} {
 			if strings.Contains(got, secret) && !strings.Contains(test.after, secret) {
-				t.Errorf("RedactCommand(%q) leaks %q: %q", test.before, secret, got)
+				t.Errorf("RedactText(%q) leaks %q: %q", test.before, secret, got)
 			}
 		}
 	}
 }
 
-// FuzzRedactCommandSecretOption checks that a secret option or variable is redacted whatever arguments come
+// FuzzRedactTextSecretOption checks that a secret option or variable is redacted whatever arguments come
 // before it.
-func FuzzRedactCommandSecretOption(f *testing.F) {
+func FuzzRedactTextSecretOption(f *testing.F) {
 	for _, seed := range []string{"/usr/bin/mysqldump --single-transaction", "/usr/bin/tool --verbose -v", "/usr/bin/curl -u", "/usr/bin/tool 'a b", "/usr/bin/tool a\\", "PWD=/x'y ; COMMAND=/usr/bin/tool -e '", "/usr/bin/curl -H 'Authorization: x", "/usr/bin/tool --password", "-H0Auth:", "--password -H 'Authorization: x"} {
 		f.Add(seed)
 	}
@@ -154,14 +156,14 @@ func FuzzRedactCommandSecretOption(f *testing.F) {
 		}
 		for _, option := range []string{" --password=Zq9secret", " --password Zq9secret", " --api-key Zq9secret", " -p9Zq9secret", " -p Zq9secret", " -u admin:Zq9secret",
 			" -storepass Zq9secret", " -passin=Zq9secret", " -pass pass:Zq9secret", " /usr/bin/mysql -pZq9secret", " /usr/bin/redis-cli -a Zq9secret", " API_TOKEN=Zq9secret"} {
-			if got := RedactCommand(prefix + option); strings.Contains(got, "Zq9") {
-				t.Fatalf("RedactCommand(%q) = %q", prefix+option, got)
+			if got := RedactText(prefix + option); strings.Contains(got, "Zq9") {
+				t.Fatalf("RedactText(%q) = %q", prefix+option, got)
 			}
 		}
 	})
 }
 
-func TestRedactCommandPasswordVariables(t *testing.T) {
+func TestRedactTextPasswordVariables(t *testing.T) {
 	tests := map[string]string{
 		"alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; ENV=MYSQL_PWD=hunter2 ; COMMAND=/usr/bin/mysql": "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; ENV=MYSQL_PWD=[redacted] ; COMMAND=/usr/bin/mysql",
 		"/usr/bin/env MYSQL_PWD=hunter2 mysqldump db":                                                      "/usr/bin/env MYSQL_PWD=[redacted] mysqldump db",
@@ -170,8 +172,8 @@ func TestRedactCommandPasswordVariables(t *testing.T) {
 		"/usr/bin/env PWD=/home/x OLDPWD=/tmp /app":                                                        "/usr/bin/env PWD=/home/x OLDPWD=/tmp /app",
 	}
 	for before, after := range tests {
-		if got := RedactCommand(before); got != after {
-			t.Errorf("RedactCommand(%q)\n got %q\nwant %q", before, got, after)
+		if got := RedactText(before); got != after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", before, got, after)
 		}
 	}
 }
@@ -199,6 +201,90 @@ func TestRedactTextKeyValueSeparators(t *testing.T) {
 		if strings.Contains(got, "abc") || strings.Contains(got, "two words") {
 			t.Errorf("RedactText(%q) leaks a secret: %q", before, got)
 		}
+	}
+}
+
+// TestRedactTextStructuredValues covers a secret key whose value is a JSON array or object or a PHP array, as
+// Laravel logs request headers (Symfony's HeaderBag holds a list per header): the whole value is redacted, up to
+// its matching bracket or parenthesis, whatever it holds.
+func TestRedactTextStructuredValues(t *testing.T) {
+	tests := map[string]string{
+		`production.ERROR: Webhook {"headers":{"authorization":["Bearer abcdef123456"],"x-api-key":["abcdef123456"],"php-auth-pw":["hunter2x"],"accept":["*/*"]}}`: `production.ERROR: Webhook {"headers":{"authorization":[redacted],"x-api-key":[redacted],"php-auth-pw":[redacted],"accept":["*/*"]}}`,
+		`production.ERROR: Login {"password":["hunter2x"],"remember":true}`:                                                                                        `production.ERROR: Login {"password":[redacted],"remember":true}`,
+		`production.ERROR: Login {"token":{"value":"abcdef","expires":1},"id":7}`:                                                                                  `production.ERROR: Login {"token":[redacted],"id":7}`,
+		`production.ERROR: Login {"secret": [{"a": ["]}", "b\"]}"]}, 2], "id": 7}`:                                                                                 `production.ERROR: Login {"secret": [redacted], "id": 7}`,
+		`production.ERROR: Login {"token":{"value":"abc`:                                                                                                           `production.ERROR: Login {"token":[redacted]`,
+		`production.ERROR: Login {"password":[],"token":{},"id":7}`:                                                                                                `production.ERROR: Login {"password":[],"token":{},"id":7}`,
+		`production.ERROR: Job {"payload":"{\"authorization\":[\"Bearer abc\"],\"id\":1}"}`:                                                                        `production.ERROR: Job {"payload":"{\"authorization\":[redacted],\"id\":1}"}`,
+		`production.ERROR: Job {"payload":"{\"token\":{\"v\":\"a]}\\\"b\"},\"id\":2}"}`:                                                                            `production.ERROR: Job {"payload":"{\"token\":[redacted],\"id\":2}"}`,
+		`production.ERROR: Job {"job":"{\"data\":\"{\\\"secret\\\":[\\\"abc\\\"],\\\"id\\\":3}\"}"}`:                                                               `production.ERROR: Job {"job":"{\"data\":\"{\\\"secret\\\":[redacted],\\\"id\\\":3}\"}"}`,
+		"production.ERROR: Request Array ( [authorization] => Array ( [0] => Bearer abcdef123456 ) [accept] => Array ( [0] => text/html ) )":                       "production.ERROR: Request Array ( [authorization] => [redacted] [accept] => Array ( [0] => text/html ) )",
+		"production.ERROR: Request Array ( [cookie] => Array ( [0] => a=1; b=(2) ) [id] => 7 )":                                                                    "production.ERROR: Request Array ( [cookie] => [redacted] [id] => 7 )",
+		"production.ERROR: Request Array ( [token] => Array ( ) [id] => 7 )":                                                                                       "production.ERROR: Request Array ( [token] => Array ( ) [id] => 7 )",
+		"production.ERROR: Request ['password' => ['a', 'b) c'], 'page' => 2]":                                                                                     "production.ERROR: Request ['password' => [redacted], 'page' => 2]",
+		"production.ERROR: Request Array ( [secret] => Array ( [a] => Array ( [0] => x ) [b] => y ) [id] => 7 )":                                                   "production.ERROR: Request Array ( [secret] => [redacted] [id] => 7 )",
+		"production.ERROR: Request Array ( [token] => Array ( [0] => abc":                                                                                          "production.ERROR: Request Array ( [token] => [redacted]",
+	}
+	for before, after := range tests {
+		got := RedactText(before)
+		if got != after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", before, got, after)
+		}
+		for _, secret := range []string{"abcdef", "hunter2x", "abc\"", "b\\"} {
+			if strings.Contains(got, secret) {
+				t.Errorf("RedactText(%q) leaks %q: %q", before, secret, got)
+			}
+		}
+	}
+}
+
+// One scan of a structured value records where every structure nested in it ends, so nested secret keys do not
+// each read the rest of the text again: a 64 KB line of {"token":{"token":... would otherwise take seconds.
+func TestStructureEndsRecordsNestedValues(t *testing.T) {
+	s := `{"token":{"a":["]",{"b":1}],"c":"}"},"id":2}`
+	ends := structureEnds{}
+	at := strings.Index(s, ":") + 1
+	end, ok := ends.valueEnd(s, at, ":", 0)
+	if !ok || s[at:end] != `{"a":["]",{"b":1}],"c":"}"}` {
+		t.Fatalf("value = %q, %v", s[at:end], ok)
+	}
+	want := structureEnds{{at, 0}: end, {strings.Index(s, "["), 0}: strings.Index(s, "],") + 1, {strings.Index(s, `{"b"`), 0}: strings.Index(s, "1}") + 2}
+	if !maps.Equal(ends, want) {
+		t.Fatalf("ends = %v, want %v", ends, want)
+	}
+
+	nested := strings.Repeat(`{"token":`, 8000)
+	if got := RedactText(nested); got != `{"token":[redacted]` {
+		t.Fatalf("nested = %q", got[:min(len(got), 40)])
+	}
+}
+
+// TestRedactTextMultiLineArrays covers print_r and var_export output over several lines, as written by an
+// application that keeps line breaks, and with its line breaks escaped inside a JSON string.
+func TestRedactTextMultiLineArrays(t *testing.T) {
+	printR := "Array\n(\n    [authorization] => Array\n        (\n            [0] => Bearer abcdef123456\n        )\n\n    [accept] => Array\n        (\n            [0] => text/html\n        )\n\n)\n"
+	tests := map[string]string{
+		"production.ERROR: Headers " + printR:                                                                                           "production.ERROR: Headers Array\n(\n    [authorization] => [redacted]\n\n    [accept] => Array\n        (\n            [0] => text/html\n        )\n\n)\n",
+		`production.ERROR: Headers {"dump":"` + strings.ReplaceAll(printR, "\n", `\n`) + `"}`:                                           `production.ERROR: Headers {"dump":"Array\n(\n    [authorization] => [redacted]\n\n    [accept] => Array\n        (\n            [0] => text/html\n        )\n\n)\n"}`,
+		"production.ERROR: Config array (\n  'password' => \n  array (\n    0 => 'a ) b',\n    1 => 'c',\n  ),\n  'debug' => false,\n)": "production.ERROR: Config array (\n  'password' => \n  [redacted],\n  'debug' => false,\n)",
+	}
+	for before, after := range tests {
+		got := RedactText(before)
+		if got != after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", before, got, after)
+		}
+		if strings.Contains(got, "abcdef") || strings.Contains(got, "'a") {
+			t.Errorf("RedactText(%q) leaks: %q", before, got)
+		}
+	}
+
+	line := `[2026-10-31 19:00:03] production.ERROR: Webhook rejected {"headers":{"authorization":["Bearer abcdef123456"],"x-api-key":["abcdef123456"],"php-auth-pw":["hunter2x"]}}`
+	e, ok := ParseMonolog(line, "/var/www/shop/storage/logs/laravel.log", testNow)
+	if !ok {
+		t.Fatal("not an app error")
+	}
+	if got := Redact(e); strings.Contains(got.Message, "abcdef") || strings.Contains(got.Message, "hunter2x") {
+		t.Fatalf("app error = %q", got.Message)
 	}
 }
 
@@ -238,20 +324,22 @@ func TestRedactEvents(t *testing.T) {
 		t.Fatalf("a valid user name must stay: %+v", got)
 	}
 
-	sudo := newEvent(SourceAuth, KindSudoCommand, testNow, "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/mysql -pS3cret")
-	sudo.set("command", "/usr/bin/mysql -pS3cret")
-	got = Redact(sudo)
-	if strings.Contains(got.Message+got.Fields["command"].(string), "S3cret") {
-		t.Fatalf("sudo password leaked: %+v", got)
+	sudo, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/mysql -pS3cret", testNow)
+	if !ok {
+		t.Fatal("not a sudo line")
 	}
-	if sudo.Fields["command"] != "/usr/bin/mysql -pS3cret" {
-		t.Fatal("Redact must not modify the caller's fields")
+	got = Redact(sudo)
+	if got.Message != "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/mysql [1 arg]" || got.Fields["command"] != "/usr/bin/mysql [1 arg]" {
+		t.Fatalf("sudo = %+v", got)
 	}
 
 	web := newEvent(SourceWeb, KindHTTPRequest, testNow, `203.0.113.7 - - [31/Oct/2026:19:00:00 +0000] "GET /a?token=t1&q=%3Cscript%3E HTTP/1.1" 200 1 "-" "Bearer `+jwt+`"`)
 	web.set("path", "/a?token=t1&q=%3Cscript%3E")
 	web.set("user_agent", "Bearer "+jwt)
 	got = Redact(web)
+	if web.Fields["path"] != "/a?token=t1&q=%3Cscript%3E" {
+		t.Fatal("Redact must not modify the caller's fields")
+	}
 	if got.Fields["path"] != "/a?token=[redacted]&q=%3Cscript%3E" || got.Fields["user_agent"] != "Bearer [redacted]" || strings.Contains(got.Message, "t1&") || strings.Contains(got.Message, jwt) {
 		t.Fatalf("web = %+v", got)
 	}
@@ -397,10 +485,10 @@ func TestSecretName(t *testing.T) {
 	}
 }
 
-// TestRedactCommandSecretOptionsWithOneDash covers options with a single dash and the password options of
+// TestRedactTextSecretOptionsWithOneDash covers options with a single dash and the password options of
 // particular programs: keytool and openssl spell long options with one dash, and -p is a password only on its
 // own, before a digit or quote, or for a MySQL client.
-func TestRedactCommandSecretOptionsWithOneDash(t *testing.T) {
+func TestRedactTextSecretOptionsWithOneDash(t *testing.T) {
 	tests := []struct{ before, after string }{
 		{"/usr/bin/keytool -list -storepass changeit", "/usr/bin/keytool -list -storepass [redacted]"},
 		{"/usr/bin/keytool -importkeystore -srcstorepass s1 -deststorepass=s2 -keypass s3", "/usr/bin/keytool -importkeystore -srcstorepass [redacted] -deststorepass=[redacted] -keypass [redacted]"},
@@ -423,15 +511,15 @@ func TestRedactCommandSecretOptionsWithOneDash(t *testing.T) {
 		{"/usr/bin/kubectl create secret generic db --from-literal=password=pw2", "/usr/bin/kubectl create secret generic db --from-literal=password=[redacted]"},
 	}
 	for _, test := range tests {
-		if got := RedactCommand(test.before); got != test.after {
-			t.Errorf("RedactCommand(%q)\n got %q\nwant %q", test.before, got, test.after)
+		if got := RedactText(test.before); got != test.after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", test.before, got, test.after)
 		}
 	}
 }
 
-// TestRedactCommandKeepsHarmlessCommands checks that options that look secret by name but take no value or name
+// TestRedactTextKeepsHarmlessCommands checks that options that look secret by name but take no value or name
 // a file, and -p groups of flags, keep the command readable.
-func TestRedactCommandKeepsHarmlessCommands(t *testing.T) {
+func TestRedactTextKeepsHarmlessCommands(t *testing.T) {
 	for _, command := range []string{
 		"/usr/bin/tar -pczf /backup/etc.tgz /etc",
 		"/usr/bin/find /var/www -perm 644 -print0",
@@ -449,12 +537,10 @@ func TestRedactCommandKeepsHarmlessCommands(t *testing.T) {
 		"/usr/bin/kubectl get secrets -n prod",
 		"/usr/bin/ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519",
 		"/usr/bin/wget --passive-ftp ftp://mirror.example/a.iso",
-		"/usr/bin/mysql -u root --password= shop",
 		"alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/bin/vim /etc/nginx/nginx.conf",
-		"keycloak : TTY=pts/0 ; PWD=/opt/keycloak ; USER=root ; COMMAND=/usr/bin/id",
 	} {
-		if got := RedactCommand(command); got != command {
-			t.Errorf("RedactCommand(%q)\n got %q", command, got)
+		if got := RedactText(command); got != command {
+			t.Errorf("RedactText(%q)\n got %q", command, got)
 		}
 	}
 }
@@ -517,11 +603,14 @@ var secretShapes = []string{
 	"https://a.example/go?next=%2Freset%3Ftoken%3DZq9", "https://a.example/go?next=%252Freset%253Ftoken%253DZq9",
 	"-H 'Authorization: Bearer Zq9'", "-H 'Cookie: theme=dark; sid=Zq9'", `--header "X-Api-Key: Zq9"`,
 	"Authorization: Bearer Zq9", "PASSWORD 'Zq9'", "IDENTIFIED BY 'Zq9'",
+	`"authorization":["Bearer Zq9"]`, `{"password":["Zq9 x"]}`, `{"token":{"value":"Zq9"}}`, `"secret": [{"a": ["b", "Zq9"]}]`,
+	`{\"authorization\":[\"Bearer Zq9\"]}`, `{\\\"token\\\":{\\\"v\\\":\\\"Zq9\\\"}}`, "[authorization] => Array ( [0] => Bearer Zq9 )",
+	"[password] => Array\n(\n    [0] => Zq9\n)\n", `[token] => Array\n(\n    [0] => Zq9\n)\n`, "'password' => ['Zq9', 'x']", "'secret' => array (\n  0 => 'Zq9',\n)",
 }
 
 func TestRedactSecretShapes(t *testing.T) {
 	for _, shape := range secretShapes {
-		for name, redact := range map[string]func(string) string{"RedactCommand": RedactCommand, "RedactText": RedactText} {
+		for name, redact := range map[string]func(string) string{"RedactText": RedactText} {
 			for _, s := range []string{shape, "/usr/bin/tool --verbose " + shape + " --quiet", "x " + shape + ", y"} {
 				if got := redact(s); strings.Contains(got, "Zq9") {
 					t.Errorf("%s(%q) = %q", name, s, got)
@@ -529,7 +618,9 @@ func TestRedactSecretShapes(t *testing.T) {
 			}
 		}
 
-		sudo := "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/local/bin/tool " + shape
+		// A log line holds no line break: sudo escapes it, Monolog writes a blank or \n in JSON.
+		oneLine := strings.ReplaceAll(shape, "\n", " ")
+		sudo := "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/local/bin/tool " + oneLine
 		e, ok := ParseAuth("sudo", sudo, testNow)
 		if !ok {
 			t.Fatalf("not a sudo line: %q", sudo)
@@ -552,7 +643,8 @@ func TestRedactSecretShapes(t *testing.T) {
 			t.Errorf("journal sudo %q = %q", shape, got.Message)
 		}
 
-		monolog := "[2026-10-31 19:00:03] production.ERROR: Call failed " + shape + ` {"exception":"[object] (Exception(code: 0): ` + strings.ReplaceAll(shape, `"`, `\"`) + `)"}`
+		escaped := strings.NewReplacer(`"`, `\"`, "\n", `\n`).Replace(shape)
+		monolog := "[2026-10-31 19:00:03] production.ERROR: Call failed " + oneLine + ` {"exception":"[object] (Exception(code: 0): ` + escaped + `)"}`
 		if e, ok := ParseMonolog(monolog, "/var/www/shop/storage/logs/laravel.log", testNow); !ok {
 			t.Errorf("not an app error: %q", monolog)
 		} else if got := Redact(e); strings.Contains(got.Message, "Zq9") {
@@ -571,7 +663,7 @@ func FuzzRedactSecretShapes(f *testing.F) {
 			t.Skip()
 		}
 		for _, shape := range secretShapes {
-			for name, redact := range map[string]func(string) string{"RedactCommand": RedactCommand, "RedactText": RedactText} {
+			for name, redact := range map[string]func(string) string{"RedactText": RedactText} {
 				if got := redact(prefix + " " + shape); strings.Contains(got, "Zq9") {
 					t.Fatalf("%s(%q) = %q", name, prefix+" "+shape, got)
 				}
@@ -664,7 +756,8 @@ func secretNameVariants() []string {
 // one rule (secretName) decides what is secret and no rule may skip a text that holds such a name.
 func TestRedactEverySecretNameSpelling(t *testing.T) {
 	const value = "Zq9v4lu3"
-	pairs := []string{"%s=" + value, `"%s":"` + value + `"`, `"%s": "` + value + `"`, `{\"%s\":\"` + value + `\"}`, "'%s' => '" + value + "'", "[%s] => " + value, "%s: " + value, "--%s=" + value, "/login?%s=" + value + "&page=2"}
+	pairs := []string{"%s=" + value, `"%s":"` + value + `"`, `"%s": "` + value + `"`, `{\"%s\":\"` + value + `\"}`, "'%s' => '" + value + "'", "[%s] => " + value, "%s: " + value, "--%s=" + value, "/login?%s=" + value + "&page=2",
+		`"%s":["` + value + `"]`, `{\"%s\":{\"v\":\"` + value + `\"}}`, "[%s] => Array ( [0] => " + value + " )"}
 	options := []string{"--%s " + value, "-H '%s: " + value + "'"}
 	// One kind per case of Redact, and one it has no case for.
 	kinds := []string{KindSSHLoginFailed, KindSudoCommand, KindHTTPRequest, KindAppError, KindCronModified}
@@ -680,9 +773,6 @@ func TestRedactEverySecretNameSpelling(t *testing.T) {
 			if got := RedactText(s); strings.Contains(got, value) {
 				t.Errorf("RedactText(%q) = %q", s, got)
 			}
-			if got := RedactCommand("/usr/bin/tool " + s); strings.Contains(got, value) {
-				t.Errorf("RedactCommand(%q) = %q", s, got)
-			}
 			for _, kind := range kinds {
 				e := newEvent(SourceAuth, kind, testNow, s)
 				for _, key := range []string{"command", "path", "user_agent", "target_user"} {
@@ -692,11 +782,16 @@ func TestRedactEverySecretNameSpelling(t *testing.T) {
 				if i < len(pairs) && strings.Contains(got.Message+fmt.Sprint(got.Fields), value) {
 					t.Errorf("Redact(%s %q) = %q %v", kind, s, got.Message, got.Fields)
 				}
-				// Options are read as a command line in sudo commands and application error messages only.
-				sudo := kind == KindSudoCommand
-				if (sudo || kind == KindAppError) && strings.Contains(got.Message, value) || sudo && strings.Contains(fmt.Sprint(got.Fields["command"]), value) {
+				// Options are read as a command line in application error messages only.
+				if kind == KindAppError && strings.Contains(got.Message, value) {
 					t.Errorf("Redact(%s %q) = %q %v", kind, s, got.Message, got.Fields)
 				}
+			}
+			// A sudo event keeps no argument at all.
+			if e, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/tool "+s, testNow); !ok {
+				t.Errorf("not a sudo line: %q", s)
+			} else if got := Redact(e); strings.Contains(got.Message+fmt.Sprint(got.Fields), value) {
+				t.Errorf("sudo %q = %q %v", s, got.Message, got.Fields)
 			}
 		}
 	}

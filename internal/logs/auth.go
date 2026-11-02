@@ -2,6 +2,7 @@ package logs
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -104,13 +105,14 @@ func parseSSH(program, message string, at time.Time) (Event, bool) {
 }
 
 // parseSudo reads "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ls" and the failure variants
-// "alice : 3 incorrect password attempts ; ..." and "bob : user NOT in sudoers ; ...".
+// "alice : 3 incorrect password attempts ; ..." and "bob : user NOT in sudoers ; ...". The arguments of the
+// command and the values of ENV are never kept, in the fields or in the message (see sudoCommand).
 func parseSudo(message string, at time.Time) (Event, bool) {
-	m := sudoLine.FindStringSubmatch(message)
+	m := sudoLine.FindStringSubmatchIndex(message)
 	if m == nil || strings.HasPrefix(message, "pam_") {
 		return Event{}, false
 	}
-	parts := strings.Split(m[2], " ; ")
+	parts := strings.Split(message[m[4]:m[5]], " ; ")
 	var status string
 	if key, _, ok := strings.Cut(parts[0], "="); !ok || !sudoKeys[key] {
 		status = parts[0]
@@ -132,18 +134,72 @@ func parseSudo(message string, at time.Time) (Event, bool) {
 	if len(splits) == 0 && kind == KindSudoCommand {
 		return Event{}, false
 	}
-	e := authEvent(kind, "sudo", message, at)
-	e.Username = m[1]
+	command := sudoCommand(splits)
+	e := authEvent(kind, "sudo", message[:m[4]]+strings.Join(withoutArguments(parts, command), " ; "), at)
+	e.Username = message[m[2]:m[3]]
 	if user, ok := agreed(splits, func(s sudoSplit) string { return s.user }); ok && user != "" {
 		e.set("target_user", user)
 	}
-	if command, ok := agreed(splits, func(s sudoSplit) string { return s.command }); ok && command != "" {
+	if slices.ContainsFunc(parts, isCommandPart) {
 		e.set("command", command)
 	}
 	if reason != "" {
 		e.set("reason", reason)
 	}
 	return e, true
+}
+
+// unparsedCommand is the command of a sudo line whose readings do not agree on the executable or the number of
+// arguments.
+const unparsedCommand = "[unparsed]"
+
+// sudoCommand is the command a sudo line ran as its executable and its number of arguments, such as
+// "/usr/bin/ldapmodify [5 args]". The arguments themselves are never kept: many tools take a password as an
+// option of their own or as a positional argument (ldapmodify -w, htpasswd -b, redis-cli AUTH), which no
+// redaction rule can know of all. Every reading of the line must give the same executable and count, so a
+// working directory or variable crafted to look like sudo's fields cannot change them; otherwise the command
+// is unparsedCommand. sudo 1.9.13 and later quote an argument with blanks, older versions do not, so there each
+// word counts.
+func sudoCommand(splits []sudoSplit) string {
+	command, ok := agreed(splits, func(s sudoSplit) string { return commandSummary(s.command) })
+	if !ok || command == "" {
+		return unparsedCommand
+	}
+	return command
+}
+
+func commandSummary(command string) string {
+	tokens := commandTokens(command)
+	if len(tokens) == 0 {
+		return ""
+	}
+	executable := command[tokens[0].start:tokens[0].end]
+	if n := len(tokens) - 1; n != 1 {
+		return executable + " [" + strconv.Itoa(n) + " args]"
+	}
+	return executable + " [1 arg]"
+}
+
+// withoutArguments replaces everything from the first COMMAND part on with command, and the parts from the
+// first ENV part up to there with ENV=[redacted]. Taking the first of each, wherever a crafted working
+// directory puts it, leaves no variable or argument of any reading of the line in the message.
+func withoutArguments(parts []string, command string) []string {
+	end := slices.IndexFunc(parts, isCommandPart)
+	if end < 0 {
+		end = len(parts)
+	}
+	kept := slices.Clone(parts[:end])
+	if env := slices.IndexFunc(kept, func(p string) bool { return strings.HasPrefix(p, "ENV=") }); env >= 0 {
+		kept = append(kept[:env], "ENV="+Redacted)
+	}
+	if end < len(parts) {
+		kept = append(kept, "COMMAND="+command)
+	}
+	return kept
+}
+
+func isCommandPart(part string) bool {
+	return strings.HasPrefix(part, "COMMAND=")
 }
 
 var sudoKeys = map[string]bool{"HOST": true, "TTY": true, "CHROOT": true, "PWD": true, "USER": true, "GROUP": true, "TSID": true, "ENV": true, "COMMAND": true}
@@ -170,7 +226,7 @@ func sudoSplits(parts []string) []sudoSplit {
 			k++
 		}
 		commandAt := func(j int) {
-			if strings.HasPrefix(parts[j], "COMMAND=") {
+			if isCommandPart(parts[j]) {
 				splits = append(splits, sudoSplit{user: user, command: strings.TrimPrefix(strings.Join(parts[j:], " ; "), "COMMAND=")})
 			}
 		}
