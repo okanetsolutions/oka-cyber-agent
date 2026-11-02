@@ -2,9 +2,11 @@ package logs
 
 import (
 	"bufio"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -76,8 +78,14 @@ func TestAuthLogsPerDistribution(t *testing.T) {
 			KindSSHLoginFailed: 2, KindSSHLoginSucceeded: 1, KindSudoCommand: 2, KindSudoFailed + ":not_in_sudoers": 1,
 			KindSuSession: 5, KindUserCreated: 3, KindUserGroupChanged: 3, KindPasswordChanged: 4,
 		},
-		"debian-12.cron.log": {KindCronModified: 3},
-		"rocky-9.cron":       {KindCronModified: 3},
+		"debian-12.groups.log":    {KindUserCreated: 3, KindUserGroupChanged: 5},
+		"ubuntu-24.04.groups.log": {KindUserCreated: 3, KindUserGroupChanged: 5},
+		"rocky-9.groups.secure":   {KindUserCreated: 3, KindUserGroupChanged: 5},
+		"debian-12.sudo.log":      {KindSudoCommand: 8},
+		"ubuntu-24.04.sudo.log":   {KindSudoCommand: 8},
+		"rocky-9.sudo.secure":     {KindSudoCommand: 8},
+		"debian-12.cron.log":      {KindCronModified: 3},
+		"rocky-9.cron":            {KindCronModified: 3},
 	}
 	for fixture, want := range tests {
 		t.Run(fixture, func(t *testing.T) {
@@ -151,8 +159,118 @@ func TestSudoSuAndAccountFields(t *testing.T) {
 		t.Fatalf("busybox su = %+v", alpine)
 	}
 	cron := authEvents(t, "rocky-9.cron")
-	if cron[0].Username != "root" || cron[0].Fields["target_user"] != "alice" || cron[0].Fields["action"] != "replace" || cron[1].Fields["action"] != "edit" || cron[2].Fields["action"] != "delete" {
+	if cron[0].Username != "root" || cron[0].Fields["target_user"] != "alice" || cron[0].Fields["action"] != "replace" || cron[1].Fields["action"] != "replace" || cron[2].Fields["action"] != "delete" {
 		t.Fatalf("cron events = %+v", cron)
+	}
+}
+
+// The groups fixtures were captured on Debian 12, Ubuntu 24.04 and Rocky 9 (rsyslog) after root ran useradd
+// alice, useradd -G sudo,adm mallory (wheel on Rocky), useradd -U -G sudo trudy, usermod -G adm mallory,
+// groupmems -a and -d (refused by PAM in the container, and groupmems logs no change anyway), gpasswd -M
+// alice,mallory adm and usermod -aG sudo alice.
+func TestUseraddReportsSupplementaryGroups(t *testing.T) {
+	for fixture, privileged := range map[string]string{"debian-12.groups.log": "sudo", "ubuntu-24.04.groups.log": "sudo", "rocky-9.groups.secure": "wheel"} {
+		var changes []string
+		for _, e := range authEvents(t, fixture) {
+			if e.Kind == KindUserGroupChanged {
+				changes = append(changes, fmt.Sprintf("%s %s %s %s", e.Program, e.Fields["action"], e.Username, e.Fields["group"]))
+			}
+		}
+		want := []string{
+			"useradd add mallory adm", "useradd add mallory " + privileged, "useradd add trudy " + privileged,
+			"usermod remove mallory " + privileged, "usermod add alice " + privileged,
+		}
+		if !slices.Equal(changes, want) {
+			t.Errorf("%s: group changes = %q\nwant %q", fixture, changes, want)
+		}
+	}
+}
+
+// The sudo fixtures were captured on Debian 12 (sudo 1.9.13), Ubuntu 24.04 and Rocky 9 (rsyslog) with alice
+// allowed to run anything: a plain command, from the directory "/tmp/x ; USER=bob ; COMMAND=/bin/true", with
+// arguments holding " ; USER=bob ; COMMAND=/bin/true", both, with a variable on the command line holding
+// " ; COMMAND=/bin/true", with -g adm and with I/O logging (TSID). sudo writes the working directory, the
+// variables and the arguments without escaping " ; ", so a field is reported only when the line has one
+// reading of it.
+func TestSudoFieldsAreNotTakenFromCraftedValues(t *testing.T) {
+	type fields struct{ targetUser, command any }
+	want := []fields{
+		{"root", "/bin/ls /root"},
+		{nil, nil},
+		{nil, nil},
+		{nil, nil},
+		{nil, nil},
+		{"root", nil},
+		{"root", "/bin/sh -c true"},
+		{"root", "/usr/bin/id"},
+	}
+	for _, fixture := range []string{"debian-12.sudo.log", "ubuntu-24.04.sudo.log", "rocky-9.sudo.secure"} {
+		events := authEvents(t, fixture)
+		if len(events) != len(want) {
+			t.Fatalf("%s: %d events, want %d", fixture, len(events), len(want))
+		}
+		for i, e := range events {
+			got := fields{e.Fields["target_user"], e.Fields["command"]}
+			if e.Kind != KindSudoCommand || e.Username != "alice" || got != want[i] {
+				t.Errorf("%s line %d: %s by %q target_user=%v command=%v, want %v", fixture, i+1, e.Kind, e.Username, got.targetUser, got.command, want[i])
+			}
+		}
+	}
+}
+
+func TestSudoKeyOrder(t *testing.T) {
+	for _, tc := range []struct {
+		message, targetUser, command string
+	}{
+		{"alice : TTY=pts/0 ; PWD=/srv ; USER=postgres ; GROUP=postgres ; TSID=000001 ; ENV=PGDATA=/srv/db ; COMMAND=/usr/bin/psql -c select 1 ; select 2", "postgres", "/usr/bin/psql -c select 1 ; select 2"},
+		{"alice : HOST=web1 ; TTY=pts/0 ; CHROOT=/jail ; PWD=/ ; USER=root ; COMMAND=/bin/ls", "root", "/bin/ls"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/USER=bob ; USER=root ; COMMAND=/bin/ls", "root", "/bin/ls"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/a ; USER=bob ; USER=root ; COMMAND=/bin/ls", "root", "/bin/ls"},
+		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/echo USER=bob ; GROUP=x", "root", "/bin/echo USER=bob ; GROUP=x"},
+		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; ENV=A=1 ; USER=bob ; COMMAND=/bin/ls", "", "/bin/ls"},
+		{"alice : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/x ; USER=bob ; COMMAND=/y ; USER=root ; COMMAND=/bin/sh", "", ""},
+	} {
+		e, ok := ParseAuth("sudo", tc.message, testNow)
+		if !ok {
+			t.Errorf("%q: no event", tc.message)
+			continue
+		}
+		user, _ := e.Fields["target_user"].(string)
+		command, _ := e.Fields["command"].(string)
+		if user != tc.targetUser || command != tc.command {
+			t.Errorf("%q: target_user=%q command=%q, want %q and %q", tc.message, user, command, tc.targetUser, tc.command)
+		}
+	}
+	if _, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/x ; COMMAND=/bin/ls", testNow); ok {
+		t.Error("a line without USER is not a sudo command")
+	}
+}
+
+// The cron fixtures were captured on Debian 12 (cron, rsyslog) and Rocky 9 (cronie, rsyslog) after root ran
+// crontab -u alice with a file, crontab -u alice -e with an editor that added a line, crontab -u alice -e
+// with an editor that changed nothing, and crontab -u alice -r.
+func TestCrontabEditIsOneChange(t *testing.T) {
+	for _, fixture := range []string{"debian-12.cron.log", "rocky-9.cron"} {
+		lines := readLines(t, filepath.Join("testdata", "auth", fixture))
+		count := func(lines []string) int {
+			n := 0
+			for _, line := range lines {
+				l, ok := ParseSyslog(line, testNow)
+				if !ok {
+					t.Fatalf("%s: unparsed line %q", fixture, line)
+				}
+				if e, ok := ParseAuth(l.Program, l.Message, l.At); ok && e.Kind == KindCronModified {
+					n++
+				}
+			}
+			return n
+		}
+		if n := count(lines[1:4]); n != 1 {
+			t.Errorf("%s: BEGIN EDIT, REPLACE, END EDIT gave %d cron_modified events, want 1", fixture, n)
+		}
+		if n := count(lines[4:6]); n != 0 {
+			t.Errorf("%s: an edit that changed nothing gave %d cron_modified events, want 0", fixture, n)
+		}
 	}
 }
 
@@ -189,7 +307,10 @@ func TestAuthFailuresFromPAM(t *testing.T) {
 		{"su", "(to alice) root on none"},
 		{"su", "FAILED SU (to root) alice on pts/0"},
 		{"usermod", "add 'alice' to shadow group 'sudo'"},
+		{"useradd", "add 'mallory' to shadow group 'sudo'"},
+		{"gpasswd", "members of group adm set by root to alice,mallory"},
 		{"useradd", "new group: name=alice, GID=1000"},
+		{"crontab", "(root) BEGIN EDIT (alice)"},
 		{"crontab", "(root) END EDIT (alice)"},
 		{"cron", "(root) CMD (true)"},
 	} {
@@ -209,16 +330,79 @@ func TestJournalEntries(t *testing.T) {
 		if entry.Cursor == "" || entry.At.IsZero() || entry.Identifier == "" {
 			t.Fatalf("entry = %+v", entry)
 		}
+		if !TrustedAuthEntry(entry) {
+			t.Fatalf("genuine entry rejected: %+v", entry)
+		}
 		if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At); ok {
 			events = append(events, e)
 		}
 	}
 	want := map[string]int{
 		KindUserCreated: 5, KindSuSession: 5, KindPasswordChanged: 4, KindUserGroupChanged: 4, KindSSHLoginFailed: 3,
-		KindCronModified: 3, KindSudoFailed + ":incorrect_password": 1, KindSudoFailed + ":not_in_sudoers": 1, KindSudoCommand: 1,
+		KindCronModified: 2, KindSudoFailed + ":incorrect_password": 1, KindSudoFailed + ":not_in_sudoers": 1, KindSudoCommand: 1,
 	}
 	if got := kindCounts(events); !maps.Equal(got, want) {
 		t.Fatalf("events = %v\nwant %v", got, want)
+	}
+}
+
+// debian-12-forged.jsonl was captured on Debian 12 after an unprivileged user (uid 1000) ran logger -t sshd,
+// logger -p auth.info -t useradd, systemd-cat -t sshd with sh and with a copy of dash named sshd in its home,
+// and the real /usr/sbin/useradd with an LD_PRELOAD library that prints a "new user" line; root ran useradd
+// twice.
+func TestJournalRejectsForgedAuthEntries(t *testing.T) {
+	var genuine []Event
+	var forged int
+	for _, line := range readLines(t, filepath.Join("testdata", "journal", "debian-12-forged.jsonl")) {
+		entry, err := ParseJournalEntry([]byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At)
+		if !TrustedAuthEntry(entry) {
+			if entry.UID != "1000" || !ok {
+				t.Fatalf("rejected entry = %+v", entry)
+			}
+			forged++
+			continue
+		}
+		if ok {
+			genuine = append(genuine, e)
+		}
+	}
+	if forged != 5 || len(genuine) != 2 || genuine[0].Username != "mallory" || genuine[1].Username != "deploy" {
+		t.Fatalf("forged = %d, genuine = %+v", forged, genuine)
+	}
+}
+
+func TestTrustedAuthEntry(t *testing.T) {
+	for _, tc := range []struct {
+		identifier, uid, exe, comm string
+		want                       bool
+	}{
+		{"sshd", "0", "/usr/sbin/sshd", "sshd", true},
+		{"sshd", "0", "/usr/sbin/sshd (deleted)", "sshd", true},
+		{"sshd-session", "0", "/usr/lib/openssh/sshd-session", "sshd-session", true},
+		{"sshd", "0", "/usr/libexec/openssh/sshd-session", "sshd-session", true},
+		{"sshd-session", "0", "/usr/lib/ssh/sshd-session", "sshd-session", true},
+		{"sudo", "1000", "/usr/bin/sudo", "sudo", true},
+		{"sudo", "1000", "/usr/lib/cargo/bin/sudo", "sudo", true},
+		{"su", "1000", "/bin/su", "su", true},
+		{"crontab", "0", "", "crontab", true},
+		{"sshd", "1000", "/usr/sbin/sshd", "sshd", false},
+		{"useradd", "1000", "/usr/sbin/useradd", "useradd", false},
+		{"sshd", "0", "/usr/bin/logger", "logger", false},
+		{"sshd", "0", "/usr/sbin/sudo", "sudo", false},
+		{"sudo", "1000", "/home/alice/bin/sudo", "sudo", false},
+		{"sudo", "1000", "/usr/bin/../../home/alice/sudo", "sudo", false},
+		{"crontab", "1000", "", "crontab", false},
+		{"sshd", "0", "", "logger", false},
+		{"cron", "0", "/usr/sbin/cron", "cron", false},
+	} {
+		entry := JournalEntry{Identifier: tc.identifier, UID: tc.uid, Exe: tc.exe, Comm: tc.comm}
+		if got := TrustedAuthEntry(entry); got != tc.want {
+			t.Errorf("TrustedAuthEntry(%+v) = %v, want %v", entry, got, tc.want)
+		}
 	}
 }
 

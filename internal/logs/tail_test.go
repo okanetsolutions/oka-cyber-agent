@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -204,5 +205,164 @@ func TestTailerRecreatedFileWithReusedInodeIsReadFromStart(t *testing.T) {
 	appendTo(t, path, "new line\n")
 	if got := lines(tail.Poll()); !slices.Equal(got, []string{"new line"}) {
 		t.Fatalf("lines = %q", got)
+	}
+}
+
+func inodeOfPath(t *testing.T, path string) uint64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inodeOf(info)
+}
+
+// positionInPath is a position a tailer reading path to offset would have saved.
+func positionInPath(t *testing.T, path string, offset int64) Position {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := fileIDOf(info)
+	return Position{Dev: id.dev, Inode: id.ino, Offset: offset, Sum: checksumBefore(f, offset)}
+}
+
+func TestTailerUsesASavedPositionOnlyWhenTheBytesBeforeItAreUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.log")
+	appendTo(t, path, "a\nb\n")
+	saved := positionInPath(t, path, 2)
+	appendTo(t, path, "c\n")
+	tail, _ := newTestTailer(path, &saved, false)
+	if got := lines(tail.Poll()); !slices.Equal(got, []string{"b", "c"}) {
+		t.Fatalf("lines = %q, want the lines after the saved position", got)
+	}
+
+	if err := os.WriteFile(path, []byte("x\ny\nz\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if inodeOfPath(t, path) != saved.Inode {
+		t.Fatal("the file must keep its inode")
+	}
+	tail, _ = newTestTailer(path, &saved, false)
+	if got := lines(tail.Poll()); !slices.Equal(got, []string{"x", "y", "z"}) {
+		t.Fatalf("lines = %q, want a file with other bytes before the saved offset read from its start", got)
+	}
+}
+
+// A rename keeps the inode number, so moving a prepared file into place recreates the watched file with the
+// inode of the saved position, as a filesystem that hands a freed inode number back does.
+func TestTailerForgetsSavedPositionOfAMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.log")
+	staged := path + ".new"
+	appendTo(t, staged, "first line\n"+strings.Repeat("x", 9000)+"\nlast line\n")
+	saved := positionInPath(t, staged, 9012)
+	tail, _ := newTestTailer(path, &saved, false)
+	if r := tail.Poll(); !r.Missing {
+		t.Fatalf("poll = %+v, want missing", r)
+	}
+	if err := os.Rename(staged, path); err != nil {
+		t.Fatal(err)
+	}
+	if got := lines(tail.Poll()); len(got) != 3 || got[0] != "first line" {
+		t.Fatalf("lines = %.40q, want the recreated file from its start", got)
+	}
+}
+
+// backlog appends numbered lines past maxReadBytes, so reading them takes three polls.
+func backlog(t *testing.T, path string) []string {
+	t.Helper()
+	var want []string
+	var b strings.Builder
+	for i := 0; b.Len() < 2*maxReadBytes+maxReadBytes/2; i++ {
+		line := fmt.Sprintf("old %06d %s", i, strings.Repeat("x", 80))
+		want = append(want, line)
+		b.WriteString(line + "\n")
+	}
+	appendTo(t, path, b.String())
+	return want
+}
+
+func TestTailerReadsAllOfARotatedFileBeforeTheNewOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "access.log")
+	appendTo(t, path, "first\n")
+	tail, _ := newTestTailer(path, nil, false)
+	tail.Poll()
+	want := backlog(t, path)
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	appendTo(t, path, "new 1\n")
+	want = append(want, "new 1")
+
+	var got []string
+	polls := 0
+	for ; polls < 10; polls++ {
+		r := tail.Poll()
+		if len(r.Lines) == 0 {
+			break
+		}
+		if r.Missing || r.Err != nil {
+			t.Fatalf("poll %d = missing %v, err %v", polls, r.Missing, r.Err)
+		}
+		got = append(got, r.Lines...)
+	}
+	if polls != 3 {
+		t.Fatalf("read in %d polls, want 3 bounded ones", polls)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("read %d lines, want %d: every old line in order, then the new file", len(got), len(want))
+	}
+}
+
+func TestTailerReadsAllOfADeletedFileBeforeReportingItMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "laravel-2026-11-01.log")
+	appendTo(t, path, "first\n")
+	tail, _ := newTestTailer(path, nil, false)
+	tail.Poll()
+	want := backlog(t, path)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for range 10 {
+		r := tail.Poll()
+		got = append(got, r.Lines...)
+		if r.Missing {
+			break
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("read %d lines before missing, want %d", len(got), len(want))
+	}
+}
+
+func TestTailerRestartWhileReadingARotatedFileReadsTheNewOneFromItsStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "access.log")
+	appendTo(t, path, "first\n")
+	tail, _ := newTestTailer(path, nil, false)
+	tail.Poll()
+	backlog(t, path)
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	appendTo(t, path, "new 1\n")
+	if got := lines(tail.Poll()); len(got) == 0 || slices.Contains(got, "new 1") {
+		t.Fatalf("first poll read %d lines, want only old ones", len(got))
+	}
+	pos := tail.Position()
+	if pos.Inode != inodeOfPath(t, path+".1") {
+		t.Fatalf("position %+v is not in the rotated file", pos)
+	}
+	tail.Close()
+
+	restarted, _ := newTestTailer(path, &pos, false)
+	if got := lines(restarted.Poll()); !slices.Equal(got, []string{"new 1"}) {
+		t.Fatalf("lines after restart = %.60q, want the new file from its start", got)
 	}
 }

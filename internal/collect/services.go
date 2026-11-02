@@ -39,7 +39,6 @@ func (c ServicesCollector) Collect(ctx context.Context, inv *Inventory) error {
 	for _, s := range sockets {
 		service := Service{Protocol: s.protocol, Address: s.address.String(), Port: s.port}
 		if owner, ok := owners[s.inode]; ok {
-			service.PID = owner.pid
 			service.Process = owner.process
 		}
 		inv.Services = append(inv.Services, service)

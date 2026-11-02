@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -23,12 +24,16 @@ const (
 	MaxSkippedSources    = 100
 	EmptyBatchEvery      = 5 * time.Minute
 	DefaultFlushInterval = 30 * time.Second
+	// UnsupportedRecheckEvery is how long the shipper stays idle after the server answered POST /logs with 404
+	// (an Oka Core without log ingestion) before it tries again.
+	UnsupportedRecheckEvery = time.Hour
 
 	maxBatchBytes      = 4 << 20
 	maxEventAge        = 7*24*time.Hour - time.Hour
 	maxUploadBackoff   = 5 * time.Minute
 	uploadsPerTick     = 20
 	checkpointFileName = "logs.json"
+	maxCheckpointSize  = 4 << 20
 )
 
 type LogClient interface {
@@ -50,26 +55,36 @@ type LogShipper struct {
 
 	config chan api.LogCollection
 
-	configured    bool
-	collector     *logs.Collector
-	aggregator    *logs.Aggregator
-	sources       []string
-	flushInterval time.Duration
-	lastFlush     time.Time
-	lastSent      time.Time
-	retryAt       time.Time
-	failures      int
+	// pending is the latest configuration not applied yet, current the one applied last.
+	pending          *api.LogCollection
+	current          api.LogCollection
+	unsupportedUntil time.Time
+	configured       bool
+	collector        *logs.Collector
+	aggregator       *logs.Aggregator
+	sources          []string
+	flushInterval    time.Duration
+	lastFlush        time.Time
+	lastSent         time.Time
+	retryAt          time.Time
+	failures         int
 }
 
-func NewLogShipper(client LogClient, stateDir string, options logs.Options, logger *slog.Logger) *LogShipper {
+// NewLogShipper keeps its spool and positions under stateDir. When root runs the agent, the files it writes
+// there are given to the owner of stateDir, like the state file (see SaveState).
+func NewLogShipper(client LogClient, stateDir string, options logs.Options, logger *slog.Logger) (*LogShipper, error) {
+	owner, err := stateOwner(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("state directory: %w", err)
+	}
 	return &LogShipper{
 		Client:   client,
 		StateDir: stateDir,
 		Options:  options,
 		Logger:   logger,
-		Spool:    logs.Spool{Dir: filepath.Join(stateDir, "spool"), MaxBytes: logs.DefaultSpoolBytes},
+		Spool:    logs.Spool{Dir: filepath.Join(stateDir, "spool"), MaxBytes: logs.DefaultSpoolBytes, Owner: owner},
 		config:   make(chan api.LogCollection, 1),
-	}
+	}, nil
 }
 
 // Configure hands over the log collection settings from a heartbeat or a logs response.
@@ -113,7 +128,8 @@ func (s *LogShipper) Run(ctx context.Context) error {
 	}
 }
 
-// Step runs one iteration: apply a new configuration, collect, flush when due and upload.
+// Step runs one iteration: apply a new configuration, collect, flush when due and upload. While the server
+// does not accept logs (see unsupported) it only takes a configuration that turns collection off.
 func (s *LogShipper) Step(ctx context.Context) error {
 	if s.Now == nil {
 		s.Now = time.Now
@@ -123,8 +139,17 @@ func (s *LogShipper) Step(ctx context.Context) error {
 	}
 	select {
 	case lc := <-s.config:
-		s.apply(ctx, lc)
+		s.pending = &lc
 	default:
+	}
+	idle := s.Now().Before(s.unsupportedUntil)
+	if s.pending != nil && (!idle || len(s.pending.Sources) == 0) {
+		lc := *s.pending
+		s.pending = nil
+		s.apply(ctx, lc)
+	}
+	if idle {
+		return nil
 	}
 	if s.collector != nil {
 		s.collect(ctx)
@@ -140,6 +165,7 @@ func (s *LogShipper) Step(ctx context.Context) error {
 }
 
 func (s *LogShipper) apply(ctx context.Context, lc api.LogCollection) {
+	s.current = lc
 	s.flushInterval = DefaultFlushInterval
 	if lc.FlushIntervalSeconds > 0 {
 		s.flushInterval = min(max(time.Duration(lc.FlushIntervalSeconds)*time.Second, 5*time.Second), 5*time.Minute)
@@ -162,7 +188,9 @@ func (s *LogShipper) apply(ctx context.Context, lc api.LogCollection) {
 		if err := s.Spool.Clear(); err != nil {
 			s.Logger.Error("clear log spool", "error", err)
 		}
-		os.Remove(filepath.Join(s.StateDir, checkpointFileName))
+		if err := os.Remove(filepath.Join(s.StateDir, checkpointFileName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			s.Logger.Error("delete log positions", "error", err)
+		}
 		s.Logger.Info("log collection is off")
 		return
 	}
@@ -247,7 +275,7 @@ func (s *LogShipper) upload(ctx context.Context) error {
 		if s.Now().Before(s.retryAt) {
 			return nil
 		}
-		b, path, ok, err := s.Spool.Oldest()
+		b, name, ok, err := s.Spool.Oldest()
 		if err != nil {
 			s.Logger.Error("read log spool", "error", err)
 			return nil
@@ -262,13 +290,16 @@ func (s *LogShipper) upload(ctx context.Context) error {
 		case errors.Is(err, api.ErrUnauthorized):
 			return ErrRevoked
 		case err == nil:
-			s.acknowledged(path, b, dropped)
+			s.acknowledged(name, b, dropped)
 			if resp.LogCollection != nil {
 				s.Configure(*resp.LogCollection)
 			}
+		case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound:
+			s.unsupported()
+			return nil
 		case errors.As(err, &httpErr) && rejected(httpErr.StatusCode):
 			s.Logger.Error("log batch rejected, dropping it", "batch_id", b.ID, "events", len(b.Events), "error", err)
-			s.acknowledged(path, b, 0)
+			s.acknowledged(name, b, 0)
 			if err := s.Spool.AddDropped(len(b.Events)); err != nil {
 				s.Logger.Error("count dropped log events", "error", err)
 			}
@@ -284,8 +315,25 @@ func (s *LogShipper) upload(ctx context.Context) error {
 	return nil
 }
 
-func (s *LogShipper) acknowledged(path string, b logs.Batch, reportedDropped int) {
-	if err := s.Spool.Remove(path); err != nil {
+// unsupported stops collection after the server answered 404: an Oka Core that does not have log ingestion
+// yet. What was read is kept in the spool with its positions, and collection and upload resume after
+// UnsupportedRecheckEvery, from where they stopped.
+func (s *LogShipper) unsupported() {
+	if s.collector != nil {
+		s.flush()
+		s.stopCollector()
+	}
+	if s.pending == nil && s.configured {
+		current := s.current
+		s.pending = &current
+	}
+	s.configured = false
+	s.unsupportedUntil = s.Now().Add(UnsupportedRecheckEvery)
+	s.Logger.Warn("the server does not accept logs, log collection stays idle", "retry_at", s.unsupportedUntil)
+}
+
+func (s *LogShipper) acknowledged(name string, b logs.Batch, reportedDropped int) {
+	if err := s.Spool.Remove(name); err != nil {
 		s.Logger.Error("remove sent log batch", "error", err)
 	}
 	if err := s.Spool.AddDropped(-reportedDropped); err != nil {
@@ -319,11 +367,20 @@ func (s *LogShipper) skipped() []logs.SkippedSource {
 	return out
 }
 
+// committed is the checkpoint of the last batch the server acknowledged. A missing or unusable file means
+// no position: collection then starts at the current end of every source, as on first enable.
 func (s *LogShipper) committed() logs.Checkpoint {
 	var cp logs.Checkpoint
-	data, err := os.ReadFile(filepath.Join(s.StateDir, checkpointFileName))
-	if err == nil {
-		_ = json.Unmarshal(data, &cp)
+	data, err := config.ReadRegularFile(filepath.Join(s.StateDir, checkpointFileName), maxCheckpointSize)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			s.Logger.Warn("log positions cannot be read, starting at the end of every log", "error", err)
+		}
+		return cp
+	}
+	if err := json.Unmarshal(data, &cp); err != nil {
+		s.Logger.Warn("log positions cannot be read, starting at the end of every log", "error", err)
+		return logs.Checkpoint{}
 	}
 	return cp
 }
@@ -333,7 +390,7 @@ func (s *LogShipper) commit(cp logs.Checkpoint) error {
 	if err != nil {
 		return err
 	}
-	if err := config.WriteFileAtomic(filepath.Join(s.StateDir, checkpointFileName), data, 0o600); err != nil {
+	if err := config.WriteFileAtomic(filepath.Join(s.StateDir, checkpointFileName), data, 0o600, s.Spool.Owner); err != nil {
 		return fmt.Errorf("commit log checkpoint: %w", err)
 	}
 	return nil

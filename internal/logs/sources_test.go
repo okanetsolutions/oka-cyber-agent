@@ -2,13 +2,18 @@ package logs
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
 type hostTree struct {
@@ -77,17 +82,31 @@ func TestPlanAuthReportsWhatItCannotRead(t *testing.T) {
 	if os.Geteuid() == 0 {
 		return
 	}
+	h.write("/var/log/auth.log", "")
+	os.Chmod(filepath.Join(h.root, "/var/log/auth.log"), 0)
+	p = PlanSources([]string{SourceAuth}, h.options(true))
+	if !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "/var/log/auth.log", ReasonPermissionDenied}}) {
+		t.Fatalf("unreadable auth.log = %+v", p)
+	}
 	h.write("/var/log/journal/abc/system.journal", "")
 	os.Chmod(filepath.Join(h.root, "/var/log/journal/abc/system.journal"), 0)
 	p = PlanSources([]string{SourceAuth}, h.options(true))
 	if !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "journal", ReasonPermissionDenied}}) {
 		t.Fatalf("unreadable journal = %+v", p)
 	}
+}
+
+func TestPlanAuthNeverFallsBackToFilesWhenTheJournalExists(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	h := newHost(t)
 	h.write("/var/log/auth.log", "")
-	os.Chmod(filepath.Join(h.root, "/var/log/auth.log"), 0)
-	p = PlanSources([]string{SourceAuth}, h.options(true))
-	if !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "/var/log/auth.log", ReasonPermissionDenied}}) {
-		t.Fatalf("unreadable auth.log = %+v", p)
+	h.write("/var/log/journal/abc/system.journal", "")
+	os.Chmod(filepath.Join(h.root, "/var/log/journal/abc/system.journal"), 0)
+	p := PlanSources([]string{SourceAuth}, h.options(true))
+	if p.Journal || len(p.Files) != 0 || !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "journal", ReasonPermissionDenied}}) {
+		t.Fatalf("plan = %+v, want the unreadable journal reported and auth.log left alone", p)
 	}
 }
 
@@ -171,6 +190,56 @@ func TestJournalRunFollowsAndKeepsCursor(t *testing.T) {
 	}
 }
 
+func TestJournalctlComesOnlyFromTrustedDirectories(t *testing.T) {
+	scratch := t.TempDir()
+	untrusted, trusted := filepath.Join(scratch, "untrusted"), filepath.Join(scratch, "trusted")
+	planted := filepath.Join(scratch, "planted-ran")
+	for _, dir := range []string{untrusted, trusted} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant := func(dir, marker, output string) {
+		script := "#!/bin/sh\n: > '" + marker + "'\necho " + output + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "journalctl"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant(untrusted, planted, "planted")
+	t.Setenv("PATH", untrusted+string(os.PathListSeparator)+os.Getenv("PATH"))
+	previous := trustedcmd.Dirs
+	trustedcmd.Dirs = []string{trusted}
+	t.Cleanup(func() { trustedcmd.Dirs = previous })
+	c := NewCollector([]string{SourceAuth}, Options{Root: t.TempDir()}, Checkpoint{}, nil, nil)
+	defer c.Close()
+
+	if c.options.HasJournalctl() {
+		t.Fatal("a journalctl found only in the agent's PATH must not count as available")
+	}
+	if _, _, err := startCommand(context.Background(), "journalctl", "--version"); !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("startCommand error = %v, want exec.ErrNotFound", err)
+	}
+	if _, err := os.Stat(planted); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the journalctl planted first in PATH was executed")
+	}
+
+	plant(trusted, filepath.Join(scratch, "trusted-ran"), "trusted")
+	if !c.options.HasJournalctl() {
+		t.Fatal("the journalctl in a trusted directory must count as available")
+	}
+	stdout, wait, err := startCommand(context.Background(), "journalctl", "--version")
+	if err != nil {
+		t.Fatalf("startCommand: %v", err)
+	}
+	output, _ := io.ReadAll(stdout)
+	if err := wait(); err != nil || string(output) != "trusted\n" {
+		t.Fatalf("output = %q, %v; want the trusted journalctl", output, err)
+	}
+	if _, err := os.Stat(planted); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the journalctl planted first in PATH was executed")
+	}
+}
+
 func TestCollectorReadsFilesAndResumesFromCheckpoint(t *testing.T) {
 	h := newHost(t)
 	h.write("/var/log/auth.log", "2026-10-31T18:58:00.000000+00:00 host sshd[1]: Failed password for root from 203.0.113.7 port 1 ssh2\n")
@@ -221,6 +290,131 @@ func TestCollectorReportsRemovedFileAndSkippedSources(t *testing.T) {
 	}
 }
 
+func TestCollectorPrefersJournalAndDropsForgedEntries(t *testing.T) {
+	h := newHost(t)
+	h.write("/run/log/journal/abc/system.journal", "")
+	h.write("/var/log/auth.log", "")
+	var args []string
+	c := NewCollector([]string{SourceAuth}, h.options(true), Checkpoint{Sources: []string{SourceAuth}}, fixtureStart(t, "debian-12-forged.jsonl", &args), (&fakeClock{now: testNow}).Now)
+	defer c.Close()
+	events := c.Poll(context.Background())
+	h.append("/var/log/auth.log", "2026-10-31T19:00:00.000000+00:00 host sshd[2]: Accepted password for root from 203.0.113.9 port 22 ssh2\n")
+	deadline := time.Now().Add(5 * time.Second)
+	for c.UntrustedEntries() < 5 && time.Now().Before(deadline) {
+		events = append(events, c.Poll(context.Background())...)
+		time.Sleep(10 * time.Millisecond)
+	}
+	events = append(events, c.Poll(context.Background())...)
+	if c.UntrustedEntries() != 5 || len(events) != 2 || events[0].Kind != KindUserCreated || events[0].Username != "mallory" || events[1].Username != "deploy" {
+		t.Fatalf("untrusted = %d, events = %+v", c.UntrustedEntries(), events)
+	}
+	if cp := c.Checkpoint(); len(cp.Files) != 0 {
+		t.Fatalf("auth.log must not be read when the journal is: %+v", cp.Files)
+	}
+}
+
+func TestCollectorDropsGlobFilesRemovedByRetention(t *testing.T) {
+	h := newHost(t)
+	dir := "/var/www/shop/storage/logs"
+	day := func(i int) string { return fmt.Sprintf("%s/laravel-2026-10-%02d.log", dir, i) }
+	h.write(day(1), "")
+	h.write(day(2), "")
+	h.write("/srv/api/app.log", "")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp}, h.options(false, dir+"/laravel-*.log", "/srv/api/app.log"), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+	for i := 3; i <= 30; i++ {
+		h.write(day(i), "")
+		h.append(day(i-2), "[2026-10-31 19:00:03] production.ERROR: last error before the prune\n")
+		os.Remove(filepath.Join(h.root, day(i-2)))
+		clock.now = clock.now.Add(24 * time.Hour)
+		events := c.Poll(context.Background())
+		if len(events) != 1 || events[0].Kind != KindAppError || events[0].Fields["file"] != day(i-2) {
+			t.Fatalf("day %d: events = %+v, want only the pruned file's last line", i, events)
+		}
+		if len(c.watches) != 3 {
+			t.Fatalf("day %d: watches = %v, want the two current daily files and app.log", i, sortedWatchPaths(c.watches))
+		}
+	}
+	if _, ok := c.Checkpoint().Files[day(1)]; ok {
+		t.Fatalf("checkpoint keeps a pruned file: %+v", c.Checkpoint().Files)
+	}
+
+	os.Remove(filepath.Join(h.root, "/srv/api/app.log"))
+	c.Poll(context.Background())
+	clock.now = clock.now.Add(RemovedAfter)
+	events := c.Poll(context.Background())
+	if len(events) != 1 || events[0].Kind != KindLogFileRemoved || events[0].Fields["path"] != "/srv/api/app.log" {
+		t.Fatalf("a configured file that disappears must be reported: %+v", events)
+	}
+}
+
+func TestCollectorReadsAPrunedGlobFileToItsEndBeforeDroppingIt(t *testing.T) {
+	h := newHost(t)
+	dir := "/var/www/shop/storage/logs"
+	pruned := dir + "/laravel-2026-10-01.log"
+	h.write(pruned, "")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp}, h.options(false, dir+"/laravel-*.log"), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+	line := "[2026-10-31 19:00:03] production.ERROR: " + strings.Repeat("x", 60) + "\n"
+	count := maxReadBytes/len(line) + maxReadBytes/2/len(line)
+	h.append(pruned, strings.Repeat(line, count))
+	os.Remove(filepath.Join(h.root, pruned))
+
+	read := 0
+	for range 5 {
+		clock.now = clock.now.Add(replanEvery)
+		read += len(c.Poll(context.Background()))
+	}
+	if read != count || len(c.watches) != 0 {
+		t.Fatalf("read %d of %d events, watches %v; want every line before the file is dropped", read, count, sortedWatchPaths(c.watches))
+	}
+}
+
+func TestCollectorFollowsRenameRotationOfGlobFiles(t *testing.T) {
+	h := newHost(t)
+	h.write("/var/log/nginx/access.log", "")
+	request := func(path string) string {
+		return `203.0.113.7 - - [31/Oct/2026:19:00:02 +0000] "GET ` + path + ` HTTP/1.1" 404 0 "-" "zgrab"` + "\n"
+	}
+	full := filepath.Join(h.root, "/var/log/nginx/access.log")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceWeb}, h.options(false), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+	paths := func(events []Event) []string {
+		var out []string
+		for _, e := range events {
+			out = append(out, e.Kind+":"+fmt.Sprint(e.Fields["path"]))
+		}
+		return out
+	}
+
+	h.append("/var/log/nginx/access.log", request("/.env"))
+	os.Rename(full, full+".1")
+	h.append("/var/log/nginx/access.log.1", request("/.git/config"))
+	h.write("/var/log/nginx/access.log", request("/wp-login.php"))
+	clock.now = clock.now.Add(replanEvery)
+	if got := paths(c.Poll(context.Background())); !slices.Equal(got, []string{"http_request:/.env", "http_request:/.git/config", "http_request:/wp-login.php"}) {
+		t.Fatalf("rotation: %v", got)
+	}
+
+	h.append("/var/log/nginx/access.log", request("/phpmyadmin"))
+	os.Rename(full, full+".1")
+	clock.now = clock.now.Add(replanEvery)
+	if got := paths(c.Poll(context.Background())); !slices.Equal(got, []string{"http_request:/phpmyadmin"}) {
+		t.Fatalf("a file renamed away while the plan ran must be read to its end: %v", got)
+	}
+	h.write("/var/log/nginx/access.log", request("/admin"))
+	clock.now = clock.now.Add(replanEvery)
+	if got := paths(c.Poll(context.Background())); !slices.Equal(got, []string{"http_request:/admin"}) {
+		t.Fatalf("the recreated file must be read from its start: %v", got)
+	}
+}
+
 func TestCollectorReadsJournalFromCursor(t *testing.T) {
 	h := newHost(t)
 	h.write("/run/log/journal/abc/system.journal", "")
@@ -229,17 +423,116 @@ func TestCollectorReadsJournalFromCursor(t *testing.T) {
 	defer c.Close()
 	var events []Event
 	deadline := time.Now().Add(5 * time.Second)
-	for len(events) < 27 && time.Now().Before(deadline) {
+	for len(events) < 26 && time.Now().Before(deadline) {
 		events = append(events, c.Poll(context.Background())...)
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(events) != 27 {
-		t.Fatalf("events = %d, want 27 from the journal fixture", len(events))
+	if len(events) != 26 {
+		t.Fatalf("events = %d, want 26 from the journal fixture", len(events))
 	}
 	if !slices.Contains(args, "--after-cursor=s=previous") {
 		t.Fatalf("args = %q", args)
 	}
 	if cp := c.Checkpoint(); cp.JournalCursor == "" || cp.JournalCursor == "s=previous" {
 		t.Fatalf("checkpoint cursor = %q", cp.JournalCursor)
+	}
+}
+
+func appErrors(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "[2024-01-%02d 10:00:00] production.ERROR: old error %d\n", i%28+1, i)
+	}
+	return b.String()
+}
+
+func TestCollectorStartsFilesThatAlreadyExistedAtTheirEnd(t *testing.T) {
+	h := newHost(t)
+	h.write("/srv/api/app.log", "")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp}, h.options(false, "/srv/api/app.log"), Checkpoint{}, nil, clock.Now)
+	c.Poll(context.Background())
+	checkpoint := c.Checkpoint()
+	c.Close()
+
+	laravel := "/var/www/shop/storage/logs/laravel.log"
+	h.write(laravel, appErrors(1000))
+	h.append("/srv/api/app.log", appErrors(3))
+	delete(checkpoint.Files, "/srv/api/app.log")
+	restarted := NewCollector([]string{SourceApp}, h.options(false, "/srv/api/app.log", laravel), checkpoint, nil, clock.Now)
+	defer restarted.Close()
+	if events := restarted.Poll(context.Background()); len(events) != 0 {
+		t.Fatalf("an existing file added to log_paths, or one whose position was lost, must not upload its history: %d events", len(events))
+	}
+	h.append(laravel, "[2026-10-31 19:00:03] production.ERROR: new error\n")
+	events := restarted.Poll(context.Background())
+	if len(events) != 1 || events[0].Fields["file"] != laravel {
+		t.Fatalf("events = %+v, want only the line written after the restart", events)
+	}
+}
+
+func TestCollectorStartsAFileThatBecomesReadableAtItsEnd(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	h := newHost(t)
+	dir := "/var/www/shop/storage/logs"
+	h.write(dir+"/laravel-2026-10-31.log", "")
+	h.write(dir+"/laravel-2026-10-30.log", appErrors(100))
+	old := filepath.Join(h.root, dir, "laravel-2026-10-30.log")
+	os.Chmod(old, 0)
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp}, h.options(false, dir+"/laravel-*.log"), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+	os.Chmod(old, 0o644)
+	clock.now = clock.now.Add(replanEvery)
+	if events := c.Poll(context.Background()); len(events) != 0 {
+		t.Fatalf("a file that existed before it was readable must not upload its history: %d events", len(events))
+	}
+	if _, ok := c.watches[dir+"/laravel-2026-10-30.log"]; !ok {
+		t.Fatalf("watches = %v, want the file that became readable", sortedWatchPaths(c.watches))
+	}
+}
+
+func TestCollectorReadsFilesCreatedWhileWatchingFromTheirStart(t *testing.T) {
+	h := newHost(t)
+	dir := "/var/www/shop/storage/logs"
+	h.write(dir+"/laravel-2026-10-31.log", appErrors(100))
+	h.write("/var/log/nginx/access.log", "")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp, SourceWeb}, h.options(false, dir+"/laravel-*.log"), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	if events := c.Poll(context.Background()); len(events) != 0 {
+		t.Fatalf("first poll must not upload history: %d events", len(events))
+	}
+
+	h.write(dir+"/laravel-2026-11-01.log", "[2026-11-01 00:00:01] production.ERROR: first error of the day\n")
+	h.write("/var/log/nginx/shop.example.com.access.log", `203.0.113.7 - - [01/Nov/2026:00:00:02 +0000] "GET /.env HTTP/1.1" 404 0 "-" "zgrab"`+"\n")
+	clock.now = clock.now.Add(replanEvery)
+	events := c.Poll(context.Background())
+	if len(events) != 2 || events[0].Fields["vhost"] != "shop.example.com" || events[1].Fields["file"] != dir+"/laravel-2026-11-01.log" {
+		t.Fatalf("events = %+v, want the first lines of the new daily log and of the new vhost log", events)
+	}
+}
+
+func TestCollectorForgetsSavedPositionOfAFileMissingAtStartup(t *testing.T) {
+	h := newHost(t)
+	h.write("/var/log/nginx/access.log", "")
+	vhostLog := "/var/log/nginx/shop.example.com.access.log"
+	staged := filepath.Join(h.root, "/var/log/nginx/staged")
+	appendTo(t, staged, `203.0.113.7 - - [01/Nov/2026:00:00:02 +0000] "GET /.env HTTP/1.1" 404 0 "-" "zgrab"`+"\n"+strings.Repeat("x", 9000)+"\n")
+	checkpoint := Checkpoint{Sources: []string{SourceWeb}, Files: map[string]Position{vhostLog: positionInPath(t, staged, 9000)}}
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceWeb}, h.options(false), checkpoint, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+
+	if err := os.Rename(staged, filepath.Join(h.root, vhostLog)); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = clock.now.Add(replanEvery)
+	if events := c.Poll(context.Background()); len(events) != 1 || events[0].Fields["path"] != "/.env" {
+		t.Fatalf("events = %+v, want the first line of the file created with the old inode number", events)
 	}
 }

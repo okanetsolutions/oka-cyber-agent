@@ -2,6 +2,7 @@ package collect
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -43,12 +44,25 @@ func TestServicesCollectorListsListeningSocketsWithOwners(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Service{
-		{Protocol: "tcp", Address: "0.0.0.0", Port: 8080, Process: "nginx", PID: 812},
+		{Protocol: "tcp", Address: "0.0.0.0", Port: 8080, Process: "nginx"},
 		{Protocol: "tcp", Address: "127.0.0.1", Port: 3306},
-		{Protocol: "tcp6", Address: "::1", Port: 6379, Process: "redis-server", PID: 1450},
+		{Protocol: "tcp6", Address: "::1", Port: 6379, Process: "redis-server"},
 	}
 	if !slices.Equal(inv.Services, want) {
 		t.Fatalf("services = %+v\nwant %+v", inv.Services, want)
+	}
+	raw, err := json.Marshal(inv.Services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded []map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, service := range decoded {
+		if _, ok := service["pid"]; ok {
+			t.Fatalf("service %v has a pid, which changes on every restart", service)
+		}
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,7 +22,13 @@ import (
 // FullInventoryEvery is how often the inventory is sent even when it did not change.
 const FullInventoryEvery = 24 * time.Hour
 
-var ErrRevoked = errors.New("the server rejected the agent token: this server was revoked in the dashboard or the token is invalid")
+// ConfigCheckEvery is how often Run checks between reports whether the configuration or the token changed.
+const ConfigCheckEvery = 30 * time.Second
+
+var (
+	ErrRevoked       = errors.New("the server rejected the agent token: this server was revoked in the dashboard or the token is invalid")
+	ErrConfigChanged = errors.New("the configuration or the agent token changed: restarting to apply it")
+)
 
 type Client interface {
 	Heartbeat(ctx context.Context, req api.HeartbeatRequest) (api.HeartbeatResponse, error)
@@ -33,47 +40,52 @@ type Agent struct {
 	StateDir string
 	Client   Client
 	Collect  func(ctx context.Context) (*collect.Inventory, error)
-	Logs     *LogShipper
-	Logger   *slog.Logger
-	Now      func() time.Time
-	Wait     func(ctx context.Context, d time.Duration) error
+	// Logs ships log events alongside the reports when set; heartbeats hand it the server's log configuration.
+	Logs   *LogShipper
+	Logger *slog.Logger
+	Now    func() time.Time
+	Wait   func(ctx context.Context, d time.Duration) error
+	// ConfigChanged reports whether enroll --force or an edit replaced the configuration or the token, so Run
+	// returns ErrConfigChanged and the service manager restarts the agent with them. Nil disables the check.
+	ConfigChanged func() (bool, error)
 
 	state  State
 	loaded bool
 }
 
-// Run reports until the context is cancelled or the server revokes the agent. Log shipping, when the agent
-// has a LogShipper, runs alongside and stops the agent too when the server rejects the token.
+// Run reports until the context is cancelled, the server revokes the agent (ErrRevoked) or the configuration
+// or the token changed (ErrConfigChanged). Log shipping, when the agent has a LogShipper, runs alongside and
+// stops with it; a 401 on a log upload stops the agent with ErrRevoked too.
 func (a *Agent) Run(ctx context.Context) error {
-	if err := a.init(); err != nil {
-		return err
-	}
+	a.init()
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	var revoked atomic.Bool
 	var shipping sync.WaitGroup
+	var logsRevoked atomic.Bool
 	if a.Logs != nil {
 		shipping.Go(func() {
 			if err := a.Logs.Run(ctx); errors.Is(err, ErrRevoked) {
-				revoked.Store(true)
+				logsRevoked.Store(true)
 				cancel()
 			}
 		})
 	}
 	defer shipping.Wait()
+	defer cancel()
 	for {
-		if err := a.Cycle(ctx); err != nil {
-			cancel()
+		err := a.Cycle(ctx)
+		if errors.Is(err, ErrRevoked) {
 			return err
 		}
-		if err := a.Wait(ctx, a.nextDelay()); err != nil {
-			cancel()
-			shipping.Wait()
-			if revoked.Load() {
-				a.recordError(ErrRevoked)
-				a.save()
-				return ErrRevoked
-			}
+		if err != nil && ctx.Err() == nil {
+			a.Logger.Error("report failed, retrying at the next interval", "error", err)
+		}
+		err = a.waitNext(ctx)
+		if logsRevoked.Load() {
+			a.recordError(ErrRevoked)
+			a.save()
+			return ErrRevoked
+		}
+		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
@@ -82,12 +94,35 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-// Cycle sends a heartbeat, then the inventory when it changed or is due. Errors other than a revoked token
-// are logged and kept in the state for the status command, and the next cycle tries again.
-func (a *Agent) Cycle(ctx context.Context) error {
-	if err := a.init(); err != nil {
-		return err
+// waitNext waits for the next report in steps of ConfigCheckEvery, so a changed configuration is applied
+// quickly even with a report interval of a day.
+func (a *Agent) waitNext(ctx context.Context) error {
+	for remaining := a.nextDelay(); remaining > 0; {
+		step := min(remaining, ConfigCheckEvery)
+		if err := a.Wait(ctx, step); err != nil {
+			return err
+		}
+		remaining -= step
+		if a.ConfigChanged == nil {
+			continue
+		}
+		changed, err := a.ConfigChanged()
+		if err != nil {
+			a.Logger.Warn("the configuration changed but cannot be used, keeping the current one", "error", err)
+		}
+		if changed {
+			return ErrConfigChanged
+		}
 	}
+	return nil
+}
+
+// Cycle sends a heartbeat, then the inventory when it changed or is due. A failure is kept in the state for
+// the status command and returned; ErrRevoked means the server revoked the agent token. A report cut short
+// by a stop (the context is cancelled) is returned too, so run --once fails, but it is not recorded: the
+// stop is not a failure of the server or the host.
+func (a *Agent) Cycle(ctx context.Context) error {
+	a.init()
 	err := a.heartbeat(ctx)
 	if err == nil {
 		err = a.inventory(ctx)
@@ -98,19 +133,18 @@ func (a *Agent) Cycle(ctx context.Context) error {
 		a.save()
 		return ErrRevoked
 	case err != nil && ctx.Err() != nil:
-		return nil
+		return err
 	case err != nil:
-		a.Logger.Error("report failed", "error", err)
 		a.recordError(err)
 	default:
 		a.state.LastError = ""
 		a.state.LastErrorAt = time.Time{}
 	}
 	a.save()
-	return nil
+	return err
 }
 
-func (a *Agent) init() error {
+func (a *Agent) init() {
 	if a.Logger == nil {
 		a.Logger = slog.Default()
 	}
@@ -121,14 +155,13 @@ func (a *Agent) init() error {
 		a.Wait = sleep
 	}
 	if !a.loaded {
-		s, err := LoadState(a.StateDir)
+		s, err := LoadState(a.StateDir, a.Config.ServerID)
 		if err != nil {
-			return err
+			a.Logger.Warn("starting from an empty state", "error", err)
 		}
 		a.state = s
 		a.loaded = true
 	}
-	return nil
 }
 
 func (a *Agent) heartbeat(ctx context.Context) error {
@@ -149,7 +182,8 @@ func (a *Agent) inventory(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("collect inventory: %w", err)
 	}
-	snapshot, err := inv.Marshal(api.MaxBodyBytes)
+	stored := a.storedManifest()
+	snapshot, err := inv.Marshal(api.MaxBodyBytes, stored)
 	if err != nil {
 		return fmt.Errorf("encode inventory: %w", err)
 	}
@@ -164,10 +198,40 @@ func (a *Agent) inventory(ctx context.Context) error {
 		return fmt.Errorf("inventory: %w", err)
 	}
 	a.Logger.Info("inventory sent", "packages", len(inv.Packages), "services", len(inv.Services), "changed", resp.Changed)
+	if len(inv.DroppedManifests) > 0 {
+		a.Logger.Warn("more skipped dependency files than the server accepts: Oka Cyber deleted the packages it stored for some of them",
+			"files", len(inv.DroppedManifests), "first", inv.DroppedManifests[0], "limit", collect.MaxSkippedFiles)
+	}
+	a.state.StoredManifests = manifestDigests(inv.StoredManifests(stored))
 	a.state.InventoryHash = hash
 	a.state.LastInventoryAt = now
 	a.setInterval(resp.ReportIntervalSeconds)
 	return nil
+}
+
+// storedManifest tells whether the server has packages stored for a manifest path, from the snapshots it accepted.
+func (a *Agent) storedManifest() func(path string) bool {
+	digests := make(map[string]bool, len(a.state.StoredManifests))
+	for _, d := range a.state.StoredManifests {
+		digests[d] = true
+	}
+	return func(path string) bool { return digests[manifestDigest(path)] }
+}
+
+func manifestDigests(paths []string) []string {
+	digests := make([]string, 0, len(paths))
+	for _, p := range paths {
+		digests = append(digests, manifestDigest(p))
+	}
+	slices.Sort(digests)
+	return digests
+}
+
+// manifestDigest keeps the state file small whatever the paths: up to MaxPackages+MaxSkippedFiles manifests of up to
+// 1024 bytes each would not fit, while 128 bits of SHA-256 are enough to tell paths apart.
+func manifestDigest(path string) string {
+	sum := sha256.Sum256([]byte(path))
+	return hex.EncodeToString(sum[:16])
 }
 
 func (a *Agent) setInterval(seconds int) {

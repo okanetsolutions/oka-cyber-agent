@@ -1,0 +1,21 @@
+2026-11-02T11:33:48.124457+00:00 367706a7fec9 useradd[3550]: new group: name=alice, GID=1000
+2026-11-02T11:33:48.124621+00:00 367706a7fec9 useradd[3550]: new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none
+2026-11-02T11:33:48.197505+00:00 367706a7fec9 useradd[3557]: new group: name=mallory, GID=1001
+2026-11-02T11:33:48.197654+00:00 367706a7fec9 useradd[3557]: new user: name=mallory, UID=1001, GID=1001, home=/home/mallory, shell=/bin/sh, from=none
+2026-11-02T11:33:48.197838+00:00 367706a7fec9 useradd[3557]: add 'mallory' to group 'adm'
+2026-11-02T11:33:48.197865+00:00 367706a7fec9 useradd[3557]: add 'mallory' to group 'sudo'
+2026-11-02T11:33:48.197895+00:00 367706a7fec9 useradd[3557]: add 'mallory' to shadow group 'adm'
+2026-11-02T11:33:48.197929+00:00 367706a7fec9 useradd[3557]: add 'mallory' to shadow group 'sudo'
+2026-11-02T11:33:48.271595+00:00 367706a7fec9 useradd[3564]: new group: name=trudy, GID=1002
+2026-11-02T11:33:48.271735+00:00 367706a7fec9 useradd[3564]: new user: name=trudy, UID=1002, GID=1002, home=/home/trudy, shell=/bin/sh, from=none
+2026-11-02T11:33:48.271919+00:00 367706a7fec9 useradd[3564]: add 'trudy' to group 'sudo'
+2026-11-02T11:33:48.271960+00:00 367706a7fec9 useradd[3564]: add 'trudy' to shadow group 'sudo'
+2026-11-02T11:33:48.329518+00:00 367706a7fec9 usermod[3571]: delete 'mallory' from group 'sudo'
+2026-11-02T11:33:48.329559+00:00 367706a7fec9 usermod[3571]: delete 'mallory' from shadow group 'sudo'
+2026-11-02T11:33:48.351087+00:00 367706a7fec9 groupmems[3578]: pam_unix(groupmems:auth): auth could not identify password for [root]
+2026-11-02T11:33:48.351228+00:00 367706a7fec9 groupmems[3578]: Authentication failure
+2026-11-02T11:33:48.355159+00:00 367706a7fec9 groupmems[3579]: pam_unix(groupmems:auth): auth could not identify password for [root]
+2026-11-02T11:33:48.355332+00:00 367706a7fec9 groupmems[3579]: Authentication failure
+2026-11-02T11:33:48.379457+00:00 367706a7fec9 gpasswd[3580]: members of group adm set by root to alice,mallory
+2026-11-02T11:33:48.396628+00:00 367706a7fec9 usermod[3586]: add 'alice' to group 'sudo'
+2026-11-02T11:33:48.396670+00:00 367706a7fec9 usermod[3586]: add 'alice' to shadow group 'sudo'

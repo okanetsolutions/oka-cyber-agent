@@ -53,7 +53,12 @@ func TestSpoolDropsOldestWhenFull(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	entries, _ := s.entries()
+	dir, err := s.open(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	entries, _ := spoolEntries(dir)
 	if len(entries) != 1 || entries[0].events != 7 {
 		t.Fatalf("entries = %+v, want only the newest batch", entries)
 	}

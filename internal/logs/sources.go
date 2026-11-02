@@ -1,8 +1,7 @@
 package logs
 
 import (
-	"errors"
-	"io/fs"
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +11,12 @@ import (
 const (
 	ReasonPermissionDenied = "permission_denied"
 	ReasonNotFound         = "not_found"
+	ReasonSymlink          = "symlink"
+	ReasonNotRegularFile   = "not_regular_file"
+
+	// reasonCompressed marks a glob match that is a compressed rotated log. It is left out of the plan
+	// without being reported, since every rotation makes one.
+	reasonCompressed = "compressed"
 
 	MaxAppPaths = 10
 )
@@ -21,6 +26,9 @@ var (
 	cronFiles   = []string{"/var/log/cron.log", "/var/log/cron"}
 	webPatterns = []string{"/var/log/nginx/*access*.log", "/var/log/apache2/*access*.log", "/var/log/httpd/*access_log"}
 	journalDirs = []string{"/var/log/journal", "/run/log/journal"}
+
+	compressedExtensions = []string{".gz", ".xz", ".bz2", ".zst", ".zip"}
+	compressedMagic      = [][]byte{{0x1f, 0x8b}, {0xfd, '7', 'z', 'X', 'Z', 0x00}, []byte("BZh"), {0x28, 0xb5, 0x2f, 0xfd}, []byte("PK\x03\x04")}
 )
 
 type SkippedSource struct {
@@ -33,6 +41,10 @@ type FilePlan struct {
 	Source string
 	Path   string
 	Vhost  string
+	// Pattern is the glob pattern the file was found by, "" for a file named in full. Such files come and go
+	// with normal retention (a daily laravel-YYYY-MM-DD.log, a removed vhost), so their removal is not
+	// reported. A name the pattern's wildcards matched is never followed through a symlink (see openLogFile).
+	Pattern string
 }
 
 // Plan is what the enabled sources resolve to on this host. Paths are host paths; Options.Root only
@@ -56,8 +68,8 @@ func (o Options) path(p string) string {
 }
 
 // PlanSources resolves the enabled built in sources: auth reads journald when journalctl exists and the
-// system journal is readable, otherwise the first auth log file (plus the cron log); web reads the nginx
-// and Apache access logs; app reads the configured log_paths.
+// system journal is readable, and the first auth log file (plus the cron log) only when there is no
+// journal; web reads the nginx and Apache access logs; app reads the configured log_paths.
 func PlanSources(enabled []string, o Options) Plan {
 	var p Plan
 	if slices.Contains(enabled, SourceAuth) {
@@ -72,30 +84,33 @@ func PlanSources(enabled []string, o Options) Plan {
 	return p
 }
 
+// planAuth never reads the auth log files when the system journal exists, even when it is unreadable: any
+// local user can write a line with any program name to them (logger -p auth.info -t sshd), while journald
+// records who really sent each entry (see TrustedAuthEntry).
 func (o Options) planAuth(p *Plan) {
-	journal := o.journalAccess()
-	if journal == "" {
+	switch o.journalAccess() {
+	case "":
 		p.Journal = true
+		return
+	case ReasonPermissionDenied:
+		p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, "journal", ReasonPermissionDenied})
 		return
 	}
 	for _, path := range authFiles {
-		switch reason := o.readable(path); reason {
+		switch reason := o.readable(path, ""); reason {
 		case "":
 			p.Files = append(p.Files, FilePlan{Source: SourceAuth, Path: path})
 			for _, cron := range cronFiles {
-				if o.readable(cron) == "" {
+				if o.readable(cron, "") == "" {
 					p.Files = append(p.Files, FilePlan{Source: SourceAuth, Path: cron})
 				}
 			}
 			return
-		case ReasonPermissionDenied:
-			p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, path, ReasonPermissionDenied})
+		case ReasonNotFound:
+		default:
+			p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, path, reason})
 			return
 		}
-	}
-	if journal == ReasonPermissionDenied {
-		p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, "journal", ReasonPermissionDenied})
-		return
 	}
 	p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, authFiles[0], ReasonNotFound})
 }
@@ -109,10 +124,11 @@ func (o Options) journalAccess() string {
 	}
 	found := false
 	for _, dir := range journalDirs {
-		files, _ := filepath.Glob(o.path(filepath.Join(dir, "*", "system*.journal")))
+		pattern := o.path(filepath.Join(dir, "*", "system*.journal"))
+		files, _ := filepath.Glob(pattern)
 		for _, file := range files {
 			found = true
-			if f, err := os.Open(file); err == nil {
+			if f, err := openLogFile(file, pattern); err == nil {
 				f.Close()
 				return ""
 			}
@@ -131,11 +147,15 @@ func (o Options) planWeb(p *Plan) {
 		for _, match := range matches {
 			hostPath := o.hostPath(match)
 			found = true
-			if reason := o.readable(hostPath); reason != "" {
+			reason := o.readable(hostPath, pattern)
+			if reason == reasonCompressed {
+				continue
+			}
+			if reason != "" {
 				p.Skipped = append(p.Skipped, SkippedSource{SourceWeb, hostPath, reason})
 				continue
 			}
-			p.Files = append(p.Files, FilePlan{Source: SourceWeb, Path: hostPath, Vhost: VhostFromPath(hostPath)})
+			p.Files = append(p.Files, FilePlan{Source: SourceWeb, Path: hostPath, Vhost: VhostFromPath(hostPath), Pattern: pattern})
 		}
 	}
 	if !found {
@@ -144,7 +164,9 @@ func (o Options) planWeb(p *Plan) {
 }
 
 // planApp follows every configured path, also the ones that do not exist yet (they are read from the start
-// once created). Glob patterns, such as Laravel's daily laravel-*.log files, are expanded.
+// once created). Glob patterns, such as Laravel's daily laravel-*.log files, are expanded. A file that is a
+// symlink is never read, nor one found through a directory a wildcard matched that is a symlink: the
+// directories of log files are often writable by the application's user (see openLogFile).
 func (o Options) planApp(p *Plan) {
 	paths := o.AppPaths
 	if len(paths) > MaxAppPaths {
@@ -154,8 +176,8 @@ func (o Options) planApp(p *Plan) {
 		if !filepath.IsAbs(configured) {
 			continue
 		}
-		if !strings.ContainsAny(configured, "*?[") {
-			if reason := o.readable(configured); reason != "" {
+		if !hasGlobMeta(configured) {
+			if reason := o.readable(configured, ""); reason != "" {
 				p.Skipped = append(p.Skipped, SkippedSource{SourceApp, configured, reason})
 				if reason == ReasonPermissionDenied {
 					continue
@@ -164,32 +186,60 @@ func (o Options) planApp(p *Plan) {
 			p.Files = append(p.Files, FilePlan{Source: SourceApp, Path: configured})
 			continue
 		}
-		matches, _ := filepath.Glob(o.path(configured))
+		pattern := filepath.Clean(configured)
+		matches, _ := filepath.Glob(o.path(pattern))
 		if len(matches) == 0 {
 			p.Skipped = append(p.Skipped, SkippedSource{SourceApp, configured, ReasonNotFound})
 		}
 		for _, match := range matches {
 			hostPath := o.hostPath(match)
-			if reason := o.readable(hostPath); reason != "" {
+			reason := o.readable(hostPath, pattern)
+			if reason == reasonCompressed {
+				continue
+			}
+			if reason != "" {
 				p.Skipped = append(p.Skipped, SkippedSource{SourceApp, hostPath, reason})
 				continue
 			}
-			p.Files = append(p.Files, FilePlan{Source: SourceApp, Path: hostPath})
+			p.Files = append(p.Files, FilePlan{Source: SourceApp, Path: hostPath, Pattern: pattern})
 		}
 	}
 }
 
-func (o Options) readable(hostPath string) string {
-	f, err := os.Open(o.path(hostPath))
-	switch {
-	case err == nil:
-		f.Close()
-		return ""
-	case errors.Is(err, fs.ErrPermission):
-		return ReasonPermissionDenied
-	default:
-		return ReasonNotFound
+// readable reports why the log file at hostPath, found by the glob pattern (a host path, "" for a file named
+// in full), cannot be read, or "" when it can. A glob match that is a compressed rotated log (by its
+// extension or its first bytes, logrotate's compress option) is reasonCompressed: it is never parsed as text.
+func (o Options) readable(hostPath, pattern string) string {
+	if pattern != "" && slices.Contains(compressedExtensions, strings.ToLower(filepath.Ext(hostPath))) {
+		return reasonCompressed
 	}
+	f, err := openLogFile(o.path(hostPath), o.patternPath(pattern))
+	if err != nil {
+		return skipReason(err)
+	}
+	defer f.Close()
+	if pattern != "" && compressed(f) {
+		return reasonCompressed
+	}
+	return ""
+}
+
+func compressed(f *os.File) bool {
+	head := make([]byte, 6)
+	n, _ := f.ReadAt(head, 0)
+	for _, magic := range compressedMagic {
+		if bytes.HasPrefix(head[:n], magic) {
+			return true
+		}
+	}
+	return false
+}
+
+func (o Options) patternPath(pattern string) string {
+	if pattern == "" {
+		return ""
+	}
+	return o.path(pattern)
 }
 
 func (o Options) hostPath(full string) string {

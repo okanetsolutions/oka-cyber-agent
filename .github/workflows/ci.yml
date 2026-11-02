@@ -32,6 +32,8 @@ jobs:
         run: shellcheck -s sh install.sh packaging/*.sh test/install/*.sh
       - name: install.sh unit matches packaging/oka-cyber-agent.service
         run: sh test/install/check-unit.sh
+      - name: install.sh tells an old cosign from a bad signature
+        run: sh test/install/cosign.sh
 
   test:
     runs-on: ubuntu-latest
@@ -73,7 +75,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [systemd-host, "ubuntu:24.04", "debian:12", "rockylinux/rockylinux:9"]
+        target: [systemd-host, systemd-el8, "ubuntu:24.04", "debian:12", "rockylinux/rockylinux:9", "rockylinux/rockylinux:8"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -84,8 +86,11 @@ jobs:
       - name: Install, rerun and uninstall on the runner with systemd
         if: matrix.target == 'systemd-host'
         run: sudo sh test/install/run.sh
+      - name: Install, rerun and uninstall under systemd 239 (RHEL 8, no LoadCredential)
+        if: matrix.target == 'systemd-el8'
+        run: sh test/install/systemd-container.sh registry.access.redhat.com/ubi8/ubi-init run.sh
       - name: Install, rerun and uninstall in ${{ matrix.target }}
-        if: matrix.target != 'systemd-host'
+        if: matrix.target != 'systemd-host' && matrix.target != 'systemd-el8'
         run: docker run --rm --network host -v "$PWD:/src:ro" "${{ matrix.target }}" sh /src/test/install/run.sh
       - name: Fake tenant log
         if: failure()
@@ -107,10 +112,17 @@ jobs:
           args: release --snapshot --clean --skip=sign,sbom
       - name: Start the fake tenant
         run: sh test/install/prepare.sh /tmp/oka-install-test
-      - name: Install, enroll and remove the .deb and .rpm
+      - name: Install, enroll, upgrade and remove the .deb and .rpm
         run: |
-          for image in debian:12 ubuntu:24.04 rockylinux/rockylinux:9; do
+          for image in debian:12 ubuntu:24.04 rockylinux/rockylinux:9 rockylinux/rockylinux:8; do
             echo "::group::$image"
             docker run --rm --network host -v "$PWD/dist:/dist:ro" -v "$PWD:/src:ro" "$image" sh /src/test/install/packages.sh
             echo "::endgroup::"
           done
+      - name: The .deb under systemd on the runner (remove and reinstall)
+        run: sudo DIST="$PWD/dist" sh test/install/packages.sh
+      - name: The .rpm under systemd 239 (RHEL 8, no LoadCredential)
+        run: sh test/install/systemd-container.sh registry.access.redhat.com/ubi8/ubi-init packages.sh
+      - name: Fake tenant log
+        if: failure()
+        run: cat /tmp/oka-install-test/faketenant.log

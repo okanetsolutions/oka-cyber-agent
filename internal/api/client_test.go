@@ -368,12 +368,33 @@ func TestPostLogsSendsTheBatchAndReadsTheConfiguration(t *testing.T) {
 	}
 }
 
+func TestPostLogsReportsAMissingEndpoint(t *testing.T) {
+	srv, requests := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusNotFound, `{"message":"not found"}`)
+	})
+	_, err := newClient(t, srv, "agent-secret", &sleeps{}).PostLogs(context.Background(), LogBatchRequest{BatchID: "b", Events: []logs.Event{}})
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusNotFound || len(requests.all()) != 1 {
+		t.Fatalf("err = %v, requests = %d", err, len(requests.all()))
+	}
+}
+
 func TestHeartbeatReadsLogCollection(t *testing.T) {
 	srv, _ := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
 		writeJSON(w, http.StatusOK, `{"report_interval_seconds":300,"log_collection":{"sources":[],"flush_interval_seconds":30}}`)
 	})
 	resp, err := newClient(t, srv, "agent-secret", &sleeps{}).Heartbeat(context.Background(), HeartbeatRequest{})
 	if err != nil || resp.LogCollection == nil || len(resp.LogCollection.Sources) != 0 {
+		t.Fatalf("resp = %+v, err = %v", resp, err)
+	}
+}
+
+func TestHeartbeatWithoutLogCollection(t *testing.T) {
+	srv, _ := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusOK, `{"report_interval_seconds":300}`)
+	})
+	resp, err := newClient(t, srv, "agent-secret", &sleeps{}).Heartbeat(context.Background(), HeartbeatRequest{})
+	if err != nil || resp.LogCollection != nil {
 		t.Fatalf("resp = %+v, err = %v", resp, err)
 	}
 }

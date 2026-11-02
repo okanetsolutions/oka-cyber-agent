@@ -6,12 +6,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
 const rpmQueryFormat = `%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{SOURCERPM}\t%{INSTALLTIME}\n`
@@ -30,12 +30,12 @@ func (RPMCollector) Name() string { return "rpm" }
 func (c RPMCollector) Collect(ctx context.Context, inv *Inventory) error {
 	var found bool
 	for _, path := range rpmDatabasePaths {
-		if _, err := os.Stat(filepath.Join(c.Root, path)); err == nil {
-			ok, err := packageDatabase(c.Root, path, FamilyRHEL, inv)
-			if err != nil {
-				return err
-			}
-			found = ok
+		ok, err := packageDatabase(c.Root, path, FamilyRHEL, inv)
+		if err != nil {
+			return err
+		}
+		if ok {
+			found = true
 			break
 		}
 	}
@@ -46,13 +46,18 @@ func (c RPMCollector) Collect(ctx context.Context, inv *Inventory) error {
 	if run == nil {
 		run = runCommand
 	}
-	output, err := run(ctx, "rpm", "-qa", "--queryformat", rpmQueryFormat)
+	output, err := run(ctx, "rpm", "--root", c.Root, "-qa", "--queryformat", rpmQueryFormat)
 	if err != nil {
 		return fmt.Errorf("rpm -qa: %w", err)
 	}
 	packages, err := ParseRPMQuery(bytes.NewReader(output), inv.OS.OSVEcosystem)
 	if err != nil {
 		return fmt.Errorf("rpm -qa: %w", err)
+	}
+	if strings.HasPrefix(inv.OS.OSVEcosystem, "Red Hat:") {
+		if err := assignRedHatEcosystems(ctx, c.Root, inv.OS.Version, packages); err != nil {
+			return err
+		}
 	}
 	inv.Packages = append(inv.Packages, packages...)
 	return nil
@@ -61,8 +66,12 @@ func (c RPMCollector) Collect(ctx context.Context, inv *Inventory) error {
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = []string{"LC_ALL=C", "PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
+	path, err := trustedcmd.Look(name)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = trustedcmd.Env()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()

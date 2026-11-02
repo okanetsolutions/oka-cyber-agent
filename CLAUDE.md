@@ -12,16 +12,17 @@ These are product promises written in the README. A change that breaks one is a 
 
 - Read only. The agent never writes outside `/etc/oka-cyber-agent`, `/var/lib/oka-cyber-agent` and, during install or uninstall only, the binary, the systemd unit and the `oka-cyber` system user. It never changes packages, services, firewall rules or users at runtime.
 - No remote control. The server can only tune what the agent already supports (report interval, which built in log sources are on). It can never send a command, a file path, a glob or a regular expression for the agent to act on. File paths come only from the local config file.
-- Never collected: file contents (other than the listed package databases, dependency lock files, the Go build info embedded in executables in the scan roots and log files), secrets, environment variables, shell history, users' data, process arguments.
-- Dependency discovery opens only the documented lock file names and, when `collect_go_binaries` is on, executables in the scan roots, from which it reads only the Go build info (`debug/buildinfo`). It never follows symlinks out of the scan roots.
+- Never collected: file contents (other than the listed package databases, the `rpm`, `trans_item` and `repo` tables of the dnf history database `/var/lib/dnf/history.sqlite` on Red Hat Enterprise Linux, dependency lock files, the Go build info embedded in executables in the scan roots and log files), secrets, environment variables, shell history, users' data, process arguments.
+- Dependency discovery opens only the documented lock file names and, when `collect_go_binaries` is on, executables in the scan roots, from which it reads only the Go build info (`debug/buildinfo`). It never follows a symlink below a scan root and never opens anything under an excluded path.
 - Log events are redacted on the host before they reach the spool (see okanetsolutions/oka-cyber-agent#7). Never send a raw line that has not been through redaction.
 - Never log, print or include in an error the enrollment token or the agent token. Error messages from the API client must not echo request bodies.
 - HTTPS only. `http://` is rejected unless the explicit `--insecure-dev` flag is set for local testing.
-- Install footprint. `install.sh` and the .deb/.rpm maintainer scripts (`postinstall`, `preremove`, `postremove`) make these changes and nothing else:
+- Install footprint. `install.sh` and the .deb/.rpm maintainer scripts (`preinstall`, `postinstall`, `preremove`, `postremove`) make these changes and nothing else:
   - Install the binary (`/usr/local/bin/oka-cyber-agent` from `install.sh`, `/usr/bin/oka-cyber-agent` from a package) and the systemd unit (`/etc/systemd/system/oka-cyber-agent.service` or `/usr/lib/systemd/system/oka-cyber-agent.service`).
   - Create the `oka-cyber` system user (nologin shell, home directory not created) with its own `oka-cyber` group, and add it to the `adm` and `systemd-journal` groups where they exist so it can read auth logs and the journal (okanetsolutions/oka-cyber-agent#7).
-  - Create `/etc/oka-cyber-agent` (through `enroll`) and set the owner and mode of its `token` file. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
-  - Reload systemd and enable, start, stop or disable `oka-cyber-agent.service` only.
+  - Create `/etc/oka-cyber-agent` (through `enroll`, mode 0755 whatever the umask) and set the owner and mode of its `token` file. A deb `remove` of an enabled service leaves the empty marker `/etc/oka-cyber-agent/package-removed`, which the next install deletes. systemd creates `/var/lib/oka-cyber-agent` as the unit's `StateDirectory`.
+  - Reload systemd and enable, start, restart, stop or disable `oka-cyber-agent.service` only (rerunning `install.sh` and upgrading the package restart it on the new binary, and an upgrade never enables it; a first install of the package on an enrolled host, or a reinstall after a deb `remove` of an enabled service, enables and starts it).
+  - Never both kinds of install on one host: `install.sh` refuses to run when the package is installed (or removed but not purged), and `preinstall` refuses the package when `install.sh` installed the agent, before anything is unpacked.
   - On deb purge or rpm erase only (`rpm -e` or `dnf remove`, not an upgrade), delete both directories, the `oka-cyber` user and its group. A deb `remove` keeps them.
 
 ## Repository Layout
@@ -32,11 +33,14 @@ These are product promises written in the README. A change that breaks one is a 
 - `internal/logs`: log sources (journald through `journalctl`, auth and cron log files, nginx and Apache access logs, configured application logs), the polling file tailer and the parsers that turn lines into the event kinds of okanetsolutions/oka-core#3779. Parsers are tested against real lines captured per distribution under `testdata`. It also holds redaction (`redact.go`, every rule with before and after tests), aggregation and the suspicious web request tokens (`testdata/suspicious_tokens.txt`, embedded in the binary), and the on disk spool.
 - `internal/api`: the HTTP client for the Oka Cyber agent API and the wire types.
 - `internal/config`: the local configuration file and token storage.
-- `internal/agent`: the run loop (heartbeat, inventory), the log shipper (collect, redact, aggregate, spool, upload in order, commit positions after the server's ack) and their persisted state.
+- `internal/trustedcmd`: finds the system commands the agent runs (`rpm`, `journalctl`) in fixed system directories only, never through the agent's own `PATH`.
+- `internal/safeopen`: opens a file or directory relative to an open parent directory without following a symlink (`O_NOFOLLOW`) and without blocking on a FIFO (`O_NONBLOCK`), for the dependency walk and the log files.
+- `internal/sqlite`: a minimal read-only reader of SQLite database files, for the dnf history database (release builds have no cgo).
+- `internal/agent`: the run loop (heartbeat, inventory), the log shipper (collect, redact, aggregate, spool, upload in order, commit positions after the server's ack) and their persisted state, all under the state directory: `state.json`, the log positions in `logs.json` and the spool in `spool/`.
 - `testdata` directories next to the code they feed: real sample files, never generated at test time.
 - `install.sh`: the one line installer (POSIX `sh`, it runs as `curl ... | sudo sh -s --`). It embeds the systemd unit, which must stay identical to `packaging/oka-cyber-agent.service` apart from the binary path (`test/install/check-unit.sh` enforces it).
 - `packaging`: the systemd unit and the `.deb`/`.rpm` maintainer scripts used by `.goreleaser.yaml`.
-- `test/faketenant` and `test/install`: a stand in for the agent API and the CI scripts that install, rerun and uninstall the agent (script and packages) on Ubuntu, Debian and Rocky.
+- `test/faketenant` and `test/install`: a stand in for the agent API and the CI scripts that install, rerun, upgrade and uninstall the agent (script and packages) on Ubuntu, Debian, Rocky and RHEL 8 (systemd 239, without `LoadCredential`).
 
 Update this section in the same PR when a package is added, moved or removed.
 

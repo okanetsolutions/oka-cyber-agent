@@ -66,7 +66,10 @@ func (h *shipperHost) appendLog(line string) {
 }
 
 func (h *shipperHost) shipper() *LogShipper {
-	s := NewLogShipper(h.client, h.stateDir, logs.Options{Root: h.root, HasJournalctl: func() bool { return false }}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s, err := NewLogShipper(h.client, h.stateDir, logs.Options{Root: h.root, HasJournalctl: func() bool { return false }}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	s.Now = h.clock.Now
 	return s
 }
@@ -327,4 +330,89 @@ func (h heartbeatWithLogs) Heartbeat(ctx context.Context, req api.HeartbeatReque
 	resp, err := h.fakeClient.Heartbeat(ctx, req)
 	resp.LogCollection = &api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5}
 	return resp, err
+}
+
+func TestShipperStaysIdleWhenTheServerHasNoLogsEndpoint(t *testing.T) {
+	h := newShipperHost(t)
+	h.client.failWith = []error{&api.HTTPError{StatusCode: http.StatusNotFound}}
+	s := h.shipper()
+	s.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5})
+	h.step(s)
+	h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/first"))
+	h.advance(6 * time.Second)
+	h.step(s)
+	if len(h.client.batches) != 1 || s.collector != nil {
+		t.Fatalf("batches = %d, collector running = %v; a 404 must stop collection", len(h.client.batches), s.collector != nil)
+	}
+	h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/second"))
+	for range 5 {
+		s.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5})
+		h.advance(10 * time.Minute)
+		h.step(s)
+	}
+	if len(h.client.batches) != 1 || s.collector != nil || s.Spool.Empty() {
+		t.Fatalf("batches = %d, collector running = %v, spool empty = %v; the shipper must stay idle and keep its spool", len(h.client.batches), s.collector != nil, s.Spool.Empty())
+	}
+	h.advance(UnsupportedRecheckEvery)
+	h.step(s)
+	h.advance(6 * time.Second)
+	h.step(s)
+	var commands []string
+	for _, b := range h.client.batches[1:] {
+		for _, e := range b.Events {
+			commands = append(commands, e.Fields["command"].(string))
+		}
+	}
+	if strings.Join(commands, ",") != "/usr/bin/first,/usr/bin/second" {
+		t.Fatalf("commands = %v, want the spooled event, then the line written while idle", commands)
+	}
+}
+
+func TestShipperTurnsOffWhileIdle(t *testing.T) {
+	h := newShipperHost(t)
+	h.client.failWith = []error{&api.HTTPError{StatusCode: http.StatusNotFound}}
+	s := h.shipper()
+	s.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5})
+	h.step(s)
+	h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/id"))
+	h.advance(6 * time.Second)
+	h.step(s)
+	s.Configure(api.LogCollection{Sources: []string{}})
+	h.advance(time.Minute)
+	h.step(s)
+	if !s.Spool.Empty() {
+		t.Fatal("turning collection off must delete the spool even while the server does not accept logs")
+	}
+	h.advance(UnsupportedRecheckEvery)
+	h.step(s)
+	if len(h.client.batches) != 1 || s.collector != nil {
+		t.Fatalf("batches = %d, collector running = %v", len(h.client.batches), s.collector != nil)
+	}
+}
+
+func TestAgentStopsLogShippingWhenTheConfigurationChanges(t *testing.T) {
+	h := newShipperHost(t)
+	shipper := h.shipper()
+	shipper.Tick = time.Millisecond
+	shipper.Now = time.Now
+	client := &fakeClient{}
+	a, _ := newTestAgent(t, client, &[]collect.Package{})
+	a.Logs = shipper
+	heartbeats := 0
+	a.Client = heartbeatWithLogs{client, &heartbeats}
+	a.Wait = func(context.Context, time.Duration) error { return nil }
+	a.ConfigChanged = func() (bool, error) { return true, nil }
+	done := make(chan error, 1)
+	go func() { done <- a.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrConfigChanged) {
+			t.Fatalf("Run = %v, want ErrConfigChanged", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the agent did not stop")
+	}
+	if shipper.collector != nil {
+		t.Fatal("Run returned before the log shipper stopped")
+	}
 }
