@@ -1,8 +1,11 @@
 package logs
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRedactQueryParameters(t *testing.T) {
@@ -169,5 +172,98 @@ func TestRedactEvents(t *testing.T) {
 	got = Redact(long)
 	if len(got.Message) > MaxMessageLength || !strings.HasPrefix(got.Message, "é") || len(got.Fields["file"].(string)) != maxFieldLength {
 		t.Fatalf("message length = %d, file length = %d", len(got.Message), len(got.Fields["file"].(string)))
+	}
+}
+
+func TestRedactKeepsTextAfterAnInvalidByte(t *testing.T) {
+	latin1 := newEvent(SourceApp, KindAppError, testNow, "production\xe9"+strings.Repeat("a", 2990))
+	latin1.set("file", "/var/log/caf\xe9.log")
+	latin1.Program = "app\xff"
+	got := Redact(latin1)
+	if want := "production\uFFFD" + strings.Repeat("a", MaxMessageLength-len("production\uFFFD")); got.Message != want {
+		t.Fatalf("message = %q (%d bytes)", got.Message[:min(len(got.Message), 40)], len(got.Message))
+	}
+	if got.Fields["file"] != "/var/log/caf\uFFFD.log" || got.Program != "app\uFFFD" {
+		t.Fatalf("file = %q, program = %q", got.Fields["file"], got.Program)
+	}
+	data, err := json.Marshal(got)
+	if err != nil || !utf8.Valid(data) {
+		t.Fatalf("marshal error %v, valid UTF-8 %v", err, utf8.Valid(data))
+	}
+}
+
+func TestCut(t *testing.T) {
+	tests := []struct {
+		name, in string
+		max      int
+		want     string
+	}{
+		{"short", "hello", 10, "hello"},
+		{"exact", "hello", 5, "hello"},
+		{"ascii", "hello world", 5, "hello"},
+		{"rune ends at the limit", "ab€", 5, "ab€"},
+		{"rune straddles the limit by one byte", "ab€", 4, "ab"},
+		{"rune straddles the limit by two bytes", "ab€", 3, "ab"},
+		{"four byte rune straddles the limit", "a😀b", 4, "a"},
+		{"invalid byte early", "ab\xe9" + strings.Repeat("c", 20), 10, "ab\uFFFDccccc"},
+		{"invalid byte at the limit", "abcd\xe9fg", 5, "abcd"},
+		{"invalid bytes in a short string", "caf\xe9 cr\xe8me", 20, "caf\uFFFD cr\uFFFDme"},
+		{"replacements grow past the limit", strings.Repeat("a\xe9", 4), 8, "a\uFFFDa\uFFFD"},
+		{"replacement straddles the limit", "abcdef\xe9", 8, "abcdef"},
+		{"stray continuation bytes", "ab\x80\x80\x80\x80cd", 20, "ab\uFFFDcd"},
+		{"truncated rune inside", "a\xe2\x82b", 10, "a\uFFFDb"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := cut(test.in, test.max); got != test.want {
+				t.Fatalf("cut(%q, %d) = %q, want %q", test.in, test.max, got, test.want)
+			}
+		})
+	}
+}
+
+func FuzzCut(f *testing.F) {
+	for _, seed := range []string{"", "hello", "ab€cd", "a😀b", "ab\xe9cd", strings.Repeat("a\xe9", 50), "\x80\x80\x80\x80", "\xf0\x9f\x98"} {
+		f.Add(seed, 7)
+	}
+	f.Fuzz(func(t *testing.T, s string, max int) {
+		if max < 0 || max > 1<<16 {
+			t.Skip()
+		}
+		got := cut(s, max)
+		if len(got) > max || !utf8.ValidString(got) {
+			t.Fatalf("cut(%q, %d) = %q: %d bytes, valid %v", s, max, got, len(got), utf8.ValidString(got))
+		}
+		if utf8.ValidString(s) {
+			if !strings.HasPrefix(s, got) || len(got) < min(len(s), max)-(utf8.UTFMax-1) {
+				t.Fatalf("cut(%q, %d) = %q is not the longest whole rune prefix", s, max, got)
+			}
+		}
+	})
+}
+
+// TestCutLargeInput checks that cut only looks at the bytes it keeps: a huge line with an invalid byte near
+// the start still keeps max bytes, and a limit as large as the input is handled in one pass.
+func TestCutLargeInput(t *testing.T) {
+	huge := "ab\xe9" + strings.Repeat("x", 16<<20)
+	if got := cut(huge, MaxMessageLength); len(got) != MaxMessageLength || !strings.HasPrefix(got, "ab\uFFFDx") {
+		t.Fatalf("cut kept %d bytes", len(got))
+	}
+	mixed := strings.Repeat(strings.Repeat("y", 99)+"\xe9", 1<<15)
+	got := cut(mixed, len(mixed))
+	if len(got) > len(mixed) || len(got) < len(mixed)-utf8.UTFMax || !utf8.ValidString(got) {
+		t.Fatalf("cut kept %d of %d bytes", len(got), len(mixed))
+	}
+}
+
+func BenchmarkCut(b *testing.B) {
+	for _, size := range []int{1 << 10, 1 << 14, 1 << 18} {
+		s := "ab\xe9" + strings.Repeat("y\xe9", size)
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			b.SetBytes(int64(size))
+			for b.Loop() {
+				cut(s, size)
+			}
+		})
 	}
 }

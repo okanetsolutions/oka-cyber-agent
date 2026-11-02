@@ -367,13 +367,29 @@ func secretValueLength(s string) int {
 	return end
 }
 
+// cut returns s as valid UTF-8 of at most max bytes. Log lines are not always UTF-8 (a Latin-1 byte in an
+// application log), so invalid bytes are replaced rather than ending the text there. Only the first max bytes
+// are looked at, and a rune split by the limit is dropped whole.
 func cut(s string, max int) string {
-	if len(s) <= max {
-		return s
+	if len(s) > max {
+		s = trimPartialRune(s[:max])
 	}
-	s = s[:max]
-	for !utf8.ValidString(s) {
-		s = s[:len(s)-1]
+	s = strings.ToValidUTF8(s, string(utf8.RuneError))
+	if len(s) > max {
+		s = trimPartialRune(s[:max])
+	}
+	return s
+}
+
+// trimPartialRune drops the start of a rune that is cut short at the end of s, at most utf8.UTFMax-1 bytes.
+func trimPartialRune(s string) string {
+	for i := len(s) - 1; i >= 0 && i > len(s)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(s[i]) {
+			if !utf8.FullRuneInString(s[i:]) {
+				return s[:i]
+			}
+			break
+		}
 	}
 	return s
 }
