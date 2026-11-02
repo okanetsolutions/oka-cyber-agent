@@ -1,8 +1,11 @@
 package logs
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 const (
@@ -10,6 +13,10 @@ const (
 	ReasonNotFound         = "not_found"
 	ReasonSymlink          = "symlink"
 	ReasonNotRegularFile   = "not_regular_file"
+
+	// reasonCompressed marks a glob match that is a compressed rotated log. It is left out of the plan
+	// without being reported, since every rotation makes one.
+	reasonCompressed = "compressed"
 
 	MaxAppPaths = 10
 )
@@ -19,6 +26,9 @@ var (
 	cronFiles   = []string{"/var/log/cron.log", "/var/log/cron"}
 	webPatterns = []string{"/var/log/nginx/*access*.log", "/var/log/apache2/*access*.log", "/var/log/httpd/*access_log"}
 	journalDirs = []string{"/var/log/journal", "/run/log/journal"}
+
+	compressedExtensions = []string{".gz", ".xz", ".bz2", ".zst", ".zip"}
+	compressedMagic      = [][]byte{{0x1f, 0x8b}, {0xfd, '7', 'z', 'X', 'Z', 0x00}, []byte("BZh"), {0x28, 0xb5, 0x2f, 0xfd}, []byte("PK\x03\x04")}
 )
 
 type SkippedSource struct {
@@ -137,7 +147,11 @@ func (o Options) planWeb(p *Plan) {
 		for _, match := range matches {
 			hostPath := o.hostPath(match)
 			found = true
-			if reason := o.readable(hostPath, pattern); reason != "" {
+			reason := o.readable(hostPath, pattern)
+			if reason == reasonCompressed {
+				continue
+			}
+			if reason != "" {
 				p.Skipped = append(p.Skipped, SkippedSource{SourceWeb, hostPath, reason})
 				continue
 			}
@@ -179,7 +193,11 @@ func (o Options) planApp(p *Plan) {
 		}
 		for _, match := range matches {
 			hostPath := o.hostPath(match)
-			if reason := o.readable(hostPath, pattern); reason != "" {
+			reason := o.readable(hostPath, pattern)
+			if reason == reasonCompressed {
+				continue
+			}
+			if reason != "" {
 				p.Skipped = append(p.Skipped, SkippedSource{SourceApp, hostPath, reason})
 				continue
 			}
@@ -189,13 +207,32 @@ func (o Options) planApp(p *Plan) {
 }
 
 // readable reports why the log file at hostPath, found by the glob pattern (a host path, "" for a file named
-// in full), cannot be read, or "" when it can.
+// in full), cannot be read, or "" when it can. A glob match that is a compressed rotated log (by its
+// extension or its first bytes, logrotate's compress option) is reasonCompressed: it is never parsed as text.
 func (o Options) readable(hostPath, pattern string) string {
-	f, err := openLogFile(o.path(hostPath), o.patternPath(pattern))
-	if err == nil {
-		f.Close()
+	if pattern != "" && slices.Contains(compressedExtensions, strings.ToLower(filepath.Ext(hostPath))) {
+		return reasonCompressed
 	}
-	return skipReason(err)
+	f, err := openLogFile(o.path(hostPath), o.patternPath(pattern))
+	if err != nil {
+		return skipReason(err)
+	}
+	defer f.Close()
+	if pattern != "" && compressed(f) {
+		return reasonCompressed
+	}
+	return ""
+}
+
+func compressed(f *os.File) bool {
+	head := make([]byte, 6)
+	n, _ := f.ReadAt(head, 0)
+	for _, magic := range compressedMagic {
+		if bytes.HasPrefix(head[:n], magic) {
+			return true
+		}
+	}
+	return false
 }
 
 func (o Options) patternPath(pattern string) string {

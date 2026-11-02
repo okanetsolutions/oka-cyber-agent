@@ -46,6 +46,7 @@ type Collector struct {
 	firstEnable map[string]bool
 	resume      Checkpoint
 	watches     map[string]*watch
+	files       *readFiles
 	skipped     []SkippedSource
 	lastPlan    time.Time
 	// listed holds the file names in the directories of the watched files, read just before the latest plan.
@@ -79,6 +80,7 @@ func NewCollector(sources []string, o Options, resume Checkpoint, start StartFun
 		firstEnable: map[string]bool{},
 		resume:      resume,
 		watches:     map[string]*watch{},
+		files:       newReadFiles(),
 	}
 	for _, s := range sources {
 		c.firstEnable[s] = !slices.Contains(resume.Sources, s)
@@ -161,7 +163,10 @@ func (c *Collector) parseLine(plan FilePlan, line string) (Event, bool) {
 // A file that enters the plan without a saved position starts at its current end, since it may hold years
 // of history: a file found at startup, a file added to log_paths, a new vhost's existing log. Only a file
 // created while the agent was watching is read from its start (a new daily laravel-YYYY-MM-DD.log, a new
-// vhost log in /var/log/nginx): one whose directory was listed before the previous plan without it.
+// vhost log in /var/log/nginx): one whose directory was listed before the previous plan without it. A file
+// that is new only by name, because a rotation renamed it to a name a glob pattern matches (app.log.1), is
+// the same file another tailer is reading or just read to its end: its tailer waits for that one and goes on
+// from where it stopped (see readFiles), so no line is read twice.
 func (c *Collector) plan(ctx context.Context) {
 	previous := c.listed
 	c.listed = map[string]map[string]bool{}
@@ -194,6 +199,7 @@ func (c *Collector) plan(ctx context.Context) {
 		t := NewTailer(c.options.path(path), resume, startAtEnd)
 		t.Pattern = c.options.patternPath(f.Pattern)
 		t.Now = c.now
+		t.files = c.files
 		c.watches[path] = &watch{plan: f, tailer: t, planned: true}
 	}
 	// The saved position of a file that is gone is forgotten, since a file created later under its name may

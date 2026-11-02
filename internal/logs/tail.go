@@ -35,13 +35,18 @@ type Position struct {
 // While a rotated file is still being read, Position is the position in that old file. The old file is known
 // only by the open descriptor, not by a path, so after a restart at that point the new file is read from its
 // start and the rest of the old one is not read.
+//
+// The tailers of a Collector share what they read by device and inode (see readFiles): a file another tailer
+// holds open is not opened, and one it finished reading after a rotation is continued where it stopped.
 type Tailer struct {
 	Path string
 	// Pattern is the glob pattern Path was found by, "" for a path named in full.
 	Pattern string
 	Now     func() time.Time
 
+	files        *readFiles
 	file         *os.File
+	id           fileID
 	inode        uint64
 	offset       int64
 	skipping     bool
@@ -75,6 +80,7 @@ func (t *Tailer) Position() Position {
 
 func (t *Tailer) Close() {
 	if t.file != nil {
+		t.files.release(t.id, t)
 		t.file.Close()
 		t.file = nil
 	}
@@ -97,6 +103,7 @@ func (t *Tailer) Poll() PollResult {
 		if more {
 			return r
 		}
+		t.files.finished(t.file, t.id, t.offset, t.Now())
 		t.Close()
 		t.offset = 0
 		t.startAtEnd = false
@@ -111,6 +118,8 @@ func (t *Tailer) Poll() PollResult {
 		switch {
 		case errors.Is(err, fs.ErrNotExist) || errors.Is(err, errSymlink) || errors.Is(err, errNotRegular):
 			return t.missing(r)
+		case errors.Is(err, errHeld):
+			return r
 		case err != nil:
 			r.Err = err
 			return r
@@ -142,6 +151,10 @@ func (t *Tailer) missing(r PollResult) PollResult {
 	return r
 }
 
+// errHeld is returned by open while another tailer of the same Collector reads the file, such as a rotated
+// file whose new name a glob pattern matches while the tailer of its old name still reads it to its end.
+var errHeld = errors.New("held by another tailer")
+
 // open opens the file at Path and returns what the open descriptor refers to, which can differ from what the
 // latest Lstat saw.
 func (t *Tailer) open() (fs.FileInfo, error) {
@@ -154,11 +167,18 @@ func (t *Tailer) open() (fs.FileInfo, error) {
 		f.Close()
 		return nil, err
 	}
-	inode, size := inodeOf(info), info.Size()
-	t.file = f
+	id, inode, size := fileIDOf(info), inodeOf(info), info.Size()
+	if !t.files.acquire(id, t) {
+		f.Close()
+		return nil, errHeld
+	}
+	t.file, t.id = f, id
+	continued, ok := t.files.resume(f, id, size, t.Now())
 	switch {
 	case t.resume != nil && t.resume.Inode == inode && t.resume.Offset <= size:
 		t.offset = t.resume.Offset
+	case ok:
+		t.offset = continued
 	case t.resume != nil:
 		t.offset = 0
 	case t.startAtEnd:

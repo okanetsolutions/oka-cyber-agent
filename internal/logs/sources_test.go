@@ -297,9 +297,8 @@ func TestCollectorPrefersJournalAndDropsForgedEntries(t *testing.T) {
 	var args []string
 	c := NewCollector([]string{SourceAuth}, h.options(true), Checkpoint{Sources: []string{SourceAuth}}, fixtureStart(t, "debian-12-forged.jsonl", &args), (&fakeClock{now: testNow}).Now)
 	defer c.Close()
-	c.Poll(context.Background())
+	events := c.Poll(context.Background())
 	h.append("/var/log/auth.log", "2026-10-31T19:00:00.000000+00:00 host sshd[2]: Accepted password for root from 203.0.113.9 port 22 ssh2\n")
-	var events []Event
 	deadline := time.Now().Add(5 * time.Second)
 	for c.UntrustedEntries() < 5 && time.Now().Before(deadline) {
 		events = append(events, c.Poll(context.Background())...)
