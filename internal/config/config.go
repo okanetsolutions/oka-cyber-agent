@@ -35,6 +35,8 @@ const (
 	MaxMaxDepth        = 32
 	DefaultMaxFileSize = 20 << 20
 	MaxMaxFileSize     = 512 << 20
+
+	MaxLogPaths = 10
 )
 
 var DefaultScanPaths = []string{"/var/www", "/srv", "/opt", "/home"}
@@ -54,6 +56,9 @@ type Config struct {
 	MaxDepth               int      `yaml:"max_depth"`
 	MaxFileSize            int64    `yaml:"max_file_size"`
 	CollectGoBinaries      bool     `yaml:"collect_go_binaries"`
+
+	// LogPaths are the application log files the app log source reads. They only ever come from this file.
+	LogPaths []string `yaml:"log_paths"`
 }
 
 func Default() Config {
@@ -63,6 +68,7 @@ func Default() Config {
 		CollectDependencyFiles: true,
 		ScanPaths:              slices.Clone(DefaultScanPaths),
 		ExcludePaths:           []string{},
+		LogPaths:               []string{},
 		MaxDepth:               DefaultMaxDepth,
 		MaxFileSize:            DefaultMaxFileSize,
 	}
@@ -135,12 +141,15 @@ func (c Config) Validate() error {
 }
 
 func (c Config) validateOptions() error {
-	for _, list := range [][]string{c.ScanPaths, c.ExcludePaths} {
+	for _, list := range [][]string{c.ScanPaths, c.ExcludePaths, c.LogPaths} {
 		for _, p := range list {
 			if !filepath.IsAbs(p) {
-				return fmt.Errorf("scan_paths and exclude_paths must be absolute: %q", p)
+				return fmt.Errorf("scan_paths, exclude_paths and log_paths must be absolute: %q", p)
 			}
 		}
+	}
+	if len(c.LogPaths) > MaxLogPaths {
+		return fmt.Errorf("log_paths accepts at most %d paths", MaxLogPaths)
 	}
 	if c.MaxDepth < 1 || c.MaxDepth > MaxMaxDepth {
 		return fmt.Errorf("max_depth must be between 1 and %d", MaxMaxDepth)

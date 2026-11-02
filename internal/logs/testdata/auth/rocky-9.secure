@@ -1,0 +1,56 @@
+Oct 31 19:02:42 d053ddb79397 sshd[231]: Server listening on 0.0.0.0 port 22.
+Oct 31 19:02:42 d053ddb79397 sshd[231]: Server listening on :: port 22.
+Oct 31 19:02:43 d053ddb79397 useradd[233]: new group: name=alice, GID=1000
+Oct 31 19:02:43 d053ddb79397 useradd[233]: new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none
+Oct 31 19:02:43 d053ddb79397 useradd[247]: new group: name=bob, GID=1001
+Oct 31 19:02:43 d053ddb79397 useradd[247]: new user: name=bob, UID=1001, GID=1001, home=/home/bob, shell=/bin/sh, from=none
+Oct 31 19:02:43 d053ddb79397 usermod[269]: add 'alice' to group 'wheel'
+Oct 31 19:02:43 d053ddb79397 usermod[269]: add 'alice' to shadow group 'wheel'
+Oct 31 19:02:44 d053ddb79397 sshd-session[278]: Invalid user admin from 127.0.0.1 port 50110
+Oct 31 19:02:44 d053ddb79397 sshd-session[278]: pam_unix(sshd:auth): check pass; user unknown
+Oct 31 19:02:44 d053ddb79397 sshd-session[278]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=127.0.0.1 
+Oct 31 19:02:45 d053ddb79397 sshd-session[278]: Failed password for invalid user admin from 127.0.0.1 port 50110 ssh2
+Oct 31 19:02:47 d053ddb79397 sshd-session[278]: Connection closed by invalid user admin 127.0.0.1 port 50110 [preauth]
+Oct 31 19:02:47 d053ddb79397 unix_chkpwd[284]: password check failed for user (root)
+Oct 31 19:02:47 d053ddb79397 sshd-session[282]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=127.0.0.1  user=root
+Oct 31 19:02:50 d053ddb79397 sshd-session[282]: Failed password for root from 127.0.0.1 port 50118 ssh2
+Oct 31 19:02:50 d053ddb79397 sshd-session[282]: Connection closed by authenticating user root 127.0.0.1 port 50118 [preauth]
+Oct 31 19:02:50 d053ddb79397 sshd-session[287]: Accepted password for alice from 127.0.0.1 port 50130 ssh2
+Oct 31 19:02:50 d053ddb79397 sshd-session[287]: pam_systemd(sshd:session): Failed to connect to system bus: No such file or directory
+Oct 31 19:02:50 d053ddb79397 sshd-session[287]: pam_unix(sshd:session): session opened for user alice(uid=1000) by alice(uid=0)
+Oct 31 19:02:50 d053ddb79397 sshd-session[291]: Received disconnect from 127.0.0.1 port 50130:11: disconnected by user
+Oct 31 19:02:50 d053ddb79397 sshd-session[291]: Disconnected from user alice 127.0.0.1 port 50130
+Oct 31 19:02:50 d053ddb79397 sshd-session[287]: pam_unix(sshd:session): session closed for user alice
+Oct 31 19:02:50 d053ddb79397 su: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+Oct 31 19:02:50 d053ddb79397 su: pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)
+Oct 31 19:02:50 d053ddb79397 sudo:    alice : PWD=/ ; USER=root ; COMMAND=/bin/ls /root
+Oct 31 19:02:50 d053ddb79397 sudo: pam_systemd(sudo:session): Failed to connect to system bus: No such file or directory
+Oct 31 19:02:50 d053ddb79397 sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)
+Oct 31 19:02:50 d053ddb79397 sudo: pam_unix(sudo:session): session closed for user root
+Oct 31 19:02:50 d053ddb79397 su: pam_unix(su:session): session closed for user alice
+Oct 31 19:02:50 d053ddb79397 su: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+Oct 31 19:02:50 d053ddb79397 su: pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)
+Oct 31 19:02:50 d053ddb79397 unix_chkpwd[304]: password check failed for user (alice)
+Oct 31 19:02:50 d053ddb79397 sudo: pam_unix(sudo:auth): authentication failure; logname= uid=1000 euid=0 tty= ruser=alice rhost=  user=alice
+Oct 31 19:02:53 d053ddb79397 sudo: pam_unix(sudo:auth): conversation failed
+Oct 31 19:02:53 d053ddb79397 sudo: pam_unix(sudo:auth): auth could not identify password for [alice]
+Oct 31 19:02:53 d053ddb79397 sudo:    alice : 1 incorrect password attempt ; PWD=/ ; USER=root ; COMMAND=/bin/ls /root
+Oct 31 19:02:53 d053ddb79397 su: pam_unix(su:session): session closed for user alice
+Oct 31 19:02:53 d053ddb79397 su: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+Oct 31 19:02:53 d053ddb79397 su: pam_unix(su:session): session opened for user bob(uid=1001) by (uid=0)
+Oct 31 19:02:53 d053ddb79397 sudo:      bob : user NOT in sudoers ; PWD=/ ; USER=root ; COMMAND=/bin/ls /root
+Oct 31 19:02:53 d053ddb79397 su: pam_unix(su:session): session closed for user bob
+Oct 31 19:02:53 d053ddb79397 su: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+Oct 31 19:02:53 d053ddb79397 su: pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)
+Oct 31 19:02:53 d053ddb79397 su: pam_unix(su:session): session closed for user alice
+Oct 31 19:02:53 d053ddb79397 su: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+Oct 31 19:02:53 d053ddb79397 su: pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)
+Oct 31 19:02:53 d053ddb79397 su: pam_unix(su:auth): auth could not identify password for [root]
+Oct 31 19:02:54 d053ddb79397 su: pam_unix(su:session): session closed for user alice
+Oct 31 19:02:54 d053ddb79397 useradd[320]: new group: name=deploy, GID=1002
+Oct 31 19:02:54 d053ddb79397 useradd[320]: new user: name=deploy, UID=1002, GID=1002, home=/home/deploy, shell=/bin/bash, from=none
+Oct 31 19:02:54 d053ddb79397 usermod[327]: add 'deploy' to group 'wheel'
+Oct 31 19:02:54 d053ddb79397 usermod[327]: add 'deploy' to shadow group 'wheel'
+Oct 31 19:02:54 d053ddb79397 gpasswd[334]: user deploy added by root to group adm
+Oct 31 19:02:54 d053ddb79397 gpasswd[340]: user deploy removed by root from group adm
+Oct 31 19:02:54 d053ddb79397 passwd: pam_pwquality(passwd:chauthtok): user aborted password change

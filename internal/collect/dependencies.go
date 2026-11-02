@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/collect/lockfile"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/safeopen"
 )
 
 const (
@@ -45,8 +46,8 @@ type DependencyOptions struct {
 
 // DependencyCollector finds dependency lock files under the scan paths. It opens only the file names in
 // lockfile.Formats (plus executables when GoBinaries is on) and never follows a symlink below a scan path: every
-// directory and file is opened relative to its parent directory without following one (see openAt), so the path
-// it checks against exclude_paths is the path of what it opens.
+// directory and file is opened relative to its parent directory without following one (see safeopen.OpenAt), so
+// the path it checks against exclude_paths is the path of what it opens.
 type DependencyCollector struct {
 	Root    string
 	Options DependencyOptions
@@ -198,7 +199,7 @@ func (s *scan) directory(ctx context.Context, parent *os.File, rel, hostPath str
 	if skippedDirectory(rel, d.Name()) || strings.Count(rel, "/")+1 >= s.options.MaxDepth || isExcluded(hostPath, s.options.ExcludePaths) || isExcluded(hostPath, pseudoFilesystems) || s.isExcludedEntry(d) {
 		return nil
 	}
-	dir, err := openAt(parent, d.Name(), os.O_RDONLY|syscall.O_DIRECTORY)
+	dir, err := safeopen.OpenAt(parent, d.Name(), os.O_RDONLY|syscall.O_DIRECTORY)
 	if err != nil {
 		return nil
 	}
@@ -274,10 +275,10 @@ func (s *scan) lockFile(dir *os.File, hostPath string, format lockfile.Format, d
 }
 
 // read opens a lock file the walk listed as a regular file. A symlink swapped in since is refused (ELOOP), a
-// file removed since is ignored, and openAt's O_NONBLOCK keeps a FIFO given a lock file name by any local user
-// from blocking the open, and with it the whole inventory.
+// file removed since is ignored, and safeopen.OpenAt's O_NONBLOCK keeps a FIFO given a lock file name by any
+// local user from blocking the open, and with it the whole inventory.
 func (s *scan) read(dir *os.File, name string) ([]byte, string) {
-	f, err := openAt(dir, name, os.O_RDONLY)
+	f, err := safeopen.OpenAt(dir, name, os.O_RDONLY)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, ReasonNotFound
@@ -309,14 +310,14 @@ func (s *scan) read(dir *os.File, name string) ([]byte, string) {
 // goBinary reads the module list Go embeds in executables (only when collect_go_binaries is on). The lock file
 // size limit does not apply: buildinfo.Read reads the headers and searches the data segment in small chunks
 // through io.ReaderAt, so a large binary (terraform, kubectl) costs no more memory than a small one. Like a lock
-// file it is opened with openAt, and once open it must still be the regular file the walk listed, so a FIFO
-// or a symlink swapped in after the walk cannot block the inventory or be read in its place.
+// file it is opened with safeopen.OpenAt, and once open it must still be the regular file the walk listed, so a
+// FIFO or a symlink swapped in after the walk cannot block the inventory or be read in its place.
 func (s *scan) goBinary(dir *os.File, hostPath string, d fs.DirEntry) {
 	listed, err := d.Info()
 	if err != nil || listed.Mode().Perm()&0o111 == 0 || listed.Size() < 4 || s.seen[hostPath] || s.isExcludedFile(listed) {
 		return
 	}
-	f, err := openAt(dir, d.Name(), os.O_RDONLY)
+	f, err := safeopen.OpenAt(dir, d.Name(), os.O_RDONLY)
 	if err != nil {
 		return
 	}

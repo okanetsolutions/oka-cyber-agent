@@ -1,0 +1,33 @@
+Oct 31 19:01:01 0ff8e7195a00 syslog.info syslogd started: BusyBox v1.36.1
+Oct 31 19:01:02 0ff8e7195a00 auth.info sshd[21]: Server listening on 0.0.0.0 port 22.
+Oct 31 19:01:02 0ff8e7195a00 auth.info sshd[21]: Server listening on :: port 22.
+Oct 31 19:01:03 0ff8e7195a00 authpriv.info useradd[23]: new group: name=alice, GID=1000
+Oct 31 19:01:03 0ff8e7195a00 authpriv.info useradd[23]: new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none
+Oct 31 19:01:03 0ff8e7195a00 authpriv.notice chpasswd[25]: pam_unix(chpasswd:chauthtok): password changed for alice
+Oct 31 19:01:03 0ff8e7195a00 authpriv.info useradd[29]: new group: name=bob, GID=1001
+Oct 31 19:01:03 0ff8e7195a00 authpriv.info useradd[29]: new user: name=bob, UID=1001, GID=1001, home=/home/bob, shell=/bin/sh, from=none
+Oct 31 19:01:03 0ff8e7195a00 authpriv.notice chpasswd[31]: pam_unix(chpasswd:chauthtok): password changed for bob
+Oct 31 19:01:03 0ff8e7195a00 authpriv.notice chpasswd[36]: pam_unix(chpasswd:chauthtok): password changed for root
+Oct 31 19:01:03 0ff8e7195a00 auth.info sshd[43]: Invalid user admin from 127.0.0.1 port 44890
+Oct 31 19:01:03 0ff8e7195a00 auth.err sshd[43]: error: Could not get shadow information for NOUSER
+Oct 31 19:01:03 0ff8e7195a00 auth.info sshd[43]: Failed password for invalid user admin from 127.0.0.1 port 44890 ssh2
+Oct 31 19:01:03 0ff8e7195a00 auth.info sshd[43]: Connection closed by invalid user admin 127.0.0.1 port 44890 [preauth]
+Oct 31 19:01:04 0ff8e7195a00 auth.info sshd[47]: Failed password for root from 127.0.0.1 port 44900 ssh2
+Oct 31 19:01:04 0ff8e7195a00 auth.info sshd[47]: Connection closed by authenticating user root 127.0.0.1 port 44900 [preauth]
+Oct 31 19:01:04 0ff8e7195a00 auth.info sshd[51]: Accepted password for alice from 127.0.0.1 port 44906 ssh2
+Oct 31 19:01:04 0ff8e7195a00 auth.info sshd[53]: Received disconnect from 127.0.0.1 port 44906:11: disconnected by user
+Oct 31 19:01:04 0ff8e7195a00 auth.info sshd[53]: Disconnected from user alice 127.0.0.1 port 44906
+Oct 31 19:01:04 0ff8e7195a00 auth.notice su: + none root:alice
+Oct 31 19:01:04 0ff8e7195a00 authpriv.notice sudo:    alice : PWD=/ ; USER=root ; COMMAND=/bin/ls /root
+Oct 31 19:01:04 0ff8e7195a00 auth.notice su: + none root:alice
+Oct 31 19:01:04 0ff8e7195a00 authpriv.notice sudo:    alice : PWD=/ ; USER=root ; COMMAND=/bin/ls /root
+Oct 31 19:01:04 0ff8e7195a00 auth.notice su: + none root:bob
+Oct 31 19:01:04 0ff8e7195a00 authpriv.alert sudo:      bob : user NOT in sudoers ; PWD=/ ; USER=root ; COMMAND=/bin/ls /root
+Oct 31 19:01:04 0ff8e7195a00 auth.notice su: + none root:alice
+Oct 31 19:01:04 0ff8e7195a00 auth.notice su: + pts/0 root:root
+Oct 31 19:01:06 0ff8e7195a00 authpriv.info useradd[69]: new group: name=deploy, GID=1002
+Oct 31 19:01:06 0ff8e7195a00 authpriv.info useradd[69]: new user: name=deploy, UID=1002, GID=1002, home=/home/deploy, shell=/bin/ash, from=none
+Oct 31 19:01:06 0ff8e7195a00 authpriv.info usermod[70]: add 'deploy' to group 'wheel'
+Oct 31 19:01:06 0ff8e7195a00 authpriv.info gpasswd[71]: user deploy added by root to group adm
+Oct 31 19:01:06 0ff8e7195a00 authpriv.info gpasswd[72]: user deploy removed by root from group adm
+Oct 31 19:01:06 0ff8e7195a00 authpriv.notice chpasswd[74]: pam_unix(chpasswd:chauthtok): password changed for deploy

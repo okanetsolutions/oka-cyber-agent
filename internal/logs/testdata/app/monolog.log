@@ -1,0 +1,8 @@
+[2026-10-31T19:00:03.218128+00:00] production.INFO: User logged in {"user_id":42} 
+[2026-10-31T19:00:03.218249+00:00] production.WARNING: Slow query {"ms":1200} 
+[2026-10-31T19:00:03.218272+00:00] production.ERROR: SQLSTATE[HY000] [2002] Connection refused {"exception":"[object] (RuntimeException(code: 0): SQLSTATE[HY000] [2002] Connection refused at /app/t.php:8)
+[stacktrace]
+#0 {main}
+"} 
+[2026-10-31T19:00:03.218297+00:00] production.CRITICAL: Payment gateway unreachable {"gateway":"stripe"} 
+[2026-10-31T19:00:03.218308+00:00] production.EMERGENCY: Disk full  

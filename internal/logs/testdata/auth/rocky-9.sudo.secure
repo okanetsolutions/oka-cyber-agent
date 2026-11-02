@@ -1,0 +1,8 @@
+Nov  2 11:34:35 89a1ece1c7ab sudo:    alice : PWD=/ ; USER=root ; COMMAND=/bin/ls /root
+Nov  2 11:34:35 89a1ece1c7ab sudo:    alice : PWD=/tmp/x ; USER=bob ; COMMAND=/bin/true ; USER=root ; COMMAND=/bin/sh -c true
+Nov  2 11:34:35 89a1ece1c7ab sudo:    alice : PWD=/ ; USER=root ; COMMAND=/bin/echo ' ; USER=bob ; COMMAND=/bin/true'
+Nov  2 11:34:35 89a1ece1c7ab sudo:    alice : PWD=/ ; USER=root ; COMMAND=/bin/echo x ' ; USER=bob ; COMMAND=/bin/true'
+Nov  2 11:34:35 89a1ece1c7ab sudo:    alice : PWD=/tmp/x ; USER=bob ; COMMAND=/bin/true ; USER=root ; COMMAND=/bin/echo ' ; USER=root ; COMMAND=/bin/sh -c id'
+Nov  2 11:34:35 89a1ece1c7ab sudo:    alice : PWD=/ ; USER=root ; ENV=FOO=a ; COMMAND=/bin/true ; COMMAND=/bin/sh -c true
+Nov  2 11:34:35 89a1ece1c7ab sudo:    alice : PWD=/ ; USER=root ; GROUP=adm ; COMMAND=/bin/sh -c true
+Nov  2 11:34:35 89a1ece1c7ab sudo:    alice : PWD=/ ; USER=root ; TSID=000001 ; COMMAND=/usr/bin/id

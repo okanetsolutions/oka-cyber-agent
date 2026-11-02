@@ -1,0 +1,60 @@
+2026-10-31T18:59:39.361192+00:00 81a4194f7628 sshd[3893]: Server listening on 0.0.0.0 port 22.
+2026-10-31T18:59:39.361211+00:00 81a4194f7628 sshd[3893]: Server listening on :: port 22.
+2026-10-31T18:59:40.397706+00:00 81a4194f7628 useradd[3895]: new group: name=alice, GID=1001
+2026-10-31T18:59:40.397874+00:00 81a4194f7628 useradd[3895]: new user: name=alice, UID=1001, GID=1001, home=/home/alice, shell=/bin/sh, from=none
+2026-10-31T18:59:40.477143+00:00 81a4194f7628 chpasswd[3904]: pam_unix(chpasswd:chauthtok): password changed for alice
+2026-10-31T18:59:40.496621+00:00 81a4194f7628 useradd[3907]: new group: name=bob, GID=1002
+2026-10-31T18:59:40.496763+00:00 81a4194f7628 useradd[3907]: new user: name=bob, UID=1002, GID=1002, home=/home/bob, shell=/bin/sh, from=none
+2026-10-31T18:59:40.584130+00:00 81a4194f7628 chpasswd[3916]: pam_unix(chpasswd:chauthtok): password changed for bob
+2026-10-31T18:59:40.606222+00:00 81a4194f7628 chpasswd[3920]: pam_unix(chpasswd:chauthtok): password changed for root
+2026-10-31T18:59:40.653609+00:00 81a4194f7628 usermod[3925]: add 'alice' to group 'sudo'
+2026-10-31T18:59:40.653657+00:00 81a4194f7628 usermod[3925]: add 'alice' to shadow group 'sudo'
+2026-10-31T18:59:40.802649+00:00 81a4194f7628 sshd[3934]: Invalid user admin from 127.0.0.1 port 46894
+2026-10-31T18:59:40.809960+00:00 81a4194f7628 sshd[3934]: pam_unix(sshd:auth): check pass; user unknown
+2026-10-31T18:59:40.809998+00:00 81a4194f7628 sshd[3934]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=127.0.0.1 
+2026-10-31T18:59:42.424014+00:00 81a4194f7628 sshd[3934]: Failed password for invalid user admin from 127.0.0.1 port 46894 ssh2
+2026-10-31T18:59:43.655581+00:00 81a4194f7628 sshd[3934]: Connection closed by invalid user admin 127.0.0.1 port 46894 [preauth]
+2026-10-31T18:59:43.825410+00:00 81a4194f7628 sshd[3938]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=127.0.0.1  user=root
+2026-10-31T18:59:45.851083+00:00 81a4194f7628 sshd[3938]: Failed password for root from 127.0.0.1 port 34844 ssh2
+2026-10-31T18:59:47.488995+00:00 81a4194f7628 sshd[3938]: Connection closed by authenticating user root 127.0.0.1 port 34844 [preauth]
+2026-10-31T18:59:47.644263+00:00 81a4194f7628 sshd[3942]: Accepted password for alice from 127.0.0.1 port 34854 ssh2
+2026-10-31T18:59:47.644999+00:00 81a4194f7628 sshd[3942]: pam_unix(sshd:session): session opened for user alice(uid=1001) by alice(uid=0)
+2026-10-31T18:59:47.645259+00:00 81a4194f7628 sshd[3942]: pam_systemd(sshd:session): Failed to connect to system bus: No such file or directory
+2026-10-31T18:59:47.698234+00:00 81a4194f7628 sshd[3953]: Received disconnect from 127.0.0.1 port 34854:11: disconnected by user
+2026-10-31T18:59:47.698332+00:00 81a4194f7628 sshd[3953]: Disconnected from user alice 127.0.0.1 port 34854
+2026-10-31T18:59:47.698581+00:00 81a4194f7628 sshd[3942]: pam_unix(sshd:session): session closed for user alice
+2026-10-31T18:59:47.700641+00:00 81a4194f7628 su[3956]: (to alice) root on none
+2026-10-31T18:59:47.700957+00:00 81a4194f7628 su[3956]: pam_unix(su:session): session opened for user alice(uid=1001) by (uid=0)
+2026-10-31T18:59:47.701075+00:00 81a4194f7628 su[3956]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T18:59:47.727538+00:00 81a4194f7628 sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/ls /root
+2026-10-31T18:59:47.727742+00:00 81a4194f7628 sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+2026-10-31T18:59:47.728754+00:00 81a4194f7628 sudo: pam_unix(sudo:session): session closed for user root
+2026-10-31T18:59:47.729273+00:00 81a4194f7628 su[3956]: pam_unix(su:session): session closed for user alice
+2026-10-31T18:59:47.730897+00:00 81a4194f7628 su[3961]: (to alice) root on none
+2026-10-31T18:59:47.731227+00:00 81a4194f7628 su[3961]: pam_unix(su:session): session opened for user alice(uid=1001) by (uid=0)
+2026-10-31T18:59:47.731352+00:00 81a4194f7628 su[3961]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T18:59:47.757581+00:00 81a4194f7628 sudo: pam_unix(sudo:auth): authentication failure; logname= uid=1001 euid=0 tty= ruser=alice rhost=  user=alice
+2026-10-31T18:59:49.668035+00:00 81a4194f7628 sudo: pam_unix(sudo:auth): conversation failed
+2026-10-31T18:59:49.668047+00:00 81a4194f7628 sudo: pam_unix(sudo:auth): auth could not identify password for [alice]
+2026-10-31T18:59:49.668288+00:00 81a4194f7628 sudo:    alice : 1 incorrect password attempt ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ls /root
+2026-10-31T18:59:49.670311+00:00 81a4194f7628 su[3961]: pam_unix(su:session): session closed for user alice
+2026-10-31T18:59:49.676849+00:00 81a4194f7628 su[3965]: (to bob) root on none
+2026-10-31T18:59:49.678397+00:00 81a4194f7628 su[3965]: pam_unix(su:session): session opened for user bob(uid=1002) by (uid=0)
+2026-10-31T18:59:49.678969+00:00 81a4194f7628 su[3965]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T18:59:49.720124+00:00 81a4194f7628 sudo:      bob : user NOT in sudoers ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ls /root
+2026-10-31T18:59:49.720574+00:00 81a4194f7628 su[3965]: pam_unix(su:session): session closed for user bob
+2026-10-31T18:59:49.722103+00:00 81a4194f7628 su[3968]: (to alice) root on none
+2026-10-31T18:59:49.722429+00:00 81a4194f7628 su[3968]: pam_unix(su:session): session opened for user alice(uid=1001) by (uid=0)
+2026-10-31T18:59:49.722556+00:00 81a4194f7628 su[3968]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T18:59:49.723389+00:00 81a4194f7628 su[3968]: pam_unix(su:session): session closed for user alice
+2026-10-31T18:59:49.725784+00:00 81a4194f7628 su[3972]: (to root) root on pts/0
+2026-10-31T18:59:49.726026+00:00 81a4194f7628 su[3972]: pam_unix(su:session): session opened for user root(uid=0) by (uid=0)
+2026-10-31T18:59:49.726132+00:00 81a4194f7628 su[3972]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T18:59:49.727191+00:00 81a4194f7628 su[3972]: pam_unix(su:session): session closed for user root
+2026-10-31T18:59:51.760351+00:00 81a4194f7628 useradd[3974]: new group: name=deploy, GID=1003
+2026-10-31T18:59:51.760418+00:00 81a4194f7628 useradd[3974]: new user: name=deploy, UID=1003, GID=1003, home=/home/deploy, shell=/bin/sh, from=none
+2026-10-31T18:59:51.850618+00:00 81a4194f7628 usermod[3982]: add 'deploy' to group 'sudo'
+2026-10-31T18:59:51.850661+00:00 81a4194f7628 usermod[3982]: add 'deploy' to shadow group 'sudo'
+2026-10-31T18:59:51.900823+00:00 81a4194f7628 gpasswd[3989]: user deploy added by root to group adm
+2026-10-31T18:59:51.934476+00:00 81a4194f7628 gpasswd[3995]: user deploy removed by root from group adm
+2026-10-31T18:59:51.968338+00:00 81a4194f7628 chpasswd[4002]: pam_unix(chpasswd:chauthtok): password changed for deploy

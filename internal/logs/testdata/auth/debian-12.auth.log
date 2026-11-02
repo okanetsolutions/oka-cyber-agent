@@ -1,0 +1,70 @@
+2026-10-31T19:01:50.775302+00:00 449e5752d27a sshd[4354]: Server listening on 0.0.0.0 port 22.
+2026-10-31T19:01:50.775323+00:00 449e5752d27a sshd[4354]: Server listening on :: port 22.
+2026-10-31T19:01:51.804773+00:00 449e5752d27a useradd[4356]: new group: name=alice, GID=1000
+2026-10-31T19:01:51.804917+00:00 449e5752d27a useradd[4356]: new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none
+2026-10-31T19:01:51.880513+00:00 449e5752d27a chpasswd[4364]: pam_unix(chpasswd:chauthtok): password changed for alice
+2026-10-31T19:01:51.901785+00:00 449e5752d27a useradd[4367]: new group: name=bob, GID=1001
+2026-10-31T19:01:51.901912+00:00 449e5752d27a useradd[4367]: new user: name=bob, UID=1001, GID=1001, home=/home/bob, shell=/bin/sh, from=none
+2026-10-31T19:01:51.978563+00:00 449e5752d27a chpasswd[4375]: pam_unix(chpasswd:chauthtok): password changed for bob
+2026-10-31T19:01:51.999539+00:00 449e5752d27a chpasswd[4379]: pam_unix(chpasswd:chauthtok): password changed for root
+2026-10-31T19:01:52.031585+00:00 449e5752d27a usermod[4383]: add 'alice' to group 'sudo'
+2026-10-31T19:01:52.031602+00:00 449e5752d27a usermod[4383]: add 'alice' to shadow group 'sudo'
+2026-10-31T19:01:52.203702+00:00 449e5752d27a sshd[4392]: Invalid user admin from 127.0.0.1 port 60580
+2026-10-31T19:01:52.211022+00:00 449e5752d27a sshd[4392]: pam_unix(sshd:auth): check pass; user unknown
+2026-10-31T19:01:52.211060+00:00 449e5752d27a sshd[4392]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=127.0.0.1 
+2026-10-31T19:01:53.945670+00:00 449e5752d27a sshd[4392]: Failed password for invalid user admin from 127.0.0.1 port 60580 ssh2
+2026-10-31T19:01:54.369561+00:00 449e5752d27a sshd[4392]: Connection closed by invalid user admin 127.0.0.1 port 60580 [preauth]
+2026-10-31T19:01:54.563238+00:00 449e5752d27a sshd[4396]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=127.0.0.1  user=root
+2026-10-31T19:01:56.573943+00:00 449e5752d27a sshd[4396]: Failed password for root from 127.0.0.1 port 47292 ssh2
+2026-10-31T19:01:58.468908+00:00 449e5752d27a sshd[4396]: Connection closed by authenticating user root 127.0.0.1 port 47292 [preauth]
+2026-10-31T19:01:58.679553+00:00 449e5752d27a sshd[4400]: Accepted password for alice from 127.0.0.1 port 47298 ssh2
+2026-10-31T19:01:58.680419+00:00 449e5752d27a sshd[4400]: pam_unix(sshd:session): session opened for user alice(uid=1000) by (uid=0)
+2026-10-31T19:01:58.680664+00:00 449e5752d27a sshd[4400]: pam_systemd(sshd:session): Failed to connect to system bus: No such file or directory
+2026-10-31T19:01:58.683033+00:00 449e5752d27a sshd[4400]: pam_env(sshd:session): deprecated reading of user environment enabled
+2026-10-31T19:01:58.683049+00:00 449e5752d27a sshd[4400]: pam_env(sshd:session): Unable to open env file: /etc/default/locale: No such file or directory
+2026-10-31T19:01:58.726437+00:00 449e5752d27a sshd[4406]: Received disconnect from 127.0.0.1 port 47298:11: disconnected by user
+2026-10-31T19:01:58.726530+00:00 449e5752d27a sshd[4406]: Disconnected from user alice 127.0.0.1 port 47298
+2026-10-31T19:01:58.726815+00:00 449e5752d27a sshd[4400]: pam_unix(sshd:session): session closed for user alice
+2026-10-31T19:01:58.728248+00:00 449e5752d27a su[4409]: (to alice) root on none
+2026-10-31T19:01:58.728444+00:00 449e5752d27a su[4409]: pam_env(su:session): Unable to open env file: /etc/default/locale: No such file or directory
+2026-10-31T19:01:58.728526+00:00 449e5752d27a su[4409]: pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)
+2026-10-31T19:01:58.728627+00:00 449e5752d27a su[4409]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T19:01:58.755316+00:00 449e5752d27a sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/ls /root
+2026-10-31T19:01:58.755434+00:00 449e5752d27a sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=-1, hard=-1: Operation not permitted; uid=1000,euid=0
+2026-10-31T19:01:58.755458+00:00 449e5752d27a sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)
+2026-10-31T19:01:58.756318+00:00 449e5752d27a sudo: pam_unix(sudo:session): session closed for user root
+2026-10-31T19:01:58.756769+00:00 449e5752d27a su[4409]: pam_unix(su:session): session closed for user alice
+2026-10-31T19:01:58.758229+00:00 449e5752d27a su[4414]: (to alice) root on none
+2026-10-31T19:01:58.758431+00:00 449e5752d27a su[4414]: pam_env(su:session): Unable to open env file: /etc/default/locale: No such file or directory
+2026-10-31T19:01:58.758509+00:00 449e5752d27a su[4414]: pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)
+2026-10-31T19:01:58.758608+00:00 449e5752d27a su[4414]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T19:01:58.784589+00:00 449e5752d27a sudo: pam_unix(sudo:auth): authentication failure; logname= uid=1000 euid=0 tty= ruser=alice rhost=  user=alice
+2026-10-31T19:02:00.675560+00:00 449e5752d27a sudo: pam_unix(sudo:auth): conversation failed
+2026-10-31T19:02:00.675573+00:00 449e5752d27a sudo: pam_unix(sudo:auth): auth could not identify password for [alice]
+2026-10-31T19:02:00.677363+00:00 449e5752d27a sudo:    alice : 1 incorrect password attempt ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ls /root
+2026-10-31T19:02:00.679100+00:00 449e5752d27a su[4414]: pam_unix(su:session): session closed for user alice
+2026-10-31T19:02:00.683573+00:00 449e5752d27a su[4421]: (to bob) root on none
+2026-10-31T19:02:00.683788+00:00 449e5752d27a su[4421]: pam_env(su:session): Unable to open env file: /etc/default/locale: No such file or directory
+2026-10-31T19:02:00.683877+00:00 449e5752d27a su[4421]: pam_unix(su:session): session opened for user bob(uid=1001) by (uid=0)
+2026-10-31T19:02:00.683987+00:00 449e5752d27a su[4421]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T19:02:00.722600+00:00 449e5752d27a sudo:      bob : user NOT in sudoers ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ls /root
+2026-10-31T19:02:00.722956+00:00 449e5752d27a su[4421]: pam_unix(su:session): session closed for user bob
+2026-10-31T19:02:00.724333+00:00 449e5752d27a su[4427]: (to alice) root on none
+2026-10-31T19:02:00.724531+00:00 449e5752d27a su[4427]: pam_env(su:session): Unable to open env file: /etc/default/locale: No such file or directory
+2026-10-31T19:02:00.724613+00:00 449e5752d27a su[4427]: pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)
+2026-10-31T19:02:00.724714+00:00 449e5752d27a su[4427]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T19:02:00.725414+00:00 449e5752d27a su[4427]: pam_unix(su:session): session closed for user alice
+2026-10-31T19:02:00.726646+00:00 449e5752d27a su[4429]: (to alice) root on none
+2026-10-31T19:02:00.726834+00:00 449e5752d27a su[4429]: pam_env(su:session): Unable to open env file: /etc/default/locale: No such file or directory
+2026-10-31T19:02:00.726910+00:00 449e5752d27a su[4429]: pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)
+2026-10-31T19:02:00.727007+00:00 449e5752d27a su[4429]: pam_systemd(su:session): Failed to connect to system bus: No such file or directory
+2026-10-31T19:02:00.988633+00:00 449e5752d27a su: pam_unix(su:auth): auth could not identify password for [root]
+2026-10-31T19:02:00.988795+00:00 449e5752d27a su[4433]: FAILED SU (to root) alice on pts/0
+2026-10-31T19:02:02.001606+00:00 449e5752d27a su[4429]: pam_unix(su:session): session closed for user alice
+2026-10-31T19:02:02.030479+00:00 449e5752d27a useradd[4440]: new group: name=deploy, GID=1002
+2026-10-31T19:02:02.030623+00:00 449e5752d27a useradd[4440]: new user: name=deploy, UID=1002, GID=1002, home=/home/deploy, shell=/bin/sh, from=none
+2026-10-31T19:02:02.090434+00:00 449e5752d27a usermod[4447]: add 'deploy' to group 'sudo'
+2026-10-31T19:02:02.090475+00:00 449e5752d27a usermod[4447]: add 'deploy' to shadow group 'sudo'
+2026-10-31T19:02:02.131298+00:00 449e5752d27a gpasswd[4454]: user deploy added by root to group adm
+2026-10-31T19:02:02.156257+00:00 449e5752d27a gpasswd[4460]: user deploy removed by root from group adm
+2026-10-31T19:02:02.189008+00:00 449e5752d27a chpasswd[4467]: pam_unix(chpasswd:chauthtok): password changed for deploy

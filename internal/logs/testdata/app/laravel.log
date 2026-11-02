@@ -1,0 +1,2 @@
+[2026-10-31 19:00:03] local.ERROR: Undefined variable  {"exception":"[object] (ErrorException(code: 0): Undefined variable  at /app/t.php:12)"} 
+[2026-10-31 19:00:03] local.DEBUG: Cache hit  
