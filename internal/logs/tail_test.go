@@ -206,3 +206,30 @@ func TestTailerRecreatedFileWithReusedInodeIsReadFromStart(t *testing.T) {
 		t.Fatalf("lines = %q", got)
 	}
 }
+
+func inodeOfPath(t *testing.T, path string) uint64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inodeOf(info)
+}
+
+// A rename keeps the inode number, so moving a prepared file into place recreates the watched file with the
+// inode of the saved position, as a filesystem that hands a freed inode number back does.
+func TestTailerForgetsSavedPositionOfAMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.log")
+	staged := path + ".new"
+	appendTo(t, staged, "first line\n"+strings.Repeat("x", 9000)+"\nlast line\n")
+	tail, _ := newTestTailer(path, &Position{Inode: inodeOfPath(t, staged), Offset: 9000}, false)
+	if r := tail.Poll(); !r.Missing {
+		t.Fatalf("poll = %+v, want missing", r)
+	}
+	if err := os.Rename(staged, path); err != nil {
+		t.Fatal(err)
+	}
+	if got := lines(tail.Poll()); len(got) != 3 || got[0] != "first line" {
+		t.Fatalf("lines = %.40q, want the recreated file from its start", got)
+	}
+}

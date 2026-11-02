@@ -400,12 +400,12 @@ func TestCollectorReadsJournalFromCursor(t *testing.T) {
 	defer c.Close()
 	var events []Event
 	deadline := time.Now().Add(5 * time.Second)
-	for len(events) < 27 && time.Now().Before(deadline) {
+	for len(events) < 26 && time.Now().Before(deadline) {
 		events = append(events, c.Poll(context.Background())...)
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(events) != 27 {
-		t.Fatalf("events = %d, want 27 from the journal fixture", len(events))
+	if len(events) != 26 {
+		t.Fatalf("events = %d, want 26 from the journal fixture", len(events))
 	}
 	if !slices.Contains(args, "--after-cursor=s=previous") {
 		t.Fatalf("args = %q", args)
@@ -490,5 +490,26 @@ func TestCollectorReadsFilesCreatedWhileWatchingFromTheirStart(t *testing.T) {
 	events := c.Poll(context.Background())
 	if len(events) != 2 || events[0].Fields["vhost"] != "shop.example.com" || events[1].Fields["file"] != dir+"/laravel-2026-11-01.log" {
 		t.Fatalf("events = %+v, want the first lines of the new daily log and of the new vhost log", events)
+	}
+}
+
+func TestCollectorForgetsSavedPositionOfAFileMissingAtStartup(t *testing.T) {
+	h := newHost(t)
+	h.write("/var/log/nginx/access.log", "")
+	vhostLog := "/var/log/nginx/shop.example.com.access.log"
+	staged := filepath.Join(h.root, "/var/log/nginx/staged")
+	appendTo(t, staged, `203.0.113.7 - - [01/Nov/2026:00:00:02 +0000] "GET /.env HTTP/1.1" 404 0 "-" "zgrab"`+"\n"+strings.Repeat("x", 9000)+"\n")
+	checkpoint := Checkpoint{Sources: []string{SourceWeb}, Files: map[string]Position{vhostLog: {Inode: inodeOfPath(t, staged), Offset: 9000}}}
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceWeb}, h.options(false), checkpoint, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+
+	if err := os.Rename(staged, filepath.Join(h.root, vhostLog)); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = clock.now.Add(replanEvery)
+	if events := c.Poll(context.Background()); len(events) != 1 || events[0].Fields["path"] != "/.env" {
+		t.Fatalf("events = %+v, want the first line of the file created with the old inode number", events)
 	}
 }

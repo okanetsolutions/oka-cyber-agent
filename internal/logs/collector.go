@@ -2,6 +2,9 @@ package logs
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -63,6 +66,7 @@ func NewCollector(sources []string, o Options, resume Checkpoint, start StartFun
 	if now == nil {
 		now = time.Now
 	}
+	resume.Files = maps.Clone(resume.Files)
 	if o.HasJournalctl == nil {
 		o.HasJournalctl = func() bool { _, err := trustedcmd.Look("journalctl"); return err == nil }
 	}
@@ -188,6 +192,16 @@ func (c *Collector) plan(ctx context.Context) {
 		t := NewTailer(c.options.path(path), resume, startAtEnd)
 		t.Now = c.now
 		c.watches[path] = &watch{plan: f, tailer: t, planned: true}
+	}
+	// The saved position of a file that is gone is forgotten, since a file created later under its name may
+	// get the old inode number back. A file that exists but is not planned (unreadable) keeps it.
+	for path := range c.resume.Files {
+		if _, ok := c.watches[path]; ok {
+			continue
+		}
+		if _, err := os.Lstat(c.options.path(path)); errors.Is(err, fs.ErrNotExist) {
+			delete(c.resume.Files, path)
+		}
 	}
 	// A directory watched for the first time is listed now, so that a file created in it before the next
 	// plan is recognized as new.

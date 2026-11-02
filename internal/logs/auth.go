@@ -27,14 +27,15 @@ var (
 	gpasswdAdd   = regexp.MustCompile(`^user (\S+) added by \S+ to group (\S+)$`)
 	gpasswdDel   = regexp.MustCompile(`^user (\S+) removed by \S+ from group (\S+)$`)
 	passwordPAM  = regexp.MustCompile(`^pam_unix\((?:passwd|chpasswd):chauthtok\): password changed for (\S+)$`)
-	crontabEvent = regexp.MustCompile(`^\((\S+)\) (REPLACE|DELETE|BEGIN EDIT) \((\S+)\)$`)
+	crontabEvent = regexp.MustCompile(`^\((\S+)\) (REPLACE|DELETE) \((\S+)\)$`)
 	keyValue     = regexp.MustCompile(`(\w+)=(\S*)`)
 )
 
 // ParseAuth turns one auth message into an event. Each attempt or change is reported once even when PAM
 // and the program both log it: OpenSSH's own lines are used for logins (one ssh_login_failed per attempt,
 // "Invalid user" lines are not counted again), sudo's own lines for sudo, and PAM's lines for su and
-// password changes.
+// password changes. crontab -e logs BEGIN EDIT and END EDIT around every edit, also one that changes
+// nothing, and REPLACE only when the crontab was saved changed, so only REPLACE and DELETE are changes.
 func ParseAuth(program, message string, at time.Time) (Event, bool) {
 	switch program {
 	case "sshd", "sshd-session", "sshd-auth":
@@ -63,7 +64,7 @@ func ParseAuth(program, message string, at time.Time) (Event, bool) {
 		if m := crontabEvent.FindStringSubmatch(message); m != nil {
 			e := authEvent(KindCronModified, program, message, at)
 			e.Username = m[1]
-			e.set("action", strings.ToLower(strings.TrimPrefix(m[2], "BEGIN ")))
+			e.set("action", strings.ToLower(m[2]))
 			e.set("target_user", m[3])
 			return e, true
 		}

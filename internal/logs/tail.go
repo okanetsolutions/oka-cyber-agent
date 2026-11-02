@@ -81,8 +81,10 @@ func (t *Tailer) Poll() PollResult {
 			r.Lines = t.drain()
 			t.Close()
 		}
-		// A recreated file may get the deleted file's inode number back, so the position is forgotten.
+		// A recreated file may get the deleted file's inode number back, so the position is forgotten,
+		// also the saved one when the file is missing before it was ever opened.
 		t.inode, t.offset, t.skipping = 0, 0, false
+		t.resume = nil
 		if t.missingSince.IsZero() {
 			t.missingSince = t.Now()
 		}

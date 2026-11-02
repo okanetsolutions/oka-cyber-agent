@@ -151,8 +151,36 @@ func TestSudoSuAndAccountFields(t *testing.T) {
 		t.Fatalf("busybox su = %+v", alpine)
 	}
 	cron := authEvents(t, "rocky-9.cron")
-	if cron[0].Username != "root" || cron[0].Fields["target_user"] != "alice" || cron[0].Fields["action"] != "replace" || cron[1].Fields["action"] != "edit" || cron[2].Fields["action"] != "delete" {
+	if cron[0].Username != "root" || cron[0].Fields["target_user"] != "alice" || cron[0].Fields["action"] != "replace" || cron[1].Fields["action"] != "replace" || cron[2].Fields["action"] != "delete" {
 		t.Fatalf("cron events = %+v", cron)
+	}
+}
+
+// The cron fixtures were captured on Debian 12 (cron, rsyslog) and Rocky 9 (cronie, rsyslog) after root ran
+// crontab -u alice with a file, crontab -u alice -e with an editor that added a line, crontab -u alice -e
+// with an editor that changed nothing, and crontab -u alice -r.
+func TestCrontabEditIsOneChange(t *testing.T) {
+	for _, fixture := range []string{"debian-12.cron.log", "rocky-9.cron"} {
+		lines := readLines(t, filepath.Join("testdata", "auth", fixture))
+		count := func(lines []string) int {
+			n := 0
+			for _, line := range lines {
+				l, ok := ParseSyslog(line, testNow)
+				if !ok {
+					t.Fatalf("%s: unparsed line %q", fixture, line)
+				}
+				if e, ok := ParseAuth(l.Program, l.Message, l.At); ok && e.Kind == KindCronModified {
+					n++
+				}
+			}
+			return n
+		}
+		if n := count(lines[1:4]); n != 1 {
+			t.Errorf("%s: BEGIN EDIT, REPLACE, END EDIT gave %d cron_modified events, want 1", fixture, n)
+		}
+		if n := count(lines[4:6]); n != 0 {
+			t.Errorf("%s: an edit that changed nothing gave %d cron_modified events, want 0", fixture, n)
+		}
 	}
 }
 
@@ -190,6 +218,7 @@ func TestAuthFailuresFromPAM(t *testing.T) {
 		{"su", "FAILED SU (to root) alice on pts/0"},
 		{"usermod", "add 'alice' to shadow group 'sudo'"},
 		{"useradd", "new group: name=alice, GID=1000"},
+		{"crontab", "(root) BEGIN EDIT (alice)"},
 		{"crontab", "(root) END EDIT (alice)"},
 		{"cron", "(root) CMD (true)"},
 	} {
@@ -218,7 +247,7 @@ func TestJournalEntries(t *testing.T) {
 	}
 	want := map[string]int{
 		KindUserCreated: 5, KindSuSession: 5, KindPasswordChanged: 4, KindUserGroupChanged: 4, KindSSHLoginFailed: 3,
-		KindCronModified: 3, KindSudoFailed + ":incorrect_password": 1, KindSudoFailed + ":not_in_sudoers": 1, KindSudoCommand: 1,
+		KindCronModified: 2, KindSudoFailed + ":incorrect_password": 1, KindSudoFailed + ":not_in_sudoers": 1, KindSudoCommand: 1,
 	}
 	if got := kindCounts(events); !maps.Equal(got, want) {
 		t.Fatalf("events = %v\nwant %v", got, want)
