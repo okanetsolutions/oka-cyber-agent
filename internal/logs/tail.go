@@ -27,8 +27,13 @@ type Position struct {
 }
 
 // Tailer follows one file by path and inode. It is polled: every Poll returns the complete lines written
-// since the previous one. It handles rename rotation (the old file is read to its end before switching),
-// copytruncate (the offset is reset when the file shrinks) and files created after it started.
+// since the previous one. It handles rename rotation (the old file is read to its end before switching, over
+// several polls when it holds more than maxReadBytes), copytruncate (the offset is reset when the file
+// shrinks) and files created after it started.
+//
+// While a rotated file is still being read, Position is the position in that old file. The old file is known
+// only by the open descriptor, not by a path, so after a restart at that point the new file is read from its
+// start and the rest of the old one is not read.
 type Tailer struct {
 	Path string
 	Now  func() time.Time
@@ -75,12 +80,25 @@ func (t *Tailer) Close() {
 func (t *Tailer) Poll() PollResult {
 	var r PollResult
 	info, err := os.Stat(t.Path)
-	if errors.Is(err, fs.ErrNotExist) {
-		r.Missing = true
-		if t.file != nil {
-			r.Lines = t.drain()
-			t.Close()
+	missing := errors.Is(err, fs.ErrNotExist)
+	if err != nil && !missing {
+		r.Err = err
+		return r
+	}
+	if t.file != nil && (missing || inodeOf(info) != t.inode) {
+		// The file was rotated or deleted. The old file is read to its end before the new one, still at most
+		// maxReadBytes per poll, so a backlog of several polls is read in order and nothing is skipped.
+		var more bool
+		r.Lines, more = t.read()
+		if more {
+			return r
 		}
+		t.Close()
+		t.offset = 0
+		t.startAtEnd = false
+	}
+	if missing {
+		r.Missing = true
 		// A recreated file may get the deleted file's inode number back, so the position is forgotten,
 		// also the saved one when the file is missing before it was ever opened.
 		t.inode, t.offset, t.skipping = 0, 0, false
@@ -95,22 +113,11 @@ func (t *Tailer) Poll() PollResult {
 		t.startAtEnd = false
 		return r
 	}
-	if err != nil {
-		r.Err = err
-		return r
-	}
 	t.missingSince = time.Time{}
 	t.removed = false
 
-	inode := inodeOf(info)
-	if t.file != nil && inode != t.inode {
-		r.Lines = t.drain()
-		t.Close()
-		t.offset = 0
-		t.startAtEnd = false
-	}
 	if t.file == nil {
-		if err := t.open(inode, info.Size()); err != nil {
+		if err := t.open(inodeOf(info), info.Size()); err != nil {
 			r.Err = err
 			return r
 		}
@@ -119,7 +126,8 @@ func (t *Tailer) Poll() PollResult {
 		t.offset = 0
 		t.skipping = false
 	}
-	r.Lines = append(r.Lines, t.read()...)
+	lines, _ := t.read()
+	r.Lines = append(r.Lines, lines...)
 	return r
 }
 
@@ -148,20 +156,15 @@ func (t *Tailer) open(inode uint64, size int64) error {
 	return nil
 }
 
-// drain reads what was written to the old file after the last poll and before it was renamed or deleted.
-func (t *Tailer) drain() []string {
-	return t.read()
-}
-
-// read returns the complete lines after the offset and moves the offset past them, so a line that is still
-// being written is read again in full on the next poll. Lines longer than maxLineBytes are cut, and the rest
-// of such a line is skipped.
-func (t *Tailer) read() []string {
+// read returns the complete lines after the offset, at most maxReadBytes of them, and moves the offset past
+// them, so a line that is still being written is read again in full on the next poll. more is set when the
+// limit stopped it before the end of the file. Lines longer than maxLineBytes are cut, and the rest of such a
+// line is skipped.
+func (t *Tailer) read() (lines []string, more bool) {
 	if t.file == nil {
-		return nil
+		return nil, false
 	}
 	reader := bufio.NewReaderSize(io.NewSectionReader(t.file, t.offset, maxReadBytes), maxLineBytes)
-	var lines []string
 	var consumed int64
 	for {
 		chunk, err := reader.ReadSlice('\n')
@@ -179,11 +182,12 @@ func (t *Tailer) read() []string {
 			}
 			t.skipping = true
 		default:
+			more = errors.Is(err, io.EOF) && consumed+int64(len(chunk)) == maxReadBytes
 			if t.skipping {
 				consumed += int64(len(chunk))
 			}
 			t.offset += consumed
-			return lines
+			return lines, more
 		}
 	}
 }

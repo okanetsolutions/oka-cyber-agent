@@ -351,6 +351,30 @@ func TestCollectorDropsGlobFilesRemovedByRetention(t *testing.T) {
 	}
 }
 
+func TestCollectorReadsAPrunedGlobFileToItsEndBeforeDroppingIt(t *testing.T) {
+	h := newHost(t)
+	dir := "/var/www/shop/storage/logs"
+	pruned := dir + "/laravel-2026-10-01.log"
+	h.write(pruned, "")
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceApp}, h.options(false, dir+"/laravel-*.log"), Checkpoint{}, nil, clock.Now)
+	defer c.Close()
+	c.Poll(context.Background())
+	line := "[2026-10-31 19:00:03] production.ERROR: " + strings.Repeat("x", 60) + "\n"
+	count := maxReadBytes/len(line) + maxReadBytes/2/len(line)
+	h.append(pruned, strings.Repeat(line, count))
+	os.Remove(filepath.Join(h.root, pruned))
+
+	read := 0
+	for range 5 {
+		clock.now = clock.now.Add(replanEvery)
+		read += len(c.Poll(context.Background()))
+	}
+	if read != count || len(c.watches) != 0 {
+		t.Fatalf("read %d of %d events, watches %v; want every line before the file is dropped", read, count, sortedWatchPaths(c.watches))
+	}
+}
+
 func TestCollectorFollowsRenameRotationOfGlobFiles(t *testing.T) {
 	h := newHost(t)
 	h.write("/var/log/nginx/access.log", "")
