@@ -57,7 +57,7 @@ var (
 	jwtShaped      = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+`)
 	emailAddress   = regexp.MustCompile(`[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
 	urlUserinfo    = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^/?#\s:@'"]*)(:[^/?#\s'"]*)?@`)
-	secretHeader   = regexp.MustCompile(`(?i)(?:^|\s)(?:-H|--header)(?:=|\s*)(["']?)\s*([a-z0-9_-]+)\s*:`)
+	secretHeader   = regexp.MustCompile(`(?i)(?:^|\s)(?:-H|--header)(?:=|\s*)(["']?)\s*([a-z0-9_.-]+)\s*:`)
 	// secretKeyValue finds a key and the separator after it: key=value, key: value, 'key' => value,
 	// [key] => value and "key": with its quotes escaped to any depth (\"key\": inside a JSON string), or a key
 	// followed by blanks or a parenthesis, which counts only when a quoted value follows (SQL PASSWORD 'x',
@@ -142,15 +142,30 @@ func secretName(name string) bool {
 	if slices.Contains(notSecretNames, n) {
 		return false
 	}
+	// A part is cut out as a blank, not joined, so the words found are words of the name and of any text
+	// holding it (see mayHoldSecretName).
 	for _, part := range notSecretParts {
-		n = strings.ReplaceAll(n, part, "")
+		n = strings.ReplaceAll(n, part, " ")
 	}
+	n = strings.TrimSpace(n)
 	for _, suffix := range notSecretSuffixes {
 		if strings.HasSuffix(n, suffix) {
 			return false
 		}
 	}
-	return containsAny(n, secretWords)
+	return holdsSecretWord(n)
+}
+
+// holdsSecretWord is the test secretName ends with, on a normalized name.
+func holdsSecretWord(normalized string) bool {
+	return containsAny(normalized, secretWords)
+}
+
+// mayHoldSecretName is false only when no name in s can be secret, so a rule may skip such a text. It runs
+// secretName's own normalization and word test on the whole text: a name is a run of s, its normalized form is a
+// run of the normalized s, so a secret word secretName finds in it is found here too.
+func mayHoldSecretName(s string) bool {
+	return holdsSecretWord(normalizedName(s))
 }
 
 func normalizedName(name string) string {
@@ -580,7 +595,7 @@ func isAuthScheme(word string) bool {
 // search goes on right after the separator, since a value may hold a key of its own (ENV=AWS_SECRET_KEY=x,
 // "exception":"... {\"password\":\"x\"}").
 func keyValueSpans(s string, command bool) []span {
-	if lower := strings.ToLower(s); !containsAny(lower, secretWords) && !strings.Contains(lower, "identified") {
+	if !mayHoldSecretName(s) && !strings.Contains(strings.ToLower(s), "identified") {
 		return nil
 	}
 	var spans []span

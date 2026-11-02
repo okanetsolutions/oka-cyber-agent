@@ -3,6 +3,7 @@ package logs
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -22,6 +23,7 @@ func TestRedactQueryParameters(t *testing.T) {
 		`"GET /x?auth=y HTTP/1.1" 200 1 "https://ref.example/?session=z"`: `"GET /x?auth=[redacted] HTTP/1.1" 200 1 "https://ref.example/?session=[redacted]"`,
 		"/search?q=%3Cscript%3E&page=2":                                   "/search?q=%3Cscript%3E&page=2",
 		"/go?next=/account/orders?page=2":                                 "/go?next=/account/orders?page=2",
+		"/a?sess_id=s1&SESS-ID=s2&api.key=k":                              "/a?sess_id=[redacted]&SESS-ID=[redacted]&api.key=[redacted]",
 	}
 	for before, after := range tests {
 		if got := RedactQuery(before); got != after {
@@ -376,7 +378,8 @@ func TestSecretName(t *testing.T) {
 		"apiKey": true, "AWS_SECRET_ACCESS_KEY": true, "access.token": true, "oauth2-bearer": true,
 		"Authorization": true, "Proxy-Authorization": true, "Private-Token": true, "Cookie": true, "Set-Cookie": true,
 		"PHPSESSID": true, "session_id": true, "OAUTH_CREDENTIALS": true, "creds": true, "NODE_AUTH_TOKEN": true,
-		"keystore_password": true, "keyring-passphrase": true, "Dpassword": true,
+		"keystore_password": true, "keyring-passphrase": true, "Dpassword": true, "sess_id": true, "SESS-ID": true,
+		"pass_wd": true, "api.key": true, "to-ken": true,
 
 		"user": false, "host": false, "page": false, "TTY": false, "COMMAND": false, "ENV": false,
 		"keyboard": false, "monkey": false, "keyword": false, "keywords": false, "author": false, "passive-ftp": false,
@@ -385,7 +388,7 @@ func TestSecretName(t *testing.T) {
 		"importkeystore": false, "genkeypair": false, "pubkey": false, "ssh-publickey": false,
 		"password-file": false, "token-ttl": false, "password-stdin": false, "SSH_AUTH_SOCK": false,
 		"no-ask-password": false, "ask-vault-pass": false, "allow-unauthenticated": false, "skip-auth": false,
-		"discovery-token-ca-cert-hash": false, "key-size": false,
+		"discovery-token-ca-cert-hash": false, "key-size": false, "pasaskpasss": false,
 	}
 	for name, want := range tests {
 		if got := secretName(name); got != want {
@@ -639,4 +642,75 @@ func TestRedactKeyValuesInEveryEventKind(t *testing.T) {
 			t.Errorf("%s: message = %q, want %q", tc.kind, got.Message, tc.want)
 		}
 	}
+}
+
+// secretNameVariants spells every secret word the ways applications and tools do: in upper case, split by a
+// separator (sess_id, SESS-ID, pass_wd) and after another word (api.key, client-secret, DB_PWD).
+func secretNameVariants() []string {
+	names := []string{"sess_id", "SESS-ID", "Sess.Id", "api.key", "pass_wd", "client-secret", "DB_PWD", "x-auth-token", "access.Token"}
+	for _, word := range secretWords {
+		names = append(names, word, strings.ToUpper(word), "CLIENT_"+strings.ToUpper(word))
+		for _, sep := range []string{"_", "-", "."} {
+			for i := 1; i < len(word); i++ {
+				names = append(names, word[:i]+sep+word[i:])
+			}
+			names = append(names, "api"+sep+word)
+		}
+	}
+	return names
+}
+
+// Every redaction entry point redacts the value of every secret name spelling in every syntax it reads, since
+// one rule (secretName) decides what is secret and no rule may skip a text that holds such a name.
+func TestRedactEverySecretNameSpelling(t *testing.T) {
+	const value = "Zq9v4lu3"
+	pairs := []string{"%s=" + value, `"%s":"` + value + `"`, `"%s": "` + value + `"`, `{\"%s\":\"` + value + `\"}`, "'%s' => '" + value + "'", "[%s] => " + value, "%s: " + value, "--%s=" + value, "/login?%s=" + value + "&page=2"}
+	options := []string{"--%s " + value, "-H '%s: " + value + "'"}
+	// One kind per case of Redact, and one it has no case for.
+	kinds := []string{KindSSHLoginFailed, KindSudoCommand, KindHTTPRequest, KindAppError, KindCronModified}
+	for _, name := range secretNameVariants() {
+		if !secretName(name) {
+			t.Fatalf("secretName(%q) = false", name)
+		}
+		if got := RedactQuery("/login?" + name + "=" + value + "&page=2"); strings.Contains(got, value) {
+			t.Errorf("RedactQuery(?%s=) = %q", name, got)
+		}
+		for i, syntax := range slices.Concat(pairs, options) {
+			s := "login failed " + fmt.Sprintf(syntax, name) + " retry"
+			if got := RedactText(s); strings.Contains(got, value) {
+				t.Errorf("RedactText(%q) = %q", s, got)
+			}
+			if got := RedactCommand("/usr/bin/tool " + s); strings.Contains(got, value) {
+				t.Errorf("RedactCommand(%q) = %q", s, got)
+			}
+			for _, kind := range kinds {
+				e := newEvent(SourceAuth, kind, testNow, s)
+				for _, key := range []string{"command", "path", "user_agent", "target_user"} {
+					e.set(key, s)
+				}
+				got := Redact(e)
+				if i < len(pairs) && strings.Contains(got.Message+fmt.Sprint(got.Fields), value) {
+					t.Errorf("Redact(%s %q) = %q %v", kind, s, got.Message, got.Fields)
+				}
+				// Options are read as a command line in sudo commands and application error messages only.
+				sudo := kind == KindSudoCommand
+				if (sudo || kind == KindAppError) && strings.Contains(got.Message, value) || sudo && strings.Contains(fmt.Sprint(got.Fields["command"]), value) {
+					t.Errorf("Redact(%s %q) = %q %v", kind, s, got.Message, got.Fields)
+				}
+			}
+		}
+	}
+}
+
+// FuzzMayHoldSecretName checks that the fast path of the key/value rule is never stricter than secretName:
+// a text that holds a secret name is always looked at.
+func FuzzMayHoldSecretName(f *testing.F) {
+	for _, name := range append(secretNameVariants(), "keyring_password", "pas-askpass-s", "pasaskpasss", "MONKEY_TOKEN", "Key") {
+		f.Add("login failed ", name, "=x")
+	}
+	f.Fuzz(func(t *testing.T, before, name, after string) {
+		if secretName(name) && !mayHoldSecretName(before+name+after) {
+			t.Fatalf("secretName(%q) but mayHoldSecretName(%q) = false", name, before+name+after)
+		}
+	})
 }
