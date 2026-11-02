@@ -26,18 +26,17 @@ var (
 	secretWords = []string{"pass", "pwd", "secret", "token", "key", "cred", "auth", "cookie", "session", "sessid"}
 
 	// notSecretParts are words that contain a secret word by chance, public keys, and the keytool and openssl
-	// commands that make a key or key store. They are cut out of a name before it is checked, so GIT_ASKPASS or
-	// --keyring stay readable while keyring_password does not.
-	notSecretParts = []string{"askpass", "keyboard", "keyword", "monkey", "passive", "bypass", "compass", "passthrough", "keyring", "keyserver", "keystore", "genkey", "pubkey", "publickey"}
+	// commands that make a key or key store. They are cut out of a name before it is checked, so --keyring stays
+	// readable while keyring_password does not. askpass is not one: cut out of ask_password, it would hide the
+	// password.
+	notSecretParts = []string{"keyboard", "keyword", "monkey", "passive", "bypass", "compass", "passthrough", "keyring", "keyserver", "keystore", "genkey", "pubkey", "publickey"}
 	// notSecretNames are whole names known to hold no secret: author is not authorization, gpg and openssl
-	// options that name a key file, format or algorithm, and kubeadm's public CA certificate hash.
-	notSecretNames = []string{"author", "authors", "newkey", "keyout", "keyform", "keyalg", "recvkeys", "discoverytokencacerthash"}
+	// options that name a key file, format or algorithm, and kubeadm's public CA certificate hash. newkey is not
+	// one, since new_key=x is a new secret as often as openssl's -newkey rsa:2048.
+	notSecretNames = []string{"author", "authors", "keyout", "keyform", "keyalg", "recvkeys", "discoverytokencacerthash"}
 	// notSecretSuffixes end names whose value is where or what kind of secret, not the secret: --password-file,
 	// --token-ttl, --password-stdin, SSH_AUTH_SOCK.
 	notSecretSuffixes = []string{"file", "path", "dir", "sock", "stdin", "ttl", "size", "length", "bits", "type"}
-	// switchWords start options that turn a behaviour on or off and take no value, such as --no-ask-password or
-	// --allow-unauthenticated, so the argument after them is not a secret.
-	switchWords = []string{"no", "ask", "allow", "skip", "ignore", "disable", "require"}
 	// notSecretValues are values that cannot be a secret: --password-authentication=no, "authenticated":true.
 	notSecretValues = []string{"yes", "no", "true", "false", "on", "off", "null", "none", "nil"}
 
@@ -47,18 +46,14 @@ var (
 	pamGroups              = []string{"auth", "account", "session", "password", "chauthtok"}
 	authSchemes            = []string{"basic", "bearer", "digest", "token", "negotiate", "apikey", "aws4-hmac-sha256"}
 
-	// attachedPasswordTools take their password attached to -p (-pS3cret). For other programs -p followed by a
-	// letter is a group of flags (tar -pczf) or a longer option name (openssl -pass).
-	attachedPasswordTools = []string{"mysql", "mysqldump", "mysqladmin", "mysqlimport", "mysqlshow", "mysqlcheck", "mysqlpump", "mysqlbinlog", "mysqlslap", "mariadb", "mariadb-dump", "mariadb-admin", "mariadb-import", "mariadb-show", "mariadb-check", "mariadb-binlog", "mariadb-slap"}
 	// shortSecretOptions are single letter options whose next argument is a password, per program, besides -p.
 	shortSecretOptions = map[string]string{"redis-cli": "a", "valkey-cli": "a", "keydb-cli": "a", "openssl": "k", "curl": "b"}
 
 	queryParameter = regexp.MustCompile(`([?&;])([^=&;#\s"?]+)=([^&;#\s"]*)`)
 	jwtShaped      = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+`)
 	emailAddress   = regexp.MustCompile(`[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
-	// urlUserinfo finds a URL's user name up to the : or @ after it; redactURLUserinfo finds where a password ends.
-	urlUserinfo = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://([^/?#\s:@'"\[\]]*)[:@]`)
-	urlPort     = regexp.MustCompile(`^\d*$`)
+	// urlScheme ends where the authority of a URL starts, after scheme://.
+	urlScheme = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://`)
 	// secretKeyValue finds a key and the separator after it: key=value, key: value, 'key' => value,
 	// [key] => value and "key": with its quotes escaped to any depth (\"key\": inside a JSON string), or a key
 	// followed by blanks or a parenthesis, which counts only when a quoted value follows (SQL PASSWORD 'x',
@@ -132,12 +127,6 @@ func redactEverywhere(s string) string {
 // it is not one of the known exceptions above.
 func secretName(name string) bool {
 	lower := strings.ToLower(strings.TrimLeft(name, "-"))
-	if first, rest, ok := strings.Cut(lower, "-"); ok && rest != "" && slices.Contains(switchWords, first) {
-		return false
-	}
-	if first, rest, ok := strings.Cut(lower, "_"); ok && rest != "" && slices.Contains(switchWords, first) {
-		return false
-	}
 	n := normalizedName(lower)
 	if slices.Contains(notSecretNames, n) {
 		return false
@@ -178,15 +167,12 @@ func normalizedName(name string) string {
 	}, strings.TrimLeft(name, "-"))
 }
 
-// harmlessValue is a value of a secret name that is no secret: empty, masked (***), a boolean or null, and the
-// working directory in PWD and OLDPWD (sudo's PWD= field), while pwd=x elsewhere is a password.
-func harmlessValue(name, value string) bool {
+// harmlessValue is a value of a secret name that is no secret: empty, masked (***), a boolean or null. Nothing
+// else is: PWD=/x is redacted like pwd=x, since a password may start with / (ODBC's PWD=/x) and the value alone
+// cannot tell a working directory from one.
+func harmlessValue(value string) bool {
 	v := strings.ToLower(value)
-	if strings.Trim(v, "*") == "" || slices.Contains(notSecretValues, v) {
-		return true
-	}
-	n := normalizedName(name)
-	return (n == "pwd" || n == "oldpwd") && strings.HasPrefix(value, "/")
+	return strings.Trim(v, "*") == "" || slices.Contains(notSecretValues, v)
 }
 
 // RedactQuery replaces the values of sensitive query parameters in every URL of s. A value that holds a query
@@ -269,7 +255,7 @@ func unhex(c byte) byte {
 func sensitiveParameter(name, value string) bool {
 	name = percentDecode(name)
 	if secretName(name) {
-		return !harmlessValue(name, percentDecode(value))
+		return !harmlessValue(percentDecode(value))
 	}
 	return containsAny(strings.ToLower(name), personalParameterWords)
 }
@@ -308,37 +294,41 @@ func redactSpans(s string, found ...[]span) string {
 }
 
 // redactURLUserinfo replaces the password of user:password@ in a URL, and a user name that is not a valid one
-// (an access token used as the user, https://ghp_x@github.com).
-//
-// A password may hold / ? # and @ unescaped (mysql://app:pa/ss@db, amqp://app:p@ss@db) but a host cannot, so it
-// ends at the last @ before the first / ? or # after the first @, and the URL ends at a blank or a quote. A :
-// followed by digits up to / ? or # is a port (https://x:8080/a?email=a@b), so an @ after it is in the path or
-// the query.
+// (an access token used as the user, https://ghp_x@github.com). It fails closed: a password may hold / ? # @
+// and digits unescaped, which cannot be told apart from a port, a path or a query, so a URL runs to a blank, a
+// quote or >, and when a : comes between its // and its last @, everything from that first : to the last @ is
+// redacted (and from the //, when the user name before the : is not a valid one). https://x:8080/p?e=a@b thus
+// loses 8080/p?e=a: hiding a port or a path is better than sending a password. A URL without an @ has no
+// userinfo and is kept, and one without a : before its @ has a user name only, up to its first @ when no / ? #
+// or bracket comes before it.
 func redactURLUserinfo(s string) string {
 	var b strings.Builder
 	last := 0
-	urlEnd, nextAt, nextDelimiter, hostEnd := nextOf(s, " \t\n\f\r'\""), nextOf(s, "@"), nextOf(s, "/?#"), nextOf(s, "/?#")
-	for _, m := range urlUserinfo.FindAllStringSubmatchIndex(s, -1) {
+	urlEnd, nextColon, nextAt, nextHostEnd := nextOf(s, " \t\n\v\f\r'\">"), nextOf(s, ":"), nextOf(s, "@"), nextOf(s, "/?#[]")
+	lastAt := lastOf(s, '@')
+	for _, m := range urlScheme.FindAllStringIndex(s, -1) {
 		if m[0] < last {
 			continue
 		}
-		if s[m[1]-1] == '@' {
-			if user := s[m[2]:m[3]]; user != "" && !sshUserName.MatchString(user) {
-				b.WriteString(s[last:m[2]] + Redacted)
-				last = m[3]
+		start := m[1]
+		at := lastAt(start, urlEnd(start))
+		if at < 0 {
+			continue
+		}
+		if colon := nextColon(start); colon < at {
+			from := colon + 1
+			if user := s[start:colon]; user != "" && !sshUserName.MatchString(user) {
+				from = start
 			}
+			b.WriteString(s[last:from] + Redacted)
+			last = at
 			continue
 		}
-		start, end := m[1], urlEnd(m[1])
-		at := nextAt(start)
-		if at >= end {
-			continue
+		first := nextAt(start)
+		if user := s[start:first]; user != "" && nextHostEnd(start) > first && !sshUserName.MatchString(user) {
+			b.WriteString(s[last:start] + Redacted)
+			last = first
 		}
-		if d := nextDelimiter(start); d < at && urlPort.MatchString(s[start:d]) {
-			continue
-		}
-		b.WriteString(s[last:start] + Redacted)
-		last = at + strings.LastIndexByte(s[at:min(hostEnd(at), end)], '@')
 	}
 	b.WriteString(s[last:])
 	return b.String()
@@ -360,6 +350,25 @@ func nextOf(s, chars string) func(i int) int {
 	}
 }
 
+// lastOf returns a function giving the index of the last c in s[start:end], -1 when there is none, for a start
+// and an end that never decrease and a start never past an earlier end unless the end moved past it too. Each
+// part of s is searched at most once.
+func lastOf(s string, c byte) func(start, end int) int {
+	foundEnd, found := -1, -1
+	return func(start, end int) int {
+		if end != foundEnd {
+			foundEnd, found = end, -1
+			if j := strings.LastIndexByte(s[start:end], c); j >= 0 {
+				found = start + j
+			}
+		}
+		if found < start {
+			return -1
+		}
+		return found
+	}
+}
+
 // maxQuotedCommands bounds how deep a quoted argument is searched as a command line of its own
 // (sh -c 'mysql -pS3cret').
 const maxQuotedCommands = 2
@@ -376,7 +385,7 @@ func secretArgumentSpans(s string, offset, depth int) []span {
 	for _, t := range commandTokens(s) {
 		arg := s[t.start:t.end]
 		if !strings.HasPrefix(arg, "-") {
-			if name := programName(arg); slices.Contains(attachedPasswordTools, name) || shortSecretOptions[name] != "" {
+			if name := programName(arg); shortSecretOptions[name] != "" {
 				tool = name
 			}
 		}
@@ -416,9 +425,11 @@ const (
 
 // secretArgument tells what the argument after arg is (a secret, a user:password or anything) and where the
 // secret inside arg starts, -1 when it holds none. Any option, with one dash or two, whose name is secret takes
-// a secret: its value after = or the next argument. -p takes a password too, attached only when a digit or a
-// quote follows it or the program is a MySQL client, and so do the letters of shortSecretOptions for their
-// program.
+// a secret: its value after = or the next argument. -p takes a password too, as the next argument or attached
+// to it, and so do the letters of shortSecretOptions for their program. Many programs take a password attached
+// to -p (mysql -pS3cret, sshpass -pS3cret), which a group of flags (tar -pczf) or a longer option (find -perm)
+// cannot be told from, so whatever follows -p is redacted, and the next argument too when the option's name is
+// secret (openssl -pass pass:x).
 func secretArgument(arg, tool string) (next, from int) {
 	body := strings.TrimLeft(arg, "-")
 	dashes := len(arg) - len(body)
@@ -431,7 +442,10 @@ func secretArgument(arg, tool string) (next, from int) {
 		switch {
 		case short && len(body) == 1:
 			return argSecret, -1
-		case letter == 'p' && (!isLetter(body[1]) || slices.Contains(attachedPasswordTools, tool)):
+		case letter == 'p':
+			if name, _, hasValue := strings.Cut(body, "="); !hasValue && secretName(name) {
+				return argSecret, 2
+			}
 			return argPlain, 2
 		case body == "u":
 			return argUser, -1
@@ -448,7 +462,7 @@ func secretArgument(arg, tool string) (next, from int) {
 	case !secretName(name):
 	case !hasValue:
 		return argSecret, -1
-	case !harmlessValue(name, unquote(value)):
+	case !harmlessValue(unquote(value)):
 		return argPlain, len(arg) - len(value)
 	}
 	return argPlain, -1
@@ -646,7 +660,7 @@ func secretValue(s, key, sep string) (start, end int) {
 				break
 			}
 		}
-		if value := s[start:max(end, start)]; strings.HasPrefix(value, Redacted) || harmlessValue(key, value) {
+		if value := s[start:max(end, start)]; strings.HasPrefix(value, Redacted) || harmlessValue(value) {
 			return 0, 0
 		}
 		return start, max(end, start)
@@ -656,7 +670,7 @@ func secretValue(s, key, sep string) (start, end int) {
 	}
 	end = bareValueEnd(s, key)
 	value := s[:end]
-	if end == 0 || harmlessValue(key, value) {
+	if end == 0 || harmlessValue(value) {
 		return 0, 0
 	}
 	if rest, ok := strings.CutPrefix(s[end:], " "); ok && isAuthScheme(value) {

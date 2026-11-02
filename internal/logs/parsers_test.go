@@ -297,11 +297,11 @@ func TestSudoKeepsNoArguments(t *testing.T) {
 // can neither change the executable or argument count reported nor bring an argument into the message.
 func TestSudoCraftedFieldsHideNoArgument(t *testing.T) {
 	for _, tc := range []struct{ line, command, message string }{
-		{"alice : TTY=pts/0 ; PWD=/tmp/x ; USER=root ; COMMAND=/usr/bin/id ; USER=root ; COMMAND=/usr/bin/ldapmodify -w hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=/tmp/x ; USER=root ; COMMAND=[unparsed]"},
-		{"alice : TTY=pts/0 ; PWD=/tmp/x ; USER=root ; COMMAND=/usr/bin/ldapmodify -w ; USER=root ; COMMAND=/usr/bin/ldapmodify -w hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=/tmp/x ; USER=root ; COMMAND=[unparsed]"},
-		{"alice : TTY=pts/0 ; PWD=/tmp/x ; ENV=y ; USER=root ; ENV=MYSQL_PWD=hunter2pw ; COMMAND=/usr/bin/mysql", "/usr/bin/mysql [0 args]", "alice : TTY=pts/0 ; PWD=/tmp/x ; ENV=[redacted] ; COMMAND=/usr/bin/mysql [0 args]"},
-		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; ENV=A=x ; COMMAND=/bin/true ; COMMAND=/usr/bin/redis-cli AUTH hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=/ ; USER=root ; ENV=[redacted] ; COMMAND=[unparsed]"},
-		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/htpasswd -b f bob hunter2pw ; COMMAND=/bin/true", "/usr/bin/htpasswd [6 args]", "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/htpasswd [6 args]"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/x ; USER=root ; COMMAND=/usr/bin/id ; USER=root ; COMMAND=/usr/bin/ldapmodify -w hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=[unparsed]"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/x ; USER=root ; COMMAND=/usr/bin/ldapmodify -w ; USER=root ; COMMAND=/usr/bin/ldapmodify -w hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=[unparsed]"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/x ; ENV=y ; USER=root ; ENV=MYSQL_PWD=hunter2pw ; COMMAND=/usr/bin/mysql", "/usr/bin/mysql [0 args]", "alice : TTY=pts/0 ; PWD=[redacted] ; ENV=[redacted] ; COMMAND=/usr/bin/mysql [0 args]"},
+		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; ENV=A=x ; COMMAND=/bin/true ; COMMAND=/usr/bin/redis-cli AUTH hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; ENV=[redacted] ; COMMAND=[unparsed]"},
+		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/htpasswd -b f bob hunter2pw ; COMMAND=/bin/true", "/usr/bin/htpasswd [6 args]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/htpasswd [6 args]"},
 	} {
 		e, ok := ParseAuth("sudo", tc.line, testNow)
 		if !ok {
