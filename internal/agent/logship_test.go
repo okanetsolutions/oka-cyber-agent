@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -482,5 +483,132 @@ func TestAgentStopsLogShippingWhenTheConfigurationChanges(t *testing.T) {
 	}
 	if shipper.collector != nil {
 		t.Fatal("Run returned before the log shipper stopped")
+	}
+}
+
+// storedCommands is what the server keeps of the batches it received: like LogIngestionService it ignores a
+// batch whose batch_id is the last one it stored.
+func storedCommands(batches []api.LogBatchRequest, failed int) []string {
+	var commands []string
+	last := ""
+	for _, b := range batches[failed:] {
+		if b.BatchID == last {
+			continue
+		}
+		last = b.BatchID
+		for _, e := range b.Events {
+			commands = append(commands, e.Fields["command"].(string))
+		}
+	}
+	return commands
+}
+
+func (h *shipperHost) committedOffset() int64 {
+	h.t.Helper()
+	data, err := os.ReadFile(filepath.Join(h.stateDir, checkpointFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var cp logs.Checkpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		h.t.Fatal(err)
+	}
+	return cp.Files["/var/log/auth.log"].Offset
+}
+
+func (h *shipperHost) spoolFiles() map[string][]byte {
+	h.t.Helper()
+	entries, err := os.ReadDir(filepath.Join(h.stateDir, "spool"))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	files := map[string][]byte{}
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(h.stateDir, "spool", e.Name()))
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		files[e.Name()] = data
+	}
+	return files
+}
+
+// TestShipperStopsAroundTheAck stops the agent at the points of acknowledging a batch: after its positions
+// are committed but before it leaves the spool, and when the commit fails (the moment the batch was already
+// gone from the spool when it was removed first). Each line must be stored by the server exactly once, any
+// resend must reuse the batch_id, and the committed positions must never go back.
+func TestShipperStopsAroundTheAck(t *testing.T) {
+	tests := map[string]func(t *testing.T, h *shipperHost, first *LogShipper){
+		"after the commit, before the removal": func(t *testing.T, h *shipperHost, first *LogShipper) {
+			spooled := h.spoolFiles()
+			h.advance(maxUploadBackoff)
+			h.step(first)
+			if !first.Spool.Empty() || h.committedOffset() == 0 {
+				t.Fatal("the acknowledged batch must be committed and removed")
+			}
+			for name, data := range spooled {
+				if err := os.WriteFile(filepath.Join(h.stateDir, "spool", name), data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+		"at the commit, where removing first had already emptied the spool": func(t *testing.T, h *shipperHost, first *LogShipper) {
+			checkpoint := filepath.Join(h.stateDir, checkpointFileName)
+			if err := os.MkdirAll(filepath.Join(checkpoint, "blocked"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			h.advance(maxUploadBackoff)
+			h.step(first)
+			if first.Spool.Empty() {
+				t.Error("a batch whose positions were not committed must stay in the spool")
+			}
+			if err := os.RemoveAll(checkpoint); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, stop := range tests {
+		t.Run(name, func(t *testing.T) {
+			h := newShipperHost(t)
+			h.client.failWith = []error{&api.HTTPError{StatusCode: http.StatusBadGateway}}
+			first := h.shipper()
+			first.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5})
+			h.step(first)
+			h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/a"))
+			h.advance(6 * time.Second)
+			h.step(first)
+			if len(h.client.batches) != 1 || first.Spool.Empty() {
+				t.Fatal("the first upload must fail and keep the batch in the spool")
+			}
+			stop(t, h, first)
+			first.stopCollector()
+			acked := h.client.batches[1].BatchID
+
+			h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/b"))
+			second := h.shipper()
+			second.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5})
+			offset := h.committedOffset()
+			for range 6 {
+				h.advance(maxUploadBackoff)
+				h.step(second)
+				if next := h.committedOffset(); next < offset {
+					t.Fatalf("committed offset went back from %d to %d", offset, next)
+				} else {
+					offset = next
+				}
+			}
+			if got := h.client.batches[2]; got.BatchID != acked {
+				t.Fatalf("the batch left in the spool was sent as %s, want its batch_id %s", got.BatchID, acked)
+			}
+			if got := storedCommands(h.client.batches, 1); strings.Join(got, ",") != "/usr/bin/a,/usr/bin/b" {
+				t.Fatalf("stored commands = %v, want each line once and in order", got)
+			}
+			if !second.Spool.Empty() {
+				t.Fatal("everything must be acknowledged in the end")
+			}
+		})
 	}
 }

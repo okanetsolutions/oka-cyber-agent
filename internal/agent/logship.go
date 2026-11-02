@@ -301,33 +301,43 @@ func (s *LogShipper) upload(ctx context.Context) error {
 		case errors.Is(err, api.ErrUnauthorized):
 			return ErrRevoked
 		case err == nil:
-			s.acknowledged(name, b, dropped)
 			if resp.LogCollection != nil {
 				s.Configure(*resp.LogCollection)
+			}
+			if err := s.acknowledged(name, b, dropped); err != nil {
+				s.retryLater("save log positions", b, err, nil)
+				return nil
 			}
 		case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound:
 			s.unsupported()
 			return nil
 		case errors.As(err, &httpErr) && rejected(httpErr.StatusCode):
 			s.Logger.Error("log batch rejected, dropping it", "batch_id", b.ID, "events", len(b.Events), "error", err)
-			s.acknowledged(name, b, 0)
+			if err := s.acknowledged(name, b, 0); err != nil {
+				s.retryLater("save log positions", b, err, nil)
+				return nil
+			}
 			if err := s.Spool.AddDropped(len(b.Events)); err != nil {
 				s.Logger.Error("count dropped log events", "error", err)
 			}
 		case ctx.Err() != nil:
 			return nil
 		default:
-			s.failures++
-			wait := uploadBackoff(s.failures)
-			if httpErr != nil {
-				wait = max(wait, httpErr.RetryAfter)
-			}
-			s.retryAt = s.Now().Add(wait)
-			s.Logger.Warn("log upload failed, retrying", "batch_id", b.ID, "error", err, "retry_at", s.retryAt)
+			s.retryLater("log upload failed", b, err, httpErr)
 			return nil
 		}
 	}
 	return nil
+}
+
+func (s *LogShipper) retryLater(msg string, b logs.Batch, err error, httpErr *api.HTTPError) {
+	s.failures++
+	wait := uploadBackoff(s.failures)
+	if httpErr != nil {
+		wait = max(wait, httpErr.RetryAfter)
+	}
+	s.retryAt = s.Now().Add(wait)
+	s.Logger.Warn(msg+", retrying", "batch_id", b.ID, "error", err, "retry_at", s.retryAt)
 }
 
 // unsupported stops collection after the server answered 404: an Oka Core that does not have log ingestion
@@ -347,18 +357,23 @@ func (s *LogShipper) unsupported() {
 	s.Logger.Warn("the server does not accept logs, log collection stays idle", "retry_at", s.unsupportedUntil)
 }
 
-func (s *LogShipper) acknowledged(name string, b logs.Batch, reportedDropped int) {
-	if err := s.Spool.Remove(name); err != nil {
-		s.Logger.Error("remove sent log batch", "error", err)
+// acknowledged commits the positions of a batch the server accepted, then removes it from the spool. In that
+// order a stop in between leaves the batch spooled with its positions committed: it is sent again under the same
+// batch_id, which the server recognises as its last batch and ignores, and collection resumes from the same
+// positions. When the positions cannot be saved the batch stays in the spool and is sent again later.
+func (s *LogShipper) acknowledged(name string, b logs.Batch, reportedDropped int) error {
+	if err := s.commit(b.Checkpoint); err != nil {
+		return err
 	}
 	if err := s.Spool.AddDropped(-reportedDropped); err != nil {
 		s.Logger.Error("count dropped log events", "error", err)
 	}
-	if err := s.commit(b.Checkpoint); err != nil {
-		s.Logger.Error("save log positions", "error", err)
+	if err := s.Spool.Remove(name); err != nil {
+		s.Logger.Error("remove sent log batch", "error", err)
 	}
 	s.lastSent = s.Now()
 	s.failures = 0
+	return nil
 }
 
 // rejected is a response that retrying the same batch cannot fix.
@@ -406,6 +421,16 @@ func (s *LogShipper) commit(cp logs.Checkpoint) error {
 		return err
 	}
 	if err := config.WriteFileAtomic(filepath.Join(s.StateDir, checkpointFileName), data, 0o600, s.Spool.Owner); err != nil {
+		return fmt.Errorf("commit log checkpoint: %w", err)
+	}
+	// The rename must reach the disk before the batch leaves the spool, or a power loss could keep the removal
+	// and lose the new positions.
+	dir, err := os.Open(s.StateDir)
+	if err != nil {
+		return fmt.Errorf("commit log checkpoint: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
 		return fmt.Errorf("commit log checkpoint: %w", err)
 	}
 	return nil

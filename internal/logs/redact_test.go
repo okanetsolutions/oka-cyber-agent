@@ -99,6 +99,105 @@ func TestRedactCommand(t *testing.T) {
 	}
 }
 
+// TestRedactCommandSecretOptionAfterOtherOptions checks that an option which takes no value never swallows the
+// secret option after it.
+func TestRedactCommandSecretOptionAfterOtherOptions(t *testing.T) {
+	tests := []struct{ before, after string }{
+		{"/usr/bin/mysqldump --single-transaction --password=hunter2 db", "/usr/bin/mysqldump --single-transaction --password=[redacted] db"},
+		{"/usr/local/bin/tool --verbose --password hunter2", "/usr/local/bin/tool --verbose --password [redacted]"},
+		{"/usr/local/bin/tool --quiet --api-key abc", "/usr/local/bin/tool --quiet --api-key [redacted]"},
+		{"/usr/local/bin/tool --single-transaction --token abc", "/usr/local/bin/tool --single-transaction --token [redacted]"},
+		{"/usr/local/bin/tool --a --password=p1 --b --password=p2", "/usr/local/bin/tool --a --password=[redacted] --b --password=[redacted]"},
+		{"/usr/bin/mysqldump --quick --lock-tables=false -pS3cret --databases shop", "/usr/bin/mysqldump --quick --lock-tables=false -p[redacted] --databases shop"},
+		{"/usr/bin/mysql --batch -p S3cret -e 'select 1'", "/usr/bin/mysql --batch -p [redacted] -e 'select 1'"},
+		{"/usr/bin/mysql -v -v -uroot -pS3cret", "/usr/bin/mysql -v -v -uroot -p[redacted]"},
+		{"/usr/bin/mysql -p'two words' shop", "/usr/bin/mysql -p[redacted] shop"},
+		{"/usr/bin/mysql --password='two words' --verbose shop", "/usr/bin/mysql --password=[redacted] --verbose shop"},
+		{`/usr/bin/mysql --password "two \"words\"" --verbose shop`, "/usr/bin/mysql --password [redacted] --verbose shop"},
+		{"/usr/local/bin/tool --password=hunter2 --token t0k --client-secret=c5 --verbose", "/usr/local/bin/tool --password=[redacted] --token [redacted] --client-secret=[redacted] --verbose"},
+		{"/usr/local/bin/tool --token-ttl 24h --password-file /etc/pw --api-key k", "/usr/local/bin/tool --token-ttl 24h --password-file /etc/pw --api-key [redacted]"},
+		{"/usr/local/bin/tool --password= --verbose", "/usr/local/bin/tool --password= --verbose"},
+		{"/usr/bin/curl -s -u admin:S3cret --fail https://a.example", "/usr/bin/curl -s -u admin:[redacted] --fail https://a.example"},
+		{"/usr/bin/curl --silent --user 'admin:two words' https://a.example", "/usr/bin/curl --silent --user 'admin:[redacted]' https://a.example"},
+		{"/usr/bin/curl -u admin:'two words' https://a.example", "/usr/bin/curl -u admin:[redacted] https://a.example"},
+		{"/usr/bin/curl --compressed -H 'Authorization: Bearer opaque' --token t1 https://a.example", "/usr/bin/curl --compressed -H 'Authorization: Bearer [redacted]' --token [redacted] https://a.example"},
+		{"alice : TTY=pts/0 ; PWD=/home/alice/Bob's files ; USER=root ; COMMAND=/usr/bin/mysql --password=hunter2 -e 'select 1'", "alice : TTY=pts/0 ; PWD=/home/alice/Bob's files ; USER=root ; COMMAND=/usr/bin/mysql --password=[redacted] -e 'select 1'"},
+		{"alice : TTY=pts/0 ; PWD=/srv ; USER=root ; COMMAND=/usr/bin/mysqldump --single-transaction --password=hunter2 db", "alice : TTY=pts/0 ; PWD=/srv ; USER=root ; COMMAND=/usr/bin/mysqldump --single-transaction --password=[redacted] db"},
+		{"/usr/local/bin/tool --password", "/usr/local/bin/tool --password"},
+		{"/usr/bin/curl -u --password=hunter2 https://a.example", "/usr/bin/curl -u --password=[redacted] https://a.example"},
+		{`/usr/local/bin/tool a\\ --password=hunter2`, `/usr/local/bin/tool a\\ --password=[redacted]`},
+	}
+	for _, test := range tests {
+		got := RedactCommand(test.before)
+		if got != test.after {
+			t.Errorf("RedactCommand(%q)\n got %q\nwant %q", test.before, got, test.after)
+		}
+		for _, secret := range []string{"hunter2", "S3cret", "abc", "p1", "p2", "two", "t0k", "c5", "opaque", "t1"} {
+			if strings.Contains(got, secret) && !strings.Contains(test.after, secret) {
+				t.Errorf("RedactCommand(%q) leaks %q: %q", test.before, secret, got)
+			}
+		}
+	}
+}
+
+// FuzzRedactCommandSecretOption checks that a secret option is redacted whatever arguments come before it.
+func FuzzRedactCommandSecretOption(f *testing.F) {
+	for _, seed := range []string{"/usr/bin/mysqldump --single-transaction", "/usr/bin/tool --verbose -v", "/usr/bin/curl -u", "/usr/bin/tool 'a b", "/usr/bin/tool a\\", "PWD=/x'y ; COMMAND=/usr/bin/tool -e '", "/usr/bin/curl -H 'Authorization: x", "/usr/bin/tool --password"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, prefix string) {
+		if strings.Contains(prefix, "Zq9") {
+			t.Skip()
+		}
+		for _, option := range []string{" --password=Zq9secret", " --password Zq9secret", " --api-key Zq9secret", " -pZq9secret", " -p Zq9secret", " -u admin:Zq9secret"} {
+			if got := RedactCommand(prefix + option); strings.Contains(got, "Zq9") {
+				t.Fatalf("RedactCommand(%q) = %q", prefix+option, got)
+			}
+		}
+	})
+}
+
+func TestRedactCommandPasswordVariables(t *testing.T) {
+	tests := map[string]string{
+		"alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; ENV=MYSQL_PWD=hunter2 ; COMMAND=/usr/bin/mysql": "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; ENV=MYSQL_PWD=[redacted] ; COMMAND=/usr/bin/mysql",
+		"/usr/bin/env MYSQL_PWD=hunter2 mysqldump db":                                                      "/usr/bin/env MYSQL_PWD=[redacted] mysqldump db",
+		"/usr/bin/env mysql_pwd='two words' DB_PASSWD=x /app":                                              "/usr/bin/env mysql_pwd=[redacted] DB_PASSWD=[redacted] /app",
+		"alice : TTY=pts/0 ; PWD=/home/x ; USER=root ; COMMAND=/usr/bin/id":                                "alice : TTY=pts/0 ; PWD=/home/x ; USER=root ; COMMAND=/usr/bin/id",
+		"/usr/bin/env PWD=/home/x OLDPWD=/tmp /app":                                                        "/usr/bin/env PWD=/home/x OLDPWD=/tmp /app",
+	}
+	for before, after := range tests {
+		if got := RedactCommand(before); got != after {
+			t.Errorf("RedactCommand(%q)\n got %q\nwant %q", before, got, after)
+		}
+	}
+}
+
+func TestRedactTextKeyValueSeparators(t *testing.T) {
+	tests := map[string]string{
+		"production.ERROR: Login failed array ( 'email' => 'a', 'password' => 'abc', 'remember' => true, )": "production.ERROR: Login failed array ( 'email' => 'a', 'password' => '[redacted]', 'remember' => true, )",
+		`production.ERROR: Config {"secret" => "abc", "debug" => false}`:                                    `production.ERROR: Config {"secret" => "[redacted]", "debug" => false}`,
+		"production.ERROR: Request ['api_key' => 'abc123', 'page' => 2]":                                    "production.ERROR: Request ['api_key' => '[redacted]', 'page' => 2]",
+		"production.ERROR: Request ['password'=>'abc', 'page'=>2]":                                          "production.ERROR: Request ['password'=>'[redacted]', 'page'=>2]",
+		`production.ERROR: Request ['password' => 'it\'s abc']`:                                             `production.ERROR: Request ['password' => '[redacted]']`,
+		"production.ERROR: Array ( [password] => abc [page] => 2 )":                                         "production.ERROR: Array ( [password] => [redacted] [page] => 2 )",
+		`production.ERROR: Login failed {"password":"abc","remember":true}`:                                 `production.ERROR: Login failed {"password":"[redacted]","remember":true}`,
+		`production.ERROR: Login failed {"password" : "abc"}`:                                               `production.ERROR: Login failed {"password" : "[redacted]"}`,
+		"production.ERROR: Mailer failed: password=abc rejected":                                            "production.ERROR: Mailer failed: password=[redacted] rejected",
+		"production.ERROR: Mailer failed: password = abc rejected":                                          "production.ERROR: Mailer failed: password = [redacted] rejected",
+		"production.ERROR: Mailer failed: password: abc rejected":                                           "production.ERROR: Mailer failed: password: [redacted] rejected",
+		"production.ERROR: Mailer failed: password='two words' rejected":                                    "production.ERROR: Mailer failed: password='[redacted]' rejected",
+	}
+	for before, after := range tests {
+		got := RedactText(before)
+		if got != after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", before, got, after)
+		}
+		if strings.Contains(got, "abc") || strings.Contains(got, "two words") {
+			t.Errorf("RedactText(%q) leaks a secret: %q", before, got)
+		}
+	}
+}
+
 func TestRedactText(t *testing.T) {
 	tests := map[string]string{
 		"[2026-10-31 19:00:03] production.ERROR: Request failed GET https://api.x/v1/items?api_key=SECRET4&page=2 {\"exception\":\"[object] (GuzzleHttp\\\\Exception\\\\ClientException(code: 401)\"}": "[2026-10-31 19:00:03] production.ERROR: Request failed GET https://api.x/v1/items?api_key=[redacted]&page=2 {\"exception\":\"[object] (GuzzleHttp\\\\Exception\\\\ClientException(code: 401)\"}",

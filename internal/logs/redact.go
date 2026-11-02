@@ -23,18 +23,14 @@ var (
 	secretOptionSuffixes    = []string{"token", "password", "passwd", "pass", "passphrase", "secret", "api-key", "apikey", "access-key", "secret-key", "credential", "credentials"}
 	authSchemes             = []string{"basic", "bearer", "digest", "token", "negotiate", "apikey", "aws4-hmac-sha256"}
 
-	queryParameter   = regexp.MustCompile(`([?&;])([^=&;#\s"?]+)=([^&;#\s"]*)`)
-	jwtShaped        = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+`)
-	emailAddress     = regexp.MustCompile(`[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
-	urlPassword      = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@'"]*):[^/\s@'"]+@`)
-	longOption       = regexp.MustCompile(`(^|\s)--([A-Za-z0-9][A-Za-z0-9_-]*)(=|\s+)("[^"]*"|'[^']*'|\S+)`)
-	shortPassword    = regexp.MustCompile(`(^|\s)-p(\s+)("[^"]*"|'[^']*'|\S+)`)
-	attachedPassword = regexp.MustCompile(`(^|\s)-p([^\s-]\S*)`)
-	userPassword     = regexp.MustCompile(`(^|\s)(-u|--user)(=|\s*)(["']?)([^\s:"']*):("[^"]*"|'[^']*'|[^\s"']+)`)
-	secretHeader     = regexp.MustCompile(`(?i)(?:^|\s)(?:-H|--header)(?:=|\s*)(["']?)\s*(?:proxy-authorization|authorization|cookie|x-api-key|x-auth-token)\s*:`)
-	variableName     = regexp.MustCompile(`(?i)(?:^|[\s"'(=])([A-Z_][A-Z0-9_]*)=`)
-	secretKeyValue   = regexp.MustCompile(`(?i)(["']?)\b([a-z0-9_.-]*(?:pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|authorization|cookie)[a-z0-9_.-]*)(["']?\s*[:=]\s*)`)
-	sshUserName      = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
+	queryParameter = regexp.MustCompile(`([?&;])([^=&;#\s"?]+)=([^&;#\s"]*)`)
+	jwtShaped      = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+`)
+	emailAddress   = regexp.MustCompile(`[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
+	urlPassword    = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@'"]*):[^/\s@'"]+@`)
+	secretHeader   = regexp.MustCompile(`(?i)(?:^|\s)(?:-H|--header)(?:=|\s*)(["']?)\s*(?:proxy-authorization|authorization|cookie|x-api-key|x-auth-token)\s*:`)
+	variableName   = regexp.MustCompile(`(?i)(?:^|[\s"'(=])([A-Z_][A-Z0-9_]*)=`)
+	secretKeyValue = regexp.MustCompile(`(?i)(["']?)\b([a-z0-9_.-]*(?:pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|authorization|cookie)[a-z0-9_.-]*)(["'\]]?\s*(?:=>|[:=])\s*)`)
+	sshUserName    = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
 )
 
 // Redact removes secrets and personal data from an event before it reaches the spool:
@@ -175,23 +171,140 @@ func sensitiveParameter(name string) bool {
 
 // RedactCommand replaces secrets in a command line: password style arguments (-p, and long options such as
 // --password, --token, --secret, --api-key or --client-secret), variables whose name contains KEY, SECRET,
-// TOKEN, PASS, CREDENTIAL or AUTH, the password of -u/--user user:password, Authorization, Cookie and
-// X-Api-Key headers, the password in a URL and sensitive query parameters.
+// TOKEN, PASS, CREDENTIAL or AUTH or ends in _PWD, the password of -u/--user user:password, Authorization,
+// Cookie and X-Api-Key headers, the password in a URL and sensitive query parameters.
 func RedactCommand(s string) string {
 	s = redactSecretHeaders(s)
 	s = urlPassword.ReplaceAllString(s, "$1:"+Redacted+"@")
-	s = userPassword.ReplaceAllString(s, "$1$2$3$4$5:"+Redacted)
-	s = longOption.ReplaceAllStringFunc(s, func(match string) string {
-		m := longOption.FindStringSubmatch(match)
-		if !secretOption(m[2]) {
-			return match
-		}
-		return m[1] + "--" + m[2] + m[3] + Redacted
-	})
-	s = shortPassword.ReplaceAllString(s, "$1-p$2"+Redacted)
-	s = attachedPassword.ReplaceAllString(s, "$1-p"+Redacted)
+	s = redactSecretArguments(s)
 	s = redactSecretVariables(s)
 	return RedactQuery(s)
+}
+
+// redactSecretArguments looks at every argument of a command line in turn. An argument is only taken as the
+// value of the option before it when that option is a secret one or -u/--user, so an option that takes no value
+// (--single-transaction --password=x) never hides the secret option after it. A value that looks like an option
+// (--password --token x) is redacted and still read as an option.
+func redactSecretArguments(s string) string {
+	var b strings.Builder
+	last := 0
+	expect := argPlain
+	for _, t := range commandTokens(s) {
+		arg := s[t.start:t.end]
+		next, from := secretArgument(arg)
+		switch {
+		case expect == argSecret:
+			from = 0
+		case expect == argUser && strings.Contains(arg, ":"):
+			from = userPassword(arg, 0)
+		}
+		if from >= 0 {
+			b.WriteString(s[last : t.start+from])
+			b.WriteString(Redacted)
+			last = t.end
+			if quote := arg[:1]; from > 0 && (quote == "'" || quote == `"`) && len(arg) > 1 && strings.HasSuffix(arg, quote) {
+				last--
+			}
+		}
+		expect = next
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+const (
+	argPlain = iota
+	argSecret
+	argUser
+)
+
+// secretArgument tells what the argument after arg is (a secret, a user:password or anything) and where the
+// secret inside arg starts, -1 when it holds none.
+func secretArgument(arg string) (next, from int) {
+	switch {
+	case strings.HasPrefix(arg, "--"):
+		name, value, hasValue := strings.Cut(arg[2:], "=")
+		switch {
+		case secretOption(name) && !hasValue:
+			return argSecret, -1
+		case secretOption(name) && value != "":
+			return argPlain, len(arg) - len(value)
+		case name == "user" && !hasValue:
+			return argUser, -1
+		case name == "user":
+			return argPlain, userPassword(arg, len(arg)-len(value))
+		}
+	case arg == "-p":
+		return argSecret, -1
+	case strings.HasPrefix(arg, "-p"):
+		return argPlain, 2
+	case arg == "-u":
+		return argUser, -1
+	case strings.HasPrefix(arg, "-u"):
+		return argPlain, userPassword(arg, 2)
+	}
+	return argPlain, -1
+}
+
+// userPassword is where the password of a user:password value starting at arg[from] begins, -1 without one.
+func userPassword(arg string, from int) int {
+	colon := strings.IndexByte(arg[from:], ':')
+	if colon < 0 {
+		return -1
+	}
+	return from + colon + 1
+}
+
+type commandToken struct{ start, end int }
+
+// commandTokens splits a command line into arguments at blanks. A quote opens a quoted part only at the start
+// of an argument, after = or :, after a short option (-p'x y') or after another quoted or escaped part, and
+// only when it is closed later. A backslash never joins two arguments. sudo quotes arguments that contain
+// blanks, but a quote inside a word (a directory named Bob's files in PWD) must not join the rest of the line
+// into one argument and hide the options there.
+func commandTokens(s string) []commandToken {
+	var tokens []commandToken
+	for i := 0; i < len(s); {
+		if s[i] == ' ' || s[i] == '\t' {
+			i++
+			continue
+		}
+		start := i
+		quotable := true
+		for i < len(s) && s[i] != ' ' && s[i] != '\t' {
+			c := s[i]
+			switch {
+			case c == '\\' && i+1 < len(s) && s[i+1] != ' ' && s[i+1] != '\t':
+				i += 2
+				quotable = true
+				continue
+			case (c == '\'' || c == '"') && quotable:
+				if end := closingQuote(s, i); end > 0 {
+					i = end + 1
+					continue
+				}
+			}
+			quotable = c == '=' || c == ':' || (i == start+1 && s[start] == '-')
+			i++
+		}
+		tokens = append(tokens, commandToken{start, i})
+	}
+	return tokens
+}
+
+// closingQuote is the index of the quote that closes the one at s[open], or -1. A backslash escapes a
+// character inside double quotes only, as in the shell.
+func closingQuote(s string, open int) int {
+	quote := s[open]
+	for i := open + 1; i < len(s); i++ {
+		switch {
+		case s[i] == '\\' && quote == '"':
+			i++
+		case s[i] == quote:
+			return i
+		}
+	}
+	return -1
 }
 
 func secretOption(name string) bool {
@@ -204,8 +317,16 @@ func secretOption(name string) bool {
 	return false
 }
 
-// redactSecretVariables replaces the values of NAME=value variables whose name looks secret. A variable may
-// be the value of another one, as in sudo's ENV=AWS_SECRET_ACCESS_KEY=x, so the search goes on inside values.
+// secretVariable is a variable name that holds a secret. MYSQL_PWD is the MySQL client's password, while PWD
+// and OLDPWD (sudo's PWD= field among them) are working directories.
+func secretVariable(name string) bool {
+	name = strings.ToUpper(name)
+	return containsAny(name, secretVariableWords) || strings.HasSuffix(name, "_PWD")
+}
+
+// redactSecretVariables replaces the values of NAME=value variables whose name looks secret (see
+// secretVariable). A variable may be the value of another one, as in sudo's ENV=AWS_SECRET_ACCESS_KEY=x, so the
+// search goes on inside values.
 func redactSecretVariables(s string) string {
 	var b strings.Builder
 	for {
@@ -214,10 +335,10 @@ func redactSecretVariables(s string) string {
 			b.WriteString(s)
 			return b.String()
 		}
-		name := strings.ToUpper(s[loc[2]:loc[3]])
+		name := s[loc[2]:loc[3]]
 		b.WriteString(s[:loc[1]])
 		s = s[loc[1]:]
-		if !containsAny(name, secretVariableWords) {
+		if !secretVariable(name) {
 			continue
 		}
 		if n := commandValueLength(s); n > 0 {
