@@ -79,14 +79,15 @@ func TestAuthLogsPerDistribution(t *testing.T) {
 			KindSSHLoginFailed: 2, KindSSHLoginSucceeded: 1, KindSudoCommand: 2, KindSudoFailed + ":not_in_sudoers": 1,
 			KindSuSession: 5, KindUserCreated: 3, KindUserGroupChanged: 3, KindPasswordChanged: 4,
 		},
-		"debian-12.groups.log":    {KindUserCreated: 3, KindUserGroupChanged: 5},
-		"ubuntu-24.04.groups.log": {KindUserCreated: 3, KindUserGroupChanged: 5},
-		"rocky-9.groups.secure":   {KindUserCreated: 3, KindUserGroupChanged: 5},
-		"debian-12.sudo.log":      {KindSudoCommand: 8},
-		"ubuntu-24.04.sudo.log":   {KindSudoCommand: 8},
-		"rocky-9.sudo.secure":     {KindSudoCommand: 8},
-		"debian-12.cron.log":      {KindCronModified: 3},
-		"rocky-9.cron":            {KindCronModified: 3},
+		"debian-12.groups.log":         {KindUserCreated: 3, KindUserGroupChanged: 5},
+		"ubuntu-24.04.groups.log":      {KindUserCreated: 3, KindUserGroupChanged: 5},
+		"rocky-9.groups.secure":        {KindUserCreated: 3, KindUserGroupChanged: 5},
+		"debian-12.sudo.log":           {KindSudoCommand: 8},
+		"ubuntu-24.04.sudo.log":        {KindSudoCommand: 8},
+		"rocky-9.sudo.secure":          {KindSudoCommand: 8},
+		"debian-12.sudo-continued.log": {KindSudoCommand: 2},
+		"debian-12.cron.log":           {KindCronModified: 3},
+		"rocky-9.cron":                 {KindCronModified: 3},
 	}
 	for fixture, want := range tests {
 		t.Run(fixture, func(t *testing.T) {
@@ -309,6 +310,83 @@ func TestSudoCraftedFieldsHideNoArgument(t *testing.T) {
 		got := Redact(e)
 		if got.Fields["command"] != tc.command || got.Message != tc.message || strings.Contains(fmt.Sprint(got.Fields), "hunter2pw") {
 			t.Errorf("%q:\n got %q %v\nwant %q %q", tc.line, got.Message, got.Fields, tc.message, tc.command)
+		}
+	}
+}
+
+// The fixture was captured on Debian 12 (sudo 1.9.13) with alice running /bin/true with 150 arguments and
+// -w S3cretPass, then with three times as many: sudo logs a command longer than 960 bytes in several lines, the
+// later ones "alice : (command continued) <arguments>". They hold only arguments and give no event.
+func TestSudoContinuedCommandLines(t *testing.T) {
+	events := authEvents(t, "debian-12.sudo-continued.log")
+	if len(events) != 2 {
+		t.Fatalf("%d events, want 2: %+v", len(events), events)
+	}
+	for _, e := range events {
+		data, err := json.Marshal(Redact(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Kind != KindSudoCommand || e.Fields["command"] != "/bin/true [130 args]" || strings.Contains(string(data), "S3cretPass") || strings.Contains(string(data), "arg129") {
+			t.Errorf("event = %s", data)
+		}
+	}
+}
+
+// Only sudo's own fields and the failures it is known to log reach an event: a line of any other shape is
+// dropped, or keeps only its fields when it has those of a command, so its text can never carry an argument.
+func TestSudoShipsNoUnparsedText(t *testing.T) {
+	for _, tc := range []struct{ line, kind, reason, message string }{
+		{line: "   alice : (command continued) -D cn=admin -w S3cretPass -f /tmp/x.ldif"},
+		{line: "alice : (command continued) x ; PWD=/ ; USER=root ; COMMAND=/bin/true -w S3cretPass"},
+		{line: "alice : (command continued) 3 incorrect password attempts -w S3cretPass"},
+		{line: "alice : unable to execute /usr/bin/ldapmodify -w S3cretPass: Permission denied"},
+		{line: "alice : S3cretPass"},
+		{line: "alice : PWD=/ ; S3cretPass"},
+		{line: "alice : 3 incorrect password attempts -w S3cretPass ; TTY=pts/0"},
+		{
+			"alice : command not found -w S3cretPass ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ldapmodify -w S3cretPass",
+			KindSudoFailed, "other", "alice : [unparsed] ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ldapmodify [2 args]",
+		},
+		{
+			"alice : 3 incorrect password attempts -w S3cretPass ; PWD=/ ; USER=root ; COMMAND=/bin/ls",
+			KindSudoFailed, "other", "alice : [unparsed] ; PWD=/ ; USER=root ; COMMAND=/bin/ls [0 args]",
+		},
+		{
+			"alice : 3 incorrect password attempts ; TTY=pts/0 ; S3cretPass ; PWD=/ ; USER=root ; COMMAND=/bin/ls",
+			KindSudoFailed, "incorrect_password", "alice : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/ls [0 args]",
+		},
+		{
+			"alice : TTY=pts/0 ; PWD=/tmp/a ; S3cretPass ; USER=root ; COMMAND=/bin/ls",
+			KindSudoCommand, "", "alice : TTY=pts/0 ; PWD=/tmp/a ; USER=root ; COMMAND=/bin/ls [0 args]",
+		},
+		{
+			"bob : user NOT in sudoers ; TTY=pts/0 ; PWD=/x ; S3cretPass",
+			KindSudoFailed, "not_in_sudoers", "bob : user NOT in sudoers ; TTY=pts/0 ; PWD=/x",
+		},
+		{
+			"bob : user NOT authorized on host ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/ls",
+			KindSudoFailed, "other", "bob : user NOT authorized on host ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/ls [0 args]",
+		},
+	} {
+		e, ok := ParseAuth("sudo", tc.line, testNow)
+		if tc.kind == "" {
+			if ok {
+				t.Errorf("%q must give no event, got %+v", tc.line, e)
+			}
+			continue
+		}
+		if !ok {
+			t.Errorf("%q gave no event", tc.line)
+			continue
+		}
+		reason, _ := e.Fields["reason"].(string)
+		data, err := json.Marshal(Redact(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Kind != tc.kind || reason != tc.reason || e.Message != tc.message || strings.Contains(string(data), "S3cretPass") {
+			t.Errorf("%q:\n got %s %q %q\nwant %s %q %q", tc.line, e.Kind, reason, e.Message, tc.kind, tc.reason, tc.message)
 		}
 	}
 }

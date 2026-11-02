@@ -106,36 +106,38 @@ func parseSSH(program, message string, at time.Time) (Event, bool) {
 
 // parseSudo reads "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ls" and the failure variants
 // "alice : 3 incorrect password attempts ; ..." and "bob : user NOT in sudoers ; ...". The arguments of the
-// command and the values of ENV are never kept, in the fields or in the message (see sudoCommand).
+// command and the values of ENV are never kept, in the fields or in the message (see sudoCommand). Only what is
+// read is kept: sudo's own fields and a failure in sudoFailures. A line with an unknown status is kept only when
+// it has the fields of a command, with the status replaced by unparsedStatus, and any other line is dropped.
 func parseSudo(message string, at time.Time) (Event, bool) {
 	m := sudoLine.FindStringSubmatchIndex(message)
 	if m == nil || strings.HasPrefix(message, "pam_") {
 		return Event{}, false
 	}
-	parts := strings.Split(message[m[4]:m[5]], " ; ")
-	var status string
-	if key, _, ok := strings.Cut(parts[0], "="); !ok || !sudoKeys[key] {
-		status = parts[0]
+	body := message[m[4]:m[5]]
+	// sudo logs a command longer than its syslog line limit in several lines, the later ones
+	// "alice : (command continued) <more arguments>", which hold nothing but arguments.
+	if strings.HasPrefix(body, "(command continued)") {
+		return Event{}, false
 	}
-	kind := KindSudoCommand
-	var reason string
-	switch {
-	case status == "":
-	case strings.Contains(status, "incorrect password attempt"):
-		kind, reason = KindSudoFailed, "incorrect_password"
-	case strings.Contains(status, "NOT in sudoers"), strings.Contains(status, "not in the sudoers file"):
-		kind, reason = KindSudoFailed, "not_in_sudoers"
-	case strings.Contains(status, "command not allowed"):
-		kind, reason = KindSudoFailed, "command_not_allowed"
-	default:
-		kind, reason = KindSudoFailed, "other"
+	parts := strings.Split(body, " ; ")
+	var status []string
+	if !isSudoField(parts[0]) {
+		status, parts = []string{parts[0]}, parts[1:]
 	}
 	splits := sudoSplits(parts)
-	if len(splits) == 0 && kind == KindSudoCommand {
+	kind, reason := KindSudoCommand, ""
+	if status != nil {
+		kind, reason = KindSudoFailed, sudoFailureReason(status[0])
+		if reason == "" {
+			status[0], reason = unparsedStatus, "other"
+		}
+	}
+	if len(splits) == 0 && (status == nil || status[0] == unparsedStatus) {
 		return Event{}, false
 	}
 	command := sudoCommand(splits)
-	e := authEvent(kind, "sudo", message[:m[4]]+strings.Join(withoutArguments(parts, command), " ; "), at)
+	e := authEvent(kind, "sudo", message[:m[4]]+strings.Join(append(status, withoutArguments(parts, command)...), " ; "), at)
 	e.Username = message[m[2]:m[3]]
 	if user, ok := agreed(splits, func(s sudoSplit) string { return s.user }); ok && user != "" {
 		e.set("target_user", user)
@@ -147,6 +149,29 @@ func parseSudo(message string, at time.Time) (Event, bool) {
 		e.set("reason", reason)
 	}
 	return e, true
+}
+
+// unparsedStatus replaces the status of a sudo line that is not one of sudoFailures, whose text could be anything.
+const unparsedStatus = "[unparsed]"
+
+// sudoFailures are the statuses sudo logs before the fields of a command it refused, in sudo's own words.
+var sudoFailures = []struct {
+	status *regexp.Regexp
+	reason string
+}{
+	{regexp.MustCompile(`^\d+ incorrect password attempts?$`), "incorrect_password"},
+	{regexp.MustCompile(`^(?:user NOT in sudoers|\S+ is not in the sudoers file\.?(?: +This incident will be reported\.)?)$`), "not_in_sudoers"},
+	{regexp.MustCompile(`^command not allowed$`), "command_not_allowed"},
+	{regexp.MustCompile(`^user NOT authorized on host$`), "other"},
+}
+
+func sudoFailureReason(status string) string {
+	for _, f := range sudoFailures {
+		if f.status.MatchString(status) {
+			return f.reason
+		}
+	}
+	return ""
 }
 
 // unparsedCommand is the command of a sudo line whose readings do not agree on the executable or the number of
@@ -182,7 +207,8 @@ func commandSummary(command string) string {
 
 // withoutArguments replaces everything from the first COMMAND part on with command, and the parts from the
 // first ENV part up to there with ENV=[redacted]. Taking the first of each, wherever a crafted working
-// directory puts it, leaves no variable or argument of any reading of the line in the message.
+// directory puts it, leaves no variable or argument of any reading of the line in the message. A part before
+// them that is not one of sudo's fields (the rest of a working directory with " ; " in it) is left out too.
 func withoutArguments(parts []string, command string) []string {
 	end := slices.IndexFunc(parts, isCommandPart)
 	if end < 0 {
@@ -192,6 +218,7 @@ func withoutArguments(parts []string, command string) []string {
 	if env := slices.IndexFunc(kept, func(p string) bool { return strings.HasPrefix(p, "ENV=") }); env >= 0 {
 		kept = append(kept[:env], "ENV="+Redacted)
 	}
+	kept = slices.DeleteFunc(kept, func(p string) bool { return !isSudoField(p) })
 	if end < len(parts) {
 		kept = append(kept, "COMMAND="+command)
 	}
@@ -200,6 +227,11 @@ func withoutArguments(parts []string, command string) []string {
 
 func isCommandPart(part string) bool {
 	return strings.HasPrefix(part, "COMMAND=")
+}
+
+func isSudoField(part string) bool {
+	key, _, ok := strings.Cut(part, "=")
+	return ok && sudoKeys[key]
 }
 
 var sudoKeys = map[string]bool{"HOST": true, "TTY": true, "CHROOT": true, "PWD": true, "USER": true, "GROUP": true, "TSID": true, "ENV": true, "COMMAND": true}

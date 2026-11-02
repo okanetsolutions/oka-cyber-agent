@@ -56,7 +56,9 @@ var (
 	queryParameter = regexp.MustCompile(`([?&;])([^=&;#\s"?]+)=([^&;#\s"]*)`)
 	jwtShaped      = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+`)
 	emailAddress   = regexp.MustCompile(`[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
-	urlUserinfo    = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^/?#\s:@'"]*)(:[^/?#\s'"]*)?@`)
+	// urlUserinfo finds a URL's user name up to the : or @ after it; redactURLUserinfo finds where a password ends.
+	urlUserinfo = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://([^/?#\s:@'"\[\]]*)[:@]`)
+	urlPort     = regexp.MustCompile(`^\d*$`)
 	// secretKeyValue finds a key and the separator after it: key=value, key: value, 'key' => value,
 	// [key] => value and "key": with its quotes escaped to any depth (\"key\": inside a JSON string), or a key
 	// followed by blanks or a parenthesis, which counts only when a quoted value follows (SQL PASSWORD 'x',
@@ -307,17 +309,55 @@ func redactSpans(s string, found ...[]span) string {
 
 // redactURLUserinfo replaces the password of user:password@ in a URL, and a user name that is not a valid one
 // (an access token used as the user, https://ghp_x@github.com).
+//
+// A password may hold / ? # and @ unescaped (mysql://app:pa/ss@db, amqp://app:p@ss@db) but a host cannot, so it
+// ends at the last @ before the first / ? or # after the first @, and the URL ends at a blank or a quote. A :
+// followed by digits up to / ? or # is a port (https://x:8080/a?email=a@b), so an @ after it is in the path or
+// the query.
 func redactURLUserinfo(s string) string {
-	return urlUserinfo.ReplaceAllStringFunc(s, func(match string) string {
-		m := urlUserinfo.FindStringSubmatch(match)
-		switch {
-		case m[3] != "":
-			return m[1] + m[2] + ":" + Redacted + "@"
-		case m[2] != "" && !sshUserName.MatchString(m[2]):
-			return m[1] + Redacted + "@"
+	var b strings.Builder
+	last := 0
+	urlEnd, nextAt, nextDelimiter, hostEnd := nextOf(s, " \t\n\f\r'\""), nextOf(s, "@"), nextOf(s, "/?#"), nextOf(s, "/?#")
+	for _, m := range urlUserinfo.FindAllStringSubmatchIndex(s, -1) {
+		if m[0] < last {
+			continue
 		}
-		return match
-	})
+		if s[m[1]-1] == '@' {
+			if user := s[m[2]:m[3]]; user != "" && !sshUserName.MatchString(user) {
+				b.WriteString(s[last:m[2]] + Redacted)
+				last = m[3]
+			}
+			continue
+		}
+		start, end := m[1], urlEnd(m[1])
+		at := nextAt(start)
+		if at >= end {
+			continue
+		}
+		if d := nextDelimiter(start); d < at && urlPort.MatchString(s[start:d]) {
+			continue
+		}
+		b.WriteString(s[last:start] + Redacted)
+		last = at + strings.LastIndexByte(s[at:min(hostEnd(at), end)], '@')
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// nextOf returns a function giving the index of the next of chars in s at or after i (len(s) when there is
+// none), for an i that never decreases. It searches each part of s at most once, so that a line holding many
+// URLs costs linear time.
+func nextOf(s, chars string) func(i int) int {
+	found := -1
+	return func(i int) int {
+		if found < i {
+			found = len(s)
+			if j := strings.IndexAny(s[i:], chars); j >= 0 {
+				found = i + j
+			}
+		}
+		return found
+	}
 }
 
 // maxQuotedCommands bounds how deep a quoted argument is searched as a command line of its own

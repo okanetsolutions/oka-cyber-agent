@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -599,6 +600,7 @@ var secretShapes = []string{
 	"token: Zq9", "password=Zq9", "pwd=Zq9", `"api_key":"Zq9"`, `"Password" : "Zq9"`, "'password' => 'Zq9'",
 	"[secret] => Zq9", `{\"password\":\"Zq9\"}`, `{\\\"token\\\":\\\"Zq9\\\"}`, "Uid=a;Pwd=Zq9;",
 	"https://deploy:Zq9@git.example/a.git", "https://Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9@10.0.0.1/",
+	"mysql://app:Zq9/x@db:3306/shop", "amqp://app:Zq9#x@mq", "redis://:Zq9?x@db", "mysql://app:Zq9@x/y@db/shop",
 	"https://a.example/cb?access_token=Zq9&page=2", "https://a.example/go?next=/reset?token=Zq9",
 	"https://a.example/go?next=%2Freset%3Ftoken%3DZq9", "https://a.example/go?next=%252Freset%253Ftoken%253DZq9",
 	"-H 'Authorization: Bearer Zq9'", "-H 'Cookie: theme=dark; sid=Zq9'", `--header "X-Api-Key: Zq9"`,
@@ -717,6 +719,50 @@ func TestRedactURLPasswordsInEveryEventKind(t *testing.T) {
 		if got := Redact(e); leaked(got) != "" {
 			t.Errorf("%s: %s leaked: %+v", kind, leaked(got), got)
 		}
+	}
+}
+
+// A password ends at the last @ before the host, so it may hold / ? # and @ unescaped, while an @ in the path or
+// the query of a URL without a password, also after a port, leaves the URL as it is.
+func TestRedactURLUserinfo(t *testing.T) {
+	for in, want := range map[string]string{
+		"connect failed: mysql://app:pa/ss@db:3306/shop":        "connect failed: mysql://app:[redacted]@db:3306/shop",
+		"amqp://app:p#ss@db":                                    "amqp://app:[redacted]@db",
+		"redis://:p?ss@db:6379/0":                               "redis://:[redacted]@db:6379/0",
+		"mysql://app:p@ss@db/shop":                              "mysql://app:[redacted]@db/shop",
+		"mysql://app:pa/ss@db/shop?user=a@b x":                  "mysql://app:[redacted]@db/shop?user=a@b x",
+		"https://deploy:S3cret@git.example/a.git?email=a@b":     "https://deploy:[redacted]@git.example/a.git?email=a@b",
+		`{"dsn":"pgsql://app:p/w@db/shop","n":1}`:               `{"dsn":"pgsql://app:[redacted]@db/shop","n":1}`,
+		"https://ghp_Zq9xx-yy@github.com/acme/app.git":          "https://[redacted]@github.com/acme/app.git",
+		"https://git.example/acme/app.git":                      "https://git.example/acme/app.git",
+		"https://deploy@git.example/acme/app.git":               "https://deploy@git.example/acme/app.git",
+		"https://x/a?email=a@b":                                 "https://x/a?email=a@b",
+		"https://x/u/@alice/posts":                              "https://x/u/@alice/posts",
+		"https://x:8080/a?email=a@b":                            "https://x:8080/a?email=a@b",
+		"https://x:8080#a@b https://y:443?u=c@d":                "https://x:8080#a@b https://y:443?u=c@d",
+		"https://[2001:db8::1]:8080/a@b":                        "https://[2001:db8::1]:8080/a@b",
+		"https://x:8080/a 'mysql://u:p@db'":                     "https://x:8080/a 'mysql://u:[redacted]@db'",
+		"https://x/r?next=https://bob:s3/cr@10.1.1.1/&u=a@b":    "https://x/r?next=https://bob:[redacted]@10.1.1.1/&u=a@b",
+		"see https://x:8080/a and mail me at bob @ example.org": "see https://x:8080/a and mail me at bob @ example.org",
+	} {
+		if got := redactURLUserinfo(in); got != want {
+			t.Errorf("redactURLUserinfo(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A line of many URLs without a blank, an @ or a host end must not make each URL search the rest of the line:
+// done that way, a 1 MB line took over 30 seconds.
+func TestRedactURLUserinfoLargeInput(t *testing.T) {
+	start := time.Now()
+	for _, s := range []string{strings.Repeat("a://b:", 1<<19/6), strings.Repeat("a://b:@", 1<<19/7), strings.Repeat("a://b:1/", 1<<19/8) + "@"} {
+		got := redactURLUserinfo(s)
+		if strings.Contains(s, ":@") && got != strings.Repeat("a://b:[redacted]@", 1<<19/7) {
+			t.Fatalf("redacted %d bytes into %d", len(s), len(got))
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("took %s", elapsed)
 	}
 }
 
