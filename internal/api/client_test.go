@@ -225,6 +225,30 @@ func TestValidationErrorIsReturnedWithoutRetryOrRequestBody(t *testing.T) {
 	}
 }
 
+func TestValidationErrorNamesTheRejectedFields(t *testing.T) {
+	srv, _ := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusUnprocessableEntity, `{"message":"The skipped_sources.0.path field format is invalid. (and 1 more error)","errors":{"skipped_sources.0.path":["The skipped_sources.0.path field format is invalid."],"events.3.first_at":["too old"]}}`)
+	})
+	_, err := newClient(t, srv, "agent-secret", &sleeps{}).PostLogs(context.Background(), LogBatchRequest{BatchID: "b", Events: []logs.Event{{Message: "payload-value"}}})
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || !slices.Equal(httpErr.Fields, []string{"events.3.first_at", "skipped_sources.0.path"}) {
+		t.Fatalf("err = %#v", err)
+	}
+	if strings.Contains(err.Error(), "payload-value") {
+		t.Fatalf("error %q leaks the request", err)
+	}
+
+	for _, body := range []string{`<html>413 Request Entity Too Large</html>`, `{"message":"x","errors":[]}`, `{"message":"x"}`} {
+		srv, _ := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+			writeJSON(w, http.StatusBadRequest, body)
+		})
+		_, err := newClient(t, srv, "agent-secret", &sleeps{}).PostLogs(context.Background(), LogBatchRequest{BatchID: "b"})
+		if !errors.As(err, &httpErr) || httpErr.Fields != nil {
+			t.Fatalf("body %s: err = %#v", body, err)
+		}
+	}
+}
+
 func TestPutInventorySendsTheExactSnapshotBytes(t *testing.T) {
 	snapshot := json.RawMessage(`{"os":{},"packages":[]}`)
 	srv, requests := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {

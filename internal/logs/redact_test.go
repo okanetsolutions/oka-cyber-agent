@@ -68,7 +68,7 @@ func TestRedactCommand(t *testing.T) {
 
 		"/usr/bin/env API_KEY=xyz /app":                                                                                "/usr/bin/env API_KEY=[redacted] /app",
 		"/usr/bin/env aws_secret_access_key=abc123 AWS_REGION=eu-west-1 /app":                                          "/usr/bin/env aws_secret_access_key=[redacted] AWS_REGION=eu-west-1 /app",
-		"/usr/bin/env DB_PASS='two words' GITHUB_AUTH=g OAUTH_CREDENTIALS=c /a":                                        "/usr/bin/env DB_PASS=[redacted] GITHUB_AUTH=[redacted] OAUTH_CREDENTIALS=[redacted] /a",
+		"/usr/bin/env DB_PASS='two words' GITHUB_AUTH=g OAUTH_CREDENTIALS=c /a":                                        "/usr/bin/env DB_PASS='[redacted]' GITHUB_AUTH=[redacted] OAUTH_CREDENTIALS=[redacted] /a",
 		"alice : PWD=/srv ; USER=root ; ENV=AWS_SECRET_ACCESS_KEY=abc123 HOME=/root ; COMMAND=/usr/bin/aws s3 ls":      "alice : PWD=/srv ; USER=root ; ENV=AWS_SECRET_ACCESS_KEY=[redacted] HOME=/root ; COMMAND=/usr/bin/aws s3 ls",
 		"/usr/bin/kubeadm join 10.0.0.1:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:ab": "/usr/bin/kubeadm join 10.0.0.1:6443 --token [redacted] --discovery-token-ca-cert-hash sha256:ab",
 		"/usr/local/bin/tool --api-key=k1 --client-secret s2 --secret=s3 --pass p4":                                    "/usr/local/bin/tool --api-key=[redacted] --client-secret [redacted] --secret=[redacted] --pass [redacted]",
@@ -140,16 +140,18 @@ func TestRedactCommandSecretOptionAfterOtherOptions(t *testing.T) {
 	}
 }
 
-// FuzzRedactCommandSecretOption checks that a secret option is redacted whatever arguments come before it.
+// FuzzRedactCommandSecretOption checks that a secret option or variable is redacted whatever arguments come
+// before it.
 func FuzzRedactCommandSecretOption(f *testing.F) {
-	for _, seed := range []string{"/usr/bin/mysqldump --single-transaction", "/usr/bin/tool --verbose -v", "/usr/bin/curl -u", "/usr/bin/tool 'a b", "/usr/bin/tool a\\", "PWD=/x'y ; COMMAND=/usr/bin/tool -e '", "/usr/bin/curl -H 'Authorization: x", "/usr/bin/tool --password"} {
+	for _, seed := range []string{"/usr/bin/mysqldump --single-transaction", "/usr/bin/tool --verbose -v", "/usr/bin/curl -u", "/usr/bin/tool 'a b", "/usr/bin/tool a\\", "PWD=/x'y ; COMMAND=/usr/bin/tool -e '", "/usr/bin/curl -H 'Authorization: x", "/usr/bin/tool --password", "-H0Auth:", "--password -H 'Authorization: x"} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, prefix string) {
 		if strings.Contains(prefix, "Zq9") {
 			t.Skip()
 		}
-		for _, option := range []string{" --password=Zq9secret", " --password Zq9secret", " --api-key Zq9secret", " -pZq9secret", " -p Zq9secret", " -u admin:Zq9secret"} {
+		for _, option := range []string{" --password=Zq9secret", " --password Zq9secret", " --api-key Zq9secret", " -p9Zq9secret", " -p Zq9secret", " -u admin:Zq9secret",
+			" -storepass Zq9secret", " -passin=Zq9secret", " -pass pass:Zq9secret", " /usr/bin/mysql -pZq9secret", " /usr/bin/redis-cli -a Zq9secret", " API_TOKEN=Zq9secret"} {
 			if got := RedactCommand(prefix + option); strings.Contains(got, "Zq9") {
 				t.Fatalf("RedactCommand(%q) = %q", prefix+option, got)
 			}
@@ -161,7 +163,7 @@ func TestRedactCommandPasswordVariables(t *testing.T) {
 	tests := map[string]string{
 		"alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; ENV=MYSQL_PWD=hunter2 ; COMMAND=/usr/bin/mysql": "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; ENV=MYSQL_PWD=[redacted] ; COMMAND=/usr/bin/mysql",
 		"/usr/bin/env MYSQL_PWD=hunter2 mysqldump db":                                                      "/usr/bin/env MYSQL_PWD=[redacted] mysqldump db",
-		"/usr/bin/env mysql_pwd='two words' DB_PASSWD=x /app":                                              "/usr/bin/env mysql_pwd=[redacted] DB_PASSWD=[redacted] /app",
+		"/usr/bin/env mysql_pwd='two words' DB_PASSWD=x /app":                                              "/usr/bin/env mysql_pwd='[redacted]' DB_PASSWD=[redacted] /app",
 		"alice : TTY=pts/0 ; PWD=/home/x ; USER=root ; COMMAND=/usr/bin/id":                                "alice : TTY=pts/0 ; PWD=/home/x ; USER=root ; COMMAND=/usr/bin/id",
 		"/usr/bin/env PWD=/home/x OLDPWD=/tmp /app":                                                        "/usr/bin/env PWD=/home/x OLDPWD=/tmp /app",
 	}
@@ -365,4 +367,212 @@ func BenchmarkCut(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestSecretName(t *testing.T) {
+	tests := map[string]bool{
+		"password": true, "PASSWD": true, "pwd": true, "Pwd": true, "MYSQL_PWD": true, "passphrase": true,
+		"storepass": true, "-srcstorepass": true, "--client-secret": true, "api_key": true, "X-Api-Key": true,
+		"apiKey": true, "AWS_SECRET_ACCESS_KEY": true, "access.token": true, "oauth2-bearer": true,
+		"Authorization": true, "Proxy-Authorization": true, "Private-Token": true, "Cookie": true, "Set-Cookie": true,
+		"PHPSESSID": true, "session_id": true, "OAUTH_CREDENTIALS": true, "creds": true, "NODE_AUTH_TOKEN": true,
+		"keystore_password": true, "keyring-passphrase": true, "Dpassword": true,
+
+		"user": false, "host": false, "page": false, "TTY": false, "COMMAND": false, "ENV": false,
+		"keyboard": false, "monkey": false, "keyword": false, "keywords": false, "author": false, "passive-ftp": false,
+		"bypass": false, "GIT_ASKPASS": false, "SSH_ASKPASS": false, "askpass": false, "keyring": false,
+		"keyserver": false, "recv-keys": false, "newkey": false, "keyout": false, "keystore": false,
+		"importkeystore": false, "genkeypair": false, "pubkey": false, "ssh-publickey": false,
+		"password-file": false, "token-ttl": false, "password-stdin": false, "SSH_AUTH_SOCK": false,
+		"no-ask-password": false, "ask-vault-pass": false, "allow-unauthenticated": false, "skip-auth": false,
+		"discovery-token-ca-cert-hash": false, "key-size": false,
+	}
+	for name, want := range tests {
+		if got := secretName(name); got != want {
+			t.Errorf("secretName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TestRedactCommandSecretOptionsWithOneDash covers options with a single dash and the password options of
+// particular programs: keytool and openssl spell long options with one dash, and -p is a password only on its
+// own, before a digit or quote, or for a MySQL client.
+func TestRedactCommandSecretOptionsWithOneDash(t *testing.T) {
+	tests := []struct{ before, after string }{
+		{"/usr/bin/keytool -list -storepass changeit", "/usr/bin/keytool -list -storepass [redacted]"},
+		{"/usr/bin/keytool -importkeystore -srcstorepass s1 -deststorepass=s2 -keypass s3", "/usr/bin/keytool -importkeystore -srcstorepass [redacted] -deststorepass=[redacted] -keypass [redacted]"},
+		{"/usr/bin/openssl enc -aes-256-cbc -pass pass:hunter2 -in a", "/usr/bin/openssl enc -aes-256-cbc -pass [redacted] -in a"},
+		{"/usr/bin/openssl pkcs12 -export -passin pass:hunter3 -passout pass:hunter4", "/usr/bin/openssl pkcs12 -export -passin [redacted] -passout [redacted]"},
+		{"/usr/bin/openssl enc -k hunter5 -in a", "/usr/bin/openssl enc -k [redacted] -in a"},
+		{"/usr/bin/curl --oauth2-bearer tok123 https://a.example", "/usr/bin/curl --oauth2-bearer [redacted] https://a.example"},
+		{"/usr/bin/curl -H 'Private-Token: tok456' https://gitlab.example", "/usr/bin/curl -H 'Private-Token: [redacted]' https://gitlab.example"},
+		{"/usr/bin/curl -b 'sid=abc; theme=dark' https://a.example", "/usr/bin/curl -b [redacted] https://a.example"},
+		{"/usr/bin/redis-cli -h cache -a pw789 ping", "/usr/bin/redis-cli -h cache -a [redacted] ping"},
+		{"/usr/bin/sshpass -p pw321 ssh host", "/usr/bin/sshpass -p [redacted] ssh host"},
+		{"/usr/bin/java -Dspring.datasource.password=pw1 -jar app.jar", "/usr/bin/java -Dspring.datasource.password=[redacted] -jar app.jar"},
+		{`/usr/bin/psql -c 'ALTER USER bob PASSWORD \'secret1\''`, `/usr/bin/psql -c 'ALTER USER bob PASSWORD \'[redacted]\''`},
+		{"/usr/bin/psql -c ALTER USER bob PASSWORD 'secret2'", "/usr/bin/psql -c ALTER USER bob PASSWORD '[redacted]'"},
+		{`/usr/bin/mysql -e 'CREATE USER app IDENTIFIED BY \'secret3\''`, `/usr/bin/mysql -e 'CREATE USER app IDENTIFIED BY \'[redacted]\''`},
+		{`/usr/bin/mysql -e 'ALTER USER app IDENTIFIED WITH caching_sha2_password BY \'secret4\''`, `/usr/bin/mysql -e 'ALTER USER app IDENTIFIED WITH caching_sha2_password BY \'[redacted]\''`},
+		{`/bin/sh -c 'mysql -pS3cret -e \'select 1\''`, `/bin/sh -c 'mysql -p[redacted] -e \'select 1\''`},
+		{`/bin/sh -c "redis-cli -a pw555 ping"`, `/bin/sh -c "redis-cli -a [redacted] ping"`},
+		{"/usr/bin/tool -p'two words' -p9x", "/usr/bin/tool -p[redacted] -p[redacted]"},
+		{"/usr/bin/kubectl create secret generic db --from-literal=password=pw2", "/usr/bin/kubectl create secret generic db --from-literal=password=[redacted]"},
+	}
+	for _, test := range tests {
+		if got := RedactCommand(test.before); got != test.after {
+			t.Errorf("RedactCommand(%q)\n got %q\nwant %q", test.before, got, test.after)
+		}
+	}
+}
+
+// TestRedactCommandKeepsHarmlessCommands checks that options that look secret by name but take no value or name
+// a file, and -p groups of flags, keep the command readable.
+func TestRedactCommandKeepsHarmlessCommands(t *testing.T) {
+	for _, command := range []string{
+		"/usr/bin/tar -pczf /backup/etc.tgz /etc",
+		"/usr/bin/find /var/www -perm 644 -print0",
+		"/usr/bin/systemctl --no-ask-password restart nginx",
+		"/usr/bin/ansible-playbook --ask-vault-pass site.yml",
+		"/usr/bin/apt-get install --allow-unauthenticated nginx",
+		"/usr/bin/docker login --password-stdin registry.example.com",
+		"/usr/bin/ssh -o PasswordAuthentication=no -o PubkeyAuthentication=yes host",
+		"/usr/bin/openssl req -newkey rsa:2048 -keyout /etc/ssl/a.key -out /etc/ssl/a.csr",
+		"/usr/bin/keytool -list -keystore /etc/app/keystore.jks",
+		"/usr/bin/keytool -genkeypair -alias app -keyalg RSA -keysize 2048",
+		"/usr/bin/openssl x509 -pubkey -noout -in /etc/ssl/a.crt",
+		"/usr/bin/git -c core.askPass=/usr/bin/true log --author=alice",
+		"/usr/bin/passwd alice",
+		"/usr/bin/kubectl get secrets -n prod",
+		"/usr/bin/ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519",
+		"/usr/bin/wget --passive-ftp ftp://mirror.example/a.iso",
+		"/usr/bin/mysql -u root --password= shop",
+		"alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/bin/vim /etc/nginx/nginx.conf",
+		"keycloak : TTY=pts/0 ; PWD=/opt/keycloak ; USER=root ; COMMAND=/usr/bin/id",
+	} {
+		if got := RedactCommand(command); got != command {
+			t.Errorf("RedactCommand(%q)\n got %q", command, got)
+		}
+	}
+}
+
+func TestRedactTextPwdKeys(t *testing.T) {
+	tests := map[string]string{
+		"production.ERROR: Login failed pwd=hunter16 passwd=hunter17":                                             "production.ERROR: Login failed pwd=[redacted] passwd=[redacted]",
+		`production.ERROR: Login failed {"pwd":"hunter18"}`:                                                       `production.ERROR: Login failed {"pwd":"[redacted]"}`,
+		"production.ERROR: Login failed ['pwd' => 'hunter19']":                                                    "production.ERROR: Login failed ['pwd' => '[redacted]']",
+		"production.ERROR: SQLSTATE[08001] connect failed: Uid=app;Pwd=S3cret;Server=db1":                         "production.ERROR: SQLSTATE[08001] connect failed: Uid=app;Pwd=[redacted];Server=db1",
+		"production.ERROR: odbc_connect(Driver={ODBC Driver 18};Server=db;UID=sa;PWD=S3cret;Encrypt=yes)":         "production.ERROR: odbc_connect(Driver={ODBC Driver 18};Server=db;UID=sa;PWD=[redacted];Encrypt=yes)",
+		"production.ERROR: SQLSTATE[HY000] [1045] Access denied for user 'app'@'localhost' (using password: YES)": "production.ERROR: SQLSTATE[HY000] [1045] Access denied for user 'app'@'localhost' (using password: YES)",
+		"production.ERROR: env PWD=/var/www/shop OLDPWD=/root":                                                    "production.ERROR: env PWD=/var/www/shop OLDPWD=/root",
+	}
+	for before, after := range tests {
+		if got := RedactText(before); got != after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", before, got, after)
+		}
+	}
+}
+
+// TestRedactTextEscapedJSON covers JSON inside a JSON string, as Laravel repeats an exception message in the
+// exception context of the same line, at one and two levels of escaping.
+func TestRedactTextEscapedJSON(t *testing.T) {
+	tests := map[string]string{
+		`production.ERROR: ... {"exception":"[object] (Exception(code: 0): bad {\"password\":\"hunter14\"}"}`:              `production.ERROR: ... {"exception":"[object] (Exception(code: 0): bad {\"password\":\"[redacted]\"}"}`,
+		`production.ERROR: Webhook failed {"payload":"{\"api_key\":\"k-777\",\"id\":7}"}`:                                  `production.ERROR: Webhook failed {"payload":"{\"api_key\":\"[redacted]\",\"id\":7}"}`,
+		`production.ERROR: Retry {"job":"{\"payload\":\"{\\\"token\\\":\\\"t-888\\\"}\"}"}`:                                `production.ERROR: Retry {"job":"{\"payload\":\"{\\\"token\\\":\\\"[redacted]\\\"}\"}"}`,
+		`production.ERROR: Login {"body":"{\"password\":\"a\\\"b c\",\"remember\":true}"}`:                                 `production.ERROR: Login {"body":"{\"password\":\"[redacted]\",\"remember\":true}"}`,
+		`production.ERROR: Login {"body":"{\"password\" : \"hunter15\"}"}`:                                                 `production.ERROR: Login {"body":"{\"password\" : \"[redacted]\"}"}`,
+		`production.ERROR: Login {"body":"password=hunter13\nnext"}`:                                                       `production.ERROR: Login {"body":"password=[redacted]\nnext"}`,
+		`production.ERROR: Request {"headers":"{\"Cookie\":\"a=1; laravel_session=s9\"}","authenticated":false}`:           `production.ERROR: Request {"headers":"{\"Cookie\":\"[redacted]\"}","authenticated":false}`,
+		`production.ERROR: Request {"exception":"[object] (Exception(code: 0): Invalid token \"t-999\" at /app/A.php:3)"}`: `production.ERROR: Request {"exception":"[object] (Exception(code: 0): Invalid token \"[redacted]\" at /app/A.php:3)"}`,
+	}
+	for before, after := range tests {
+		if got := RedactText(before); got != after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", before, got, after)
+		}
+	}
+
+	line := `[2026-10-31 19:00:03] production.ERROR: Client error: POST https://api.x/login resulted in 401 {"password":"hunter14"} {"exception":"[object] (GuzzleHttp\\Exception\\ClientException(code: 401): Client error {\"password\":\"hunter14\"} at /var/www/shop/vendor/a.php:113)"}`
+	e, ok := ParseMonolog(line, "/var/www/shop/storage/logs/laravel.log", testNow)
+	if !ok {
+		t.Fatal("not an app error")
+	}
+	if got := Redact(e); strings.Contains(got.Message, "hunter14") {
+		t.Fatalf("app error = %q", got.Message)
+	}
+}
+
+// secretShapes are the ways a secret is written in commands and text, with the secret Zq9 inside. Every
+// redaction entry point must remove it from every shape it can meet.
+var secretShapes = []string{
+	"API_TOKEN=Zq9", "ENV=AWS_SECRET_ACCESS_KEY=Zq9", "MYSQL_PWD=Zq9", "PGPASSWORD='Zq9 x'",
+	"--client-secret=Zq9", "--client-secret Zq9", "-storepass Zq9", "-storepass=Zq9", "--password='Zq9 x'",
+	"token: Zq9", "password=Zq9", "pwd=Zq9", `"api_key":"Zq9"`, `"Password" : "Zq9"`, "'password' => 'Zq9'",
+	"[secret] => Zq9", `{\"password\":\"Zq9\"}`, `{\\\"token\\\":\\\"Zq9\\\"}`, "Uid=a;Pwd=Zq9;",
+	"https://deploy:Zq9@git.example/a.git", "https://Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9Zq9@10.0.0.1/",
+	"https://a.example/cb?access_token=Zq9&page=2", "https://a.example/go?next=/reset?token=Zq9",
+	"https://a.example/go?next=%2Freset%3Ftoken%3DZq9", "https://a.example/go?next=%252Freset%253Ftoken%253DZq9",
+	"-H 'Authorization: Bearer Zq9'", "-H 'Cookie: theme=dark; sid=Zq9'", `--header "X-Api-Key: Zq9"`,
+	"Authorization: Bearer Zq9", "PASSWORD 'Zq9'", "IDENTIFIED BY 'Zq9'",
+}
+
+func TestRedactSecretShapes(t *testing.T) {
+	for _, shape := range secretShapes {
+		for name, redact := range map[string]func(string) string{"RedactCommand": RedactCommand, "RedactText": RedactText} {
+			for _, s := range []string{shape, "/usr/bin/tool --verbose " + shape + " --quiet", "x " + shape + ", y"} {
+				if got := redact(s); strings.Contains(got, "Zq9") {
+					t.Errorf("%s(%q) = %q", name, s, got)
+				}
+			}
+		}
+
+		sudo := "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/local/bin/tool " + shape
+		e, ok := ParseAuth("sudo", sudo, testNow)
+		if !ok {
+			t.Fatalf("not a sudo line: %q", sudo)
+		}
+		if got := Redact(e); strings.Contains(got.Message+fmt.Sprint(got.Fields), "Zq9") {
+			t.Errorf("sudo %q = %q %v", shape, got.Message, got.Fields)
+		}
+
+		entry, err := json.Marshal(map[string]string{"__CURSOR": "s=1", "__REALTIME_TIMESTAMP": "1793473434341336", "SYSLOG_IDENTIFIER": "sudo", "_EXE": "/usr/bin/sudo", "_UID": "1000", "MESSAGE": "   " + sudo})
+		if err != nil {
+			t.Fatal(err)
+		}
+		je, err := ParseJournalEntry(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e, ok := ParseAuth(je.Identifier, je.Message, je.At); !ok {
+			t.Errorf("journal entry not parsed: %q", sudo)
+		} else if got := Redact(e); strings.Contains(got.Message+fmt.Sprint(got.Fields), "Zq9") {
+			t.Errorf("journal sudo %q = %q", shape, got.Message)
+		}
+
+		monolog := "[2026-10-31 19:00:03] production.ERROR: Call failed " + shape + ` {"exception":"[object] (Exception(code: 0): ` + strings.ReplaceAll(shape, `"`, `\"`) + `)"}`
+		if e, ok := ParseMonolog(monolog, "/var/www/shop/storage/logs/laravel.log", testNow); !ok {
+			t.Errorf("not an app error: %q", monolog)
+		} else if got := Redact(e); strings.Contains(got.Message, "Zq9") {
+			t.Errorf("app error %q = %q", monolog, got.Message)
+		}
+	}
+}
+
+// FuzzRedactSecretShapes checks every secret shape after arbitrary text, in commands and in free text.
+func FuzzRedactSecretShapes(f *testing.F) {
+	for _, seed := range []string{"/usr/bin/tool --verbose", "production.ERROR: failed", `{"exception":"[object] (`, "alice : PWD=/x'y ; COMMAND=/bin/sh -c '", "-u", "--password", "PWD="} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, prefix string) {
+		if strings.Contains(prefix, "Zq9") {
+			t.Skip()
+		}
+		for _, shape := range secretShapes {
+			for name, redact := range map[string]func(string) string{"RedactCommand": RedactCommand, "RedactText": RedactText} {
+				if got := redact(prefix + " " + shape); strings.Contains(got, "Zq9") {
+					t.Fatalf("%s(%q) = %q", name, prefix+" "+shape, got)
+				}
+			}
+		}
+	})
 }

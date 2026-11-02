@@ -9,9 +9,12 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
@@ -22,6 +25,7 @@ import (
 const (
 	MaxBatchEvents       = 2000
 	MaxSkippedSources    = 100
+	MaxEventCount        = 1000000
 	EmptyBatchEvery      = 5 * time.Minute
 	DefaultFlushInterval = 30 * time.Second
 	// UnsupportedRecheckEvery is how long the shipper stays idle after the server answered POST /logs with 404
@@ -68,6 +72,16 @@ type LogShipper struct {
 	lastSent         time.Time
 	retryAt          time.Time
 	failures         int
+
+	// badSkipped are skipped sources the server rejected, left out of later requests so they cannot get every
+	// batch rejected, and droppedRejected is set when it rejected dropped_events.
+	badSkipped      map[logs.SkippedSource]bool
+	droppedRejected bool
+	// bare is the batch_id of a one event batch sent again, right after it was rejected, without skipped
+	// sources and dropped events, to find out whether the batch alone is rejected; bareOmitted are the skipped
+	// sources left out of it.
+	bare        string
+	bareOmitted []logs.SkippedSource
 }
 
 // NewLogShipper keeps its spool and positions under stateDir. When root runs the agent, the files it writes
@@ -281,6 +295,9 @@ func (s *LogShipper) spoolBatch(events []logs.Event) {
 	}
 }
 
+// upload sends the spooled batches in order. A batch the server rejects is never dropped whole on the word of
+// one response, since what made the request fail may be in the parts every request carries (skipped_sources)
+// or in its size: see rejected.
 func (s *LogShipper) upload(ctx context.Context) error {
 	for range uploadsPerTick {
 		if s.Now().Before(s.retryAt) {
@@ -294,31 +311,35 @@ func (s *LogShipper) upload(ctx context.Context) error {
 		if !ok {
 			return nil
 		}
-		dropped := s.Spool.Dropped()
-		resp, err := s.Client.PostLogs(ctx, api.LogBatchRequest{BatchID: b.ID, Events: b.Events, SkippedSources: s.skipped(), DroppedEvents: dropped})
+		events, expired := outgoingEvents(b.Events, s.Now())
+		if expired > 0 {
+			s.Logger.Warn("dropping spooled log events older than the server accepts", "batch_id", b.ID, "events", expired)
+			if !s.replace(name, b, events) {
+				return nil
+			}
+			if err := s.Spool.AddDropped(expired); err != nil {
+				s.Logger.Error("count dropped log events", "error", err)
+			}
+			continue
+		}
+		req := s.request(b, events)
+		resp, err := s.Client.PostLogs(ctx, req)
 		var httpErr *api.HTTPError
 		switch {
 		case errors.Is(err, api.ErrUnauthorized):
 			return ErrRevoked
 		case err == nil:
-			if resp.LogCollection != nil {
-				s.Configure(*resp.LogCollection)
-			}
-			if err := s.acknowledged(name, b, dropped); err != nil {
+			s.accepted(req, resp)
+			if err := s.acknowledged(name, b, req.DroppedEvents); err != nil {
 				s.retryLater("save log positions", b, err, nil)
 				return nil
 			}
 		case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound:
 			s.unsupported()
 			return nil
-		case errors.As(err, &httpErr) && rejected(httpErr.StatusCode):
-			s.Logger.Error("log batch rejected, dropping it", "batch_id", b.ID, "events", len(b.Events), "error", err)
-			if err := s.acknowledged(name, b, 0); err != nil {
-				s.retryLater("save log positions", b, err, nil)
-				return nil
-			}
-			if err := s.Spool.AddDropped(len(b.Events)); err != nil {
-				s.Logger.Error("count dropped log events", "error", err)
+		case errors.Is(err, api.ErrBodyTooLarge) || errors.As(err, &httpErr) && rejected(httpErr.StatusCode):
+			if next, err := s.rejected(ctx, name, b, req, err); !next || err != nil {
+				return err
 			}
 		case ctx.Err() != nil:
 			return nil
@@ -330,7 +351,217 @@ func (s *LogShipper) upload(ctx context.Context) error {
 	return nil
 }
 
+// request is what is sent for a batch: its events with the skipped sources and the dropped events count,
+// which go with every request, unless the batch is being sent bare (see rejected).
+func (s *LogShipper) request(b logs.Batch, events []logs.Event) api.LogBatchRequest {
+	req := api.LogBatchRequest{BatchID: b.ID, Events: events, SkippedSources: []logs.SkippedSource{}}
+	if b.ID == s.bare {
+		return req
+	}
+	req.SkippedSources = s.skipped()
+	if !s.droppedRejected {
+		req.DroppedEvents = s.Spool.Dropped()
+	}
+	return req
+}
+
+// accepted takes the configuration of a logs response. When the batch was accepted bare after it was rejected
+// with skipped sources, those sources were what the server rejected.
+func (s *LogShipper) accepted(req api.LogBatchRequest, resp api.LogBatchResponse) {
+	if resp.LogCollection != nil {
+		s.Configure(*resp.LogCollection)
+	}
+	if req.BatchID == s.bare {
+		for _, src := range s.bareOmitted {
+			s.leaveOut(src)
+		}
+		s.bare, s.bareOmitted = "", nil
+	}
+}
+
+// rejected handles a 400, 413 or 422 (or a body over the client's limit) and tells whether upload goes on. When
+// the server names the fields it rejected, only those go: an event, a skipped source, dropped_events. Otherwise
+// a batch is split in halves until one event is left, which is then sent bare, without skipped sources and
+// dropped events. It is dropped as poison only when the server rejects it alone while it accepts an empty
+// request, so a server or proxy that rejects every request never makes the agent drop events. Positions are
+// committed only for events the server accepted or that are dropped as poison, and those are counted in
+// dropped_events.
+func (s *LogShipper) rejected(ctx context.Context, name string, b logs.Batch, req api.LogBatchRequest, cause error) (bool, error) {
+	var httpErr *api.HTTPError
+	errors.As(cause, &httpErr)
+	if httpErr != nil {
+		if fixed, ok := s.fixRejectedFields(name, b, req, httpErr.Fields); ok {
+			return fixed, nil
+		}
+	}
+	switch {
+	case len(req.Events) > 1:
+		half := len(req.Events) / 2
+		s.Logger.Warn("log batch rejected, splitting it", "batch_id", b.ID, "events", len(req.Events), "error", cause)
+		first := logs.Batch{ID: logs.NewBatchID(), Events: req.Events[:half], Checkpoint: b.Checkpoint, Partial: true, CreatedAt: b.CreatedAt}
+		second := logs.Batch{ID: logs.NewBatchID(), Events: req.Events[half:], Checkpoint: b.Checkpoint, Partial: b.Partial, CreatedAt: b.CreatedAt}
+		if err := s.Spool.Replace(name, []logs.Batch{first, second}); err != nil {
+			s.retryLater("split log batch", b, err, nil)
+			return false, nil
+		}
+		return true, nil
+	case len(req.SkippedSources) > 0 || req.DroppedEvents > 0:
+		s.Logger.Warn("log batch rejected, sending it without skipped sources and dropped events", "batch_id", b.ID, "error", cause)
+		s.bare, s.bareOmitted = b.ID, req.SkippedSources
+		return true, nil
+	case len(req.Events) == 0:
+		s.retryLater("log request rejected", b, cause, httpErr)
+		return false, nil
+	}
+	resp, err := s.Client.PostLogs(ctx, api.LogBatchRequest{BatchID: logs.NewBatchID(), Events: []logs.Event{}, SkippedSources: []logs.SkippedSource{}})
+	var probeErr *api.HTTPError
+	switch {
+	case errors.Is(err, api.ErrUnauthorized):
+		return false, ErrRevoked
+	case errors.As(err, &probeErr) && probeErr.StatusCode == http.StatusNotFound:
+		s.unsupported()
+		return false, nil
+	case err != nil:
+		s.retryLater("log request rejected, and so is an empty one", b, cause, probeErr)
+		return false, nil
+	}
+	if resp.LogCollection != nil {
+		s.Configure(*resp.LogCollection)
+	}
+	s.Logger.Error("log event rejected on its own, dropping it", "batch_id", b.ID, "error", cause)
+	return s.drop(name, b, len(req.Events)), nil
+}
+
+// fixRejectedFields leaves out what a validation error names: events (events.3.first_at), skipped sources
+// (skipped_sources.0.path) or dropped_events, and gives the batch a new batch_id when that is what was named.
+// ok is false when the error names nothing it can fix.
+func (s *LogShipper) fixRejectedFields(name string, b logs.Batch, req api.LogBatchRequest, fields []string) (next, ok bool) {
+	badEvents := map[int]bool{}
+	var badSkipped []logs.SkippedSource
+	droppedRejected, badID := false, false
+	for _, field := range fields {
+		switch {
+		case field == "batch_id":
+			badID = true
+		case field == "dropped_events":
+			droppedRejected = true
+		case field == "skipped_sources":
+			badSkipped = append(badSkipped, req.SkippedSources...)
+		default:
+			if i, ok := fieldIndex(field, "events", len(req.Events)); ok {
+				badEvents[i] = true
+			} else if i, ok := fieldIndex(field, "skipped_sources", len(req.SkippedSources)); ok {
+				badSkipped = append(badSkipped, req.SkippedSources[i])
+			}
+		}
+	}
+	switch {
+	case len(badEvents) > 0:
+		var kept []logs.Event
+		for i, e := range req.Events {
+			if !badEvents[i] {
+				kept = append(kept, e)
+			}
+		}
+		s.Logger.Error("log events rejected by the server, dropping them", "batch_id", b.ID, "events", len(badEvents), "fields", fields)
+		if !s.replace(name, b, kept) {
+			return false, true
+		}
+		if err := s.Spool.AddDropped(len(badEvents)); err != nil {
+			s.Logger.Error("count dropped log events", "error", err)
+		}
+		return true, true
+	case len(badSkipped) > 0 || droppedRejected:
+		s.Logger.Warn("log request rejected, leaving out what the server named", "batch_id", b.ID, "fields", fields)
+		for _, src := range badSkipped {
+			s.leaveOut(src)
+		}
+		s.droppedRejected = s.droppedRejected || droppedRejected
+		return true, true
+	case badID:
+		b.ID = logs.NewBatchID()
+		return s.replace(name, b, req.Events), true
+	}
+	return false, false
+}
+
+// fieldIndex reads the index of a row field such as events.3.first_at, when it is one of n rows.
+func fieldIndex(field, list string, n int) (int, bool) {
+	rest, ok := strings.CutPrefix(field, list+".")
+	if !ok {
+		return 0, false
+	}
+	index, _, _ := strings.Cut(rest, ".")
+	i, err := strconv.Atoi(index)
+	return i, err == nil && i >= 0 && i < n
+}
+
+func (s *LogShipper) leaveOut(src logs.SkippedSource) {
+	if s.badSkipped == nil {
+		s.badSkipped = map[logs.SkippedSource]bool{}
+	}
+	s.badSkipped[src] = true
+}
+
+// replace puts the batch back in the spool with other events, keeping its batch_id and checkpoint.
+func (s *LogShipper) replace(name string, b logs.Batch, events []logs.Event) bool {
+	if events == nil {
+		events = []logs.Event{}
+	}
+	b.Events = events
+	if err := s.Spool.Replace(name, []logs.Batch{b}); err != nil {
+		s.retryLater("rewrite log batch", b, err, nil)
+		return false
+	}
+	return true
+}
+
+// drop removes a batch of poison events from the spool, commits its positions and counts the events in
+// dropped_events.
+func (s *LogShipper) drop(name string, b logs.Batch, events int) bool {
+	if err := s.acknowledged(name, b, 0); err != nil {
+		s.retryLater("save log positions", b, err, nil)
+		return false
+	}
+	if err := s.Spool.AddDropped(events); err != nil {
+		s.Logger.Error("count dropped log events", "error", err)
+	}
+	return true
+}
+
+// outgoingEvents brings the events of a spooled batch within what the server accepts (see LogBatchValidator):
+// count from 1 to MaxEventCount, first_at not after last_at, nothing in the future, src_ip a plain IP address.
+// Events older than the server keeps, which waited too long in the spool, are left out and counted.
+func outgoingEvents(events []logs.Event, now time.Time) ([]logs.Event, int) {
+	now = now.UTC()
+	earliest := now.Add(-maxEventAge)
+	out := make([]logs.Event, 0, len(events))
+	for _, e := range events {
+		if e.LastAt.Before(earliest) {
+			continue
+		}
+		if e.LastAt.After(now) {
+			e.LastAt = now
+		}
+		if e.FirstAt.Before(earliest) {
+			e.FirstAt = earliest
+		}
+		if e.FirstAt.After(e.LastAt) {
+			e.FirstAt = e.LastAt
+		}
+		e.Count = min(max(e.Count, 1), MaxEventCount)
+		if ip, err := netip.ParseAddr(e.SrcIP); e.SrcIP != "" && (err != nil || ip.Zone() != "") {
+			e.SrcIP = ""
+		}
+		out = append(out, e)
+	}
+	return out, len(events) - len(out)
+}
+
+// retryLater backs off. A batch being sent bare is sent whole again after it, so that a bare request accepted
+// once a broken server recovers does not blame the skipped sources.
 func (s *LogShipper) retryLater(msg string, b logs.Batch, err error, httpErr *api.HTTPError) {
+	s.bare, s.bareOmitted = "", nil
 	s.failures++
 	wait := uploadBackoff(s.failures)
 	if httpErr != nil {
@@ -360,10 +591,13 @@ func (s *LogShipper) unsupported() {
 // acknowledged commits the positions of a batch the server accepted, then removes it from the spool. In that
 // order a stop in between leaves the batch spooled with its positions committed: it is sent again under the same
 // batch_id, which the server recognises as its last batch and ignores, and collection resumes from the same
-// positions. When the positions cannot be saved the batch stays in the spool and is sent again later.
+// positions. When the positions cannot be saved the batch stays in the spool and is sent again later. A partial
+// batch commits nothing: its checkpoint also covers the parts after it.
 func (s *LogShipper) acknowledged(name string, b logs.Batch, reportedDropped int) error {
-	if err := s.commit(b.Checkpoint); err != nil {
-		return err
+	if !b.Partial {
+		if err := s.commit(b.Checkpoint); err != nil {
+			return err
+		}
 	}
 	if err := s.Spool.AddDropped(-reportedDropped); err != nil {
 		s.Logger.Error("count dropped log events", "error", err)
@@ -376,7 +610,7 @@ func (s *LogShipper) acknowledged(name string, b logs.Batch, reportedDropped int
 	return nil
 }
 
-// rejected is a response that retrying the same batch cannot fix.
+// rejected is a response that sending the same request again cannot fix.
 func rejected(status int) bool {
 	return status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge || status == http.StatusUnprocessableEntity
 }
@@ -386,13 +620,16 @@ func uploadBackoff(failures int) time.Duration {
 	return ceiling/2 + time.Duration(rand.Int64N(int64(ceiling/2)+1))
 }
 
+// skipped are the sources the collector cannot read, as the server accepts them and without those it rejected.
 func (s *LogShipper) skipped() []logs.SkippedSource {
 	out := []logs.SkippedSource{}
-	if s.collector != nil {
-		out = append(out, s.collector.Skipped()...)
+	if s.collector == nil {
+		return out
 	}
-	if len(out) > MaxSkippedSources {
-		out = out[:MaxSkippedSources]
+	for _, src := range s.collector.Skipped() {
+		if src, ok := src.Sendable(); ok && !s.badSkipped[src] && len(out) < MaxSkippedSources {
+			out = append(out, src)
+		}
 	}
 	return out
 }

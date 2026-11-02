@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
@@ -91,7 +92,7 @@ func TestPlanAuthReportsWhatItCannotRead(t *testing.T) {
 	h.write("/var/log/journal/abc/system.journal", "")
 	os.Chmod(filepath.Join(h.root, "/var/log/journal/abc/system.journal"), 0)
 	p = PlanSources([]string{SourceAuth}, h.options(true))
-	if !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "journal", ReasonPermissionDenied}}) {
+	if !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "/var/log/journal", ReasonPermissionDenied}}) {
 		t.Fatalf("unreadable journal = %+v", p)
 	}
 }
@@ -105,7 +106,7 @@ func TestPlanAuthNeverFallsBackToFilesWhenTheJournalExists(t *testing.T) {
 	h.write("/var/log/journal/abc/system.journal", "")
 	os.Chmod(filepath.Join(h.root, "/var/log/journal/abc/system.journal"), 0)
 	p := PlanSources([]string{SourceAuth}, h.options(true))
-	if p.Journal || len(p.Files) != 0 || !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "journal", ReasonPermissionDenied}}) {
+	if p.Journal || len(p.Files) != 0 || !slices.Equal(p.Skipped, []SkippedSource{{SourceAuth, "/var/log/journal", ReasonPermissionDenied}}) {
 		t.Fatalf("plan = %+v, want the unreadable journal reported and auth.log left alone", p)
 	}
 }
@@ -534,5 +535,30 @@ func TestCollectorForgetsSavedPositionOfAFileMissingAtStartup(t *testing.T) {
 	clock.now = clock.now.Add(replanEvery)
 	if events := c.Poll(context.Background()); len(events) != 1 || events[0].Fields["path"] != "/.env" {
 		t.Fatalf("events = %+v, want the first line of the file created with the old inode number", events)
+	}
+}
+
+func TestSkippedSourcesAreSentAsTheServerAcceptsThem(t *testing.T) {
+	long := "/var/www/" + strings.Repeat("a", 2000) + ".log"
+	tests := []struct {
+		in   SkippedSource
+		want SkippedSource
+		ok   bool
+	}{
+		{SkippedSource{SourceAuth, "/var/log/journal", ReasonPermissionDenied}, SkippedSource{SourceAuth, "/var/log/journal", ReasonPermissionDenied}, true},
+		{SkippedSource{SourceApp, long, ReasonPermissionDenied}, SkippedSource{SourceApp, long[:MaxSkippedPathLength], ReasonPermissionDenied}, true},
+		{SkippedSource{SourceApp, "/var/www/a\nb\r\x00.log", ReasonPermissionDenied}, SkippedSource{SourceApp, "/var/www/a\uFFFDb\uFFFD\uFFFD.log", ReasonPermissionDenied}, true},
+		{SkippedSource{SourceApp, "/var/www/caf\xe9.log", ReasonNotFound}, SkippedSource{SourceApp, "/var/www/caf\uFFFD.log", ReasonNotFound}, true},
+		{SkippedSource{SourceAuth, "journal", ReasonPermissionDenied}, SkippedSource{}, false},
+		{SkippedSource{SourceApp, "", ReasonNotFound}, SkippedSource{}, false},
+	}
+	for _, test := range tests {
+		got, ok := test.in.Sendable()
+		if ok != test.ok || ok && got != test.want {
+			t.Errorf("Sendable(%q) = %q, %v", test.in.Path, got.Path, ok)
+		}
+		if ok && (len(got.Path) > MaxSkippedPathLength || strings.ContainsAny(got.Path, "\x00\r\n") || !utf8.ValidString(got.Path)) {
+			t.Errorf("Sendable(%q) = %q is not accepted by the server", test.in.Path, got.Path)
+		}
 	}
 }

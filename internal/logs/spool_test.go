@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -101,5 +102,87 @@ func TestNewBatchIDIsUUIDv4(t *testing.T) {
 			t.Fatalf("batch id %q", id)
 		}
 		seen[id] = true
+	}
+}
+
+func TestSpoolReplaceKeepsTheOrder(t *testing.T) {
+	s := Spool{Dir: filepath.Join(t.TempDir(), "spool")}
+	first, second := batchOf(4, "c1"), batchOf(1, "c2")
+	for _, b := range []Batch{first, second} {
+		if err := s.Append(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, name, _, _ := s.Oldest()
+	left, right := batchOf(2, "c1"), batchOf(2, "c1")
+	left.Partial = true
+	if err := s.Replace(name, []Batch{left, right}); err != nil {
+		t.Fatal(err)
+	}
+	// A part replaced in turn gets its parts in its own place, before the next part.
+	_, leftName, _, _ := s.Oldest()
+	if err := s.Replace(leftName, []Batch{batchOf(1, "c1"), batchOf(1, "c1")}); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for {
+		b, name, ok, err := s.Oldest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+		got = append(got, fmt.Sprintf("%s:%d:%v", name, len(b.Events), b.Partial))
+		if err := s.Remove(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{
+		"00000000000000000001.0.0-1.json.gz:1:false",
+		"00000000000000000001.0.1-1.json.gz:1:false",
+		"00000000000000000001.1-2.json.gz:2:false",
+		"00000000000000000002-1.json.gz:1:false",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v\nwant %v", got, want)
+	}
+
+	if err := s.Append(batchOf(0, "c3")); err != nil {
+		t.Fatal(err)
+	}
+	if _, name, _, _ := s.Oldest(); name != "00000000000000000001-0.json.gz" {
+		t.Fatalf("name after the spool emptied = %s", name)
+	}
+}
+
+// TestSpoolReplaceSurvivesAStop leaves the replaced batch next to its parts, as a stop between writing the parts
+// and removing it would: the batch is still the oldest, so it is sent and replaced again first.
+func TestSpoolReplaceSurvivesAStop(t *testing.T) {
+	s := Spool{Dir: filepath.Join(t.TempDir(), "spool")}
+	if err := s.Append(batchOf(2, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	original, name, _, _ := s.Oldest()
+	data, err := os.ReadFile(filepath.Join(s.Dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := []Batch{batchOf(1, "c1"), batchOf(1, "c1")}
+	if err := s.Replace(name, parts); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, name), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, again, _, _ := s.Oldest(); again != name || b.ID != original.ID {
+		t.Fatalf("oldest = %s, want the replaced batch %s first", again, name)
+	}
+	if err := s.Replace(name, parts); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(s.Dir)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("spool = %v, %v, want the two parts only", entries, err)
 	}
 }

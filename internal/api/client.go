@@ -10,11 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,7 @@ const (
 
 	maxResponseBytes = 1 << 20
 	maxErrorBody     = 512
+	maxErrorFields   = 100
 	maxRetryAfter    = 15 * time.Minute
 )
 
@@ -46,6 +49,9 @@ type HTTPError struct {
 	// RetryAfter is how long the server asked the agent to wait (the Retry-After header, in seconds or as an
 	// HTTP date, as sent with 429 and 503), at most 15 minutes. Zero when the server did not say.
 	RetryAfter time.Duration
+	// Fields are the request fields a validation error names (the keys of the errors object of a Laravel 422,
+	// such as events.3.first_at), sorted. Only the names are kept, never what was sent in them.
+	Fields []string
 }
 
 func (e *HTTPError) Error() string {
@@ -221,7 +227,7 @@ func (c *Client) attempt(ctx context.Context, method, path string, body []byte, 
 		return 0, false, fmt.Errorf("%s %s: %w", method, path, ErrUnauthorized)
 	}
 
-	httpErr := &HTTPError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: errorBody(data), RetryAfter: retryAfter(resp.Header.Get("Retry-After"), time.Now())}
+	httpErr := &HTTPError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: errorBody(data), RetryAfter: retryAfter(resp.Header.Get("Retry-After"), time.Now()), Fields: errorFields(data)}
 	retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable ||
 		(idempotent && resp.StatusCode >= 500)
 	if !retryable {
@@ -264,6 +270,17 @@ func errorBody(data []byte) string {
 		s = s[:maxErrorBody]
 	}
 	return s
+}
+
+func errorFields(data []byte) []string {
+	var decoded struct {
+		Errors map[string]json.RawMessage `json:"errors"`
+	}
+	if json.Unmarshal(data, &decoded) != nil || len(decoded.Errors) == 0 {
+		return nil
+	}
+	fields := slices.Sorted(maps.Keys(decoded.Errors))
+	return fields[:min(len(fields), maxErrorFields)]
 }
 
 // backoff is exponential with full jitter: a random delay up to base * 2^(attempt-1), capped at maxDelay.

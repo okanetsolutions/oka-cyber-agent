@@ -2,7 +2,6 @@ package logs
 
 import (
 	"bytes"
-	"cmp"
 	"compress/gzip"
 	"crypto/rand"
 	"encoding/hex"
@@ -32,17 +31,21 @@ const (
 )
 
 // Batch is one upload: at most MaxBatchEvents events with the batch_id the server deduplicates retries by,
-// and the checkpoint to save once the server acknowledged it.
+// and the checkpoint to save once the server acknowledged it. A batch split in parts (see Spool.Replace) keeps
+// its checkpoint on every part, but only the last one may commit it: the others are Partial, since the
+// checkpoint also covers the events of the parts after them.
 type Batch struct {
 	ID         string     `json:"batch_id"`
 	Events     []Event    `json:"events"`
 	Checkpoint Checkpoint `json:"checkpoint"`
+	Partial    bool       `json:"partial,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
 // Spool keeps batches on disk until the server acknowledges them, so nothing is lost when the server is
-// unreachable or the agent restarts. Each batch is one gzip file named "<sequence>-<events>.json.gz". When
-// the spool grows over MaxBytes the oldest batches are dropped and their events counted in Dropped.
+// unreachable or the agent restarts. Each batch is one gzip file named "<sequence>-<events>.json.gz", where the
+// parts that replace a batch add ".<part>" to its sequence. When the spool grows over MaxBytes the oldest
+// batches are dropped and their events counted in Dropped.
 //
 // Dir is a directory inside the agent's state directory, which the service user can write to. Every file is
 // reached through an os.Root on the state directory, so a symlink planted there never leads outside it, and a
@@ -67,9 +70,37 @@ func (s Spool) Append(b Batch) error {
 	}
 	sequence := int64(1)
 	if len(entries) > 0 {
-		sequence = entries[len(entries)-1].sequence + 1
+		sequence = entries[len(entries)-1].sequence[0] + 1
 	}
-	name := fmt.Sprintf("%020d-%d.json.gz", sequence, len(b.Events))
+	if err := s.writeBatch(dir, fmt.Sprintf("%020d", sequence), b); err != nil {
+		return err
+	}
+	return s.enforceLimit(dir)
+}
+
+// Replace puts parts in place of the batch Oldest returned under name, in the same order: a batch split in
+// smaller ones, or one without an event the server rejected. The parts are written before the batch is
+// removed, and their names sort after it, so a stop in between sends the batch again first, which replaces it
+// with the same parts again.
+func (s Spool) Replace(name string, parts []Batch) error {
+	dir, err := s.open(true)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	sequence, _, ok := strings.Cut(name, "-")
+	if !ok {
+		return fmt.Errorf("log spool: not a batch name: %q", name)
+	}
+	for i, part := range parts {
+		if err := s.writeBatch(dir, fmt.Sprintf("%s.%d", sequence, i), part); err != nil {
+			return err
+		}
+	}
+	return removeEntry(dir, name)
+}
+
+func (s Spool) writeBatch(dir *os.Root, sequence string, b Batch) error {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	if err := json.NewEncoder(zw).Encode(b); err != nil {
@@ -78,10 +109,7 @@ func (s Spool) Append(b Batch) error {
 	if err := zw.Close(); err != nil {
 		return err
 	}
-	if err := s.writeAtomic(dir, name, buf.Bytes()); err != nil {
-		return err
-	}
-	return s.enforceLimit(dir)
+	return s.writeAtomic(dir, fmt.Sprintf("%s-%d.json.gz", sequence, len(b.Events)), buf.Bytes())
 }
 
 // Oldest returns the next batch to send and its name for Remove. A batch that cannot be read is dropped and
@@ -231,8 +259,9 @@ func (s Spool) makeDir(parent *os.Root, name string) error {
 }
 
 type spoolEntry struct {
-	name     string
-	sequence int64
+	name string
+	// sequence orders the batches: a part of a replaced batch comes after it and before the next batch.
+	sequence []int64
 	events   int
 	size     int64
 }
@@ -254,7 +283,7 @@ func spoolEntries(dir *os.Root) ([]spoolEntry, error) {
 			continue
 		}
 		sequenceText, eventsText, ok := strings.Cut(base, "-")
-		sequence, err1 := strconv.ParseInt(sequenceText, 10, 64)
+		sequence, err1 := parseSequence(sequenceText)
 		events, err2 := strconv.Atoi(eventsText)
 		info, err3 := d.Info()
 		if !ok || err1 != nil || err2 != nil || err3 != nil {
@@ -262,8 +291,20 @@ func spoolEntries(dir *os.Root) ([]spoolEntry, error) {
 		}
 		entries = append(entries, spoolEntry{d.Name(), sequence, events, info.Size()})
 	}
-	slices.SortFunc(entries, func(a, b spoolEntry) int { return cmp.Compare(a.sequence, b.sequence) })
+	slices.SortFunc(entries, func(a, b spoolEntry) int { return slices.Compare(a.sequence, b.sequence) })
 	return entries, nil
+}
+
+func parseSequence(text string) ([]int64, error) {
+	var sequence []int64
+	for part := range strings.SplitSeq(text, ".") {
+		n, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("log spool: bad sequence %q", text)
+		}
+		sequence = append(sequence, n)
+	}
+	return sequence, nil
 }
 
 func (s Spool) enforceLimit(dir *os.Root) error {

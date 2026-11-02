@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/collect"
@@ -20,8 +22,13 @@ import (
 
 type fakeLogClient struct {
 	batches  []api.LogBatchRequest
+	accepted []api.LogBatchRequest
 	failWith []error
+	// validate, when set, answers each request that failWith does not, like the server's validation.
+	validate func(api.LogBatchRequest) error
 	reply    *api.LogCollection
+	// onAccept runs after a request is accepted, before the shipper acknowledges it.
+	onAccept func(api.LogBatchRequest)
 }
 
 func (f *fakeLogClient) PostLogs(_ context.Context, b api.LogBatchRequest) (api.LogBatchResponse, error) {
@@ -32,8 +39,40 @@ func (f *fakeLogClient) PostLogs(_ context.Context, b api.LogBatchRequest) (api.
 		if err != nil {
 			return api.LogBatchResponse{}, err
 		}
+	} else if f.validate != nil {
+		if err := f.validate(b); err != nil {
+			return api.LogBatchResponse{}, err
+		}
+	}
+	f.accepted = append(f.accepted, b)
+	if f.onAccept != nil {
+		f.onAccept(b)
 	}
 	return api.LogBatchResponse{Accepted: len(b.Events), LogCollection: f.reply}, nil
+}
+
+// validateLikeTheServer applies the rules of LogBatchValidator that these tests need, in its order, and names
+// the first rejected field like a Laravel 422: an event rejectEvent refuses, then a skipped source whose path
+// is not absolute, is longer than 1024 characters or holds NUL, CR or LF, or that rejectSkipped refuses.
+func validateLikeTheServer(rejectEvent func(logs.Event) bool, rejectSkipped func(logs.SkippedSource) bool) func(api.LogBatchRequest) error {
+	return func(b api.LogBatchRequest) error {
+		for i, e := range b.Events {
+			if rejectEvent != nil && rejectEvent(e) {
+				return &api.HTTPError{StatusCode: http.StatusUnprocessableEntity, Fields: []string{fmt.Sprintf("events.%d.message", i)}}
+			}
+		}
+		for i, src := range b.SkippedSources {
+			if !strings.HasPrefix(src.Path, "/") || utf8.RuneCountInString(src.Path) > 1024 || strings.ContainsAny(src.Path, "\x00\r\n") || rejectSkipped != nil && rejectSkipped(src) {
+				return &api.HTTPError{StatusCode: http.StatusUnprocessableEntity, Fields: []string{fmt.Sprintf("skipped_sources.%d.path", i)}}
+			}
+		}
+		return nil
+	}
+}
+
+func commandOf(e logs.Event) string {
+	command, _ := e.Fields["command"].(string)
+	return command
 }
 
 type shipperHost struct {
@@ -169,26 +208,250 @@ func TestShipperRetriesTheSameBatchAndStopsOn401(t *testing.T) {
 	}
 }
 
-func TestShipperDropsRejectedBatchesAndReportsThem(t *testing.T) {
+// TestShipperDropsOnlyTheEventTheServerRejects checks that a 422 naming one event drops that event alone: the
+// others of its batch are sent, and the dropped event is reported with the one too old to send.
+func TestShipperDropsOnlyTheEventTheServerRejects(t *testing.T) {
 	h := newShipperHost(t)
-	h.client.failWith = []error{&api.HTTPError{StatusCode: http.StatusUnprocessableEntity}}
+	h.client.validate = validateLikeTheServer(func(e logs.Event) bool { return commandOf(e) == "/usr/bin/poison" }, nil)
 	s := h.shipper()
 	s.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5})
 	h.step(s)
-	h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/id"))
+	for _, command := range []string{"/usr/bin/a", "/usr/bin/poison", "/usr/bin/b"} {
+		h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND="+command))
+	}
 	h.appendLog(syslogAt(h.clock.now.Add(-8*24*time.Hour), "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/old"))
+	h.advance(6 * time.Second)
+	h.step(s)
+	if got := storedCommands(h.client.accepted, 0); strings.Join(got, ",") != "/usr/bin/a,/usr/bin/b" {
+		t.Fatalf("stored = %v, want the events around the rejected one", got)
+	}
+	if len(h.client.batches) != 2 || h.client.accepted[0].DroppedEvents != 2 {
+		t.Fatalf("requests = %d, dropped_events = %d, want the rejected event reported with the 8 day old one", len(h.client.batches), h.client.accepted[0].DroppedEvents)
+	}
+	if !s.Spool.Empty() || h.committedOffset() == 0 || s.Spool.Dropped() != 0 {
+		t.Fatal("the batch must be acknowledged, its positions committed and its dropped events reported")
+	}
+}
+
+// TestShipperFindsAPoisonEventTheServerDoesNotName checks a rejection that names nothing (a proxy answering 400
+// to one request body): the batch is split until the event is alone, sent without the skipped sources, and
+// dropped only once an empty request is accepted. The skipped sources, which were not the cause, are still sent.
+func TestShipperFindsAPoisonEventTheServerDoesNotName(t *testing.T) {
+	h := newShipperHost(t)
+	h.client.validate = func(b api.LogBatchRequest) error {
+		for _, e := range b.Events {
+			if commandOf(e) == "/usr/bin/poison" {
+				return &api.HTTPError{StatusCode: http.StatusBadRequest}
+			}
+		}
+		return nil
+	}
+	s := h.shipper()
+	s.Configure(api.LogCollection{Sources: []string{"auth", "web"}, FlushIntervalSeconds: 5})
+	h.step(s)
+	for _, command := range []string{"/usr/bin/a", "/usr/bin/b", "/usr/bin/poison", "/usr/bin/c", "/usr/bin/d"} {
+		h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND="+command))
+	}
 	h.advance(6 * time.Second)
 	h.step(s)
 	h.advance(EmptyBatchEvery)
 	h.step(s)
-	if len(h.client.batches) != 2 {
-		t.Fatalf("batches = %d", len(h.client.batches))
+	if got := storedCommands(h.client.accepted, 0); strings.Join(got, ",") != "/usr/bin/a,/usr/bin/b,/usr/bin/c,/usr/bin/d" {
+		t.Fatalf("stored = %v, want every event but the rejected one, in order", got)
 	}
-	if got := h.client.batches[1]; len(got.Events) != 0 || got.DroppedEvents != 2 {
-		t.Fatalf("next batch = %+v, want an empty batch reporting the rejected event and the 8 day old one", got)
+	reported := 0
+	for _, b := range h.client.accepted {
+		reported += b.DroppedEvents
 	}
-	if s.Spool.Dropped() != 0 {
-		t.Fatalf("dropped = %d after reporting", s.Spool.Dropped())
+	last := h.client.batches[len(h.client.batches)-1]
+	if reported != 1 || s.Spool.Dropped() != 0 || len(last.SkippedSources) != 1 || last.SkippedSources[0].Path != "/var/log/nginx" {
+		t.Fatalf("reported %d dropped, last request = %+v, want the dropped event reported and the skipped web logs still sent", reported, last)
+	}
+	if !s.Spool.Empty() || h.committedOffset() == 0 {
+		t.Fatal("everything must be acknowledged in the end")
+	}
+}
+
+// TestShipperKeepsEventsWhenTheServerRejectsEveryRequest checks that a server or proxy that rejects every
+// request, an empty one too, never makes the agent drop events or commit their positions.
+func TestShipperKeepsEventsWhenTheServerRejectsEveryRequest(t *testing.T) {
+	h := newShipperHost(t)
+	broken := true
+	h.client.validate = func(api.LogBatchRequest) error {
+		if broken {
+			return &api.HTTPError{StatusCode: http.StatusBadRequest}
+		}
+		return nil
+	}
+	s := h.shipper()
+	s.Configure(api.LogCollection{Sources: []string{"auth", "web"}, FlushIntervalSeconds: 5})
+	h.step(s)
+	for _, command := range []string{"/usr/bin/a", "/usr/bin/b", "/usr/bin/c"} {
+		h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND="+command))
+	}
+	for range 10 {
+		h.advance(maxUploadBackoff)
+		h.step(s)
+	}
+	if len(h.client.accepted) != 0 || s.Spool.Dropped() != 0 || h.committedOffset() != 0 || s.Spool.Empty() {
+		t.Fatalf("accepted %d, dropped %d, committed %d: nothing may be dropped or committed", len(h.client.accepted), s.Spool.Dropped(), h.committedOffset())
+	}
+	broken = false
+	for range 3 {
+		h.advance(maxUploadBackoff)
+		h.step(s)
+	}
+	if got := storedCommands(h.client.accepted, 0); strings.Join(got, ",") != "/usr/bin/a,/usr/bin/b,/usr/bin/c" {
+		t.Fatalf("stored = %v once the server accepts again", got)
+	}
+	if len(h.client.accepted[0].SkippedSources) != 1 {
+		t.Fatalf("skipped sources = %+v, the rejections did not name them", h.client.accepted[0].SkippedSources)
+	}
+}
+
+// TestShipperFindsASkippedSourceTheServerDoesNotName checks a rejection that names nothing but comes from the
+// skipped sources every request carries: the one event left is accepted bare, so the skipped sources are left
+// out from then on, and no event is dropped.
+func TestShipperFindsASkippedSourceTheServerDoesNotName(t *testing.T) {
+	h := newShipperHost(t)
+	h.client.validate = func(b api.LogBatchRequest) error {
+		if len(b.SkippedSources) > 0 {
+			return &api.HTTPError{StatusCode: http.StatusBadRequest}
+		}
+		return nil
+	}
+	s := h.shipper()
+	s.Configure(api.LogCollection{Sources: []string{"auth", "web"}, FlushIntervalSeconds: 5})
+	h.step(s)
+	for _, command := range []string{"/usr/bin/a", "/usr/bin/b", "/usr/bin/c"} {
+		h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND="+command))
+	}
+	h.advance(6 * time.Second)
+	h.step(s)
+	if got := storedCommands(h.client.accepted, 0); strings.Join(got, ",") != "/usr/bin/a,/usr/bin/b,/usr/bin/c" || s.Spool.Dropped() != 0 {
+		t.Fatalf("stored = %v, dropped %d", got, s.Spool.Dropped())
+	}
+	if !s.Spool.Empty() || h.committedOffset() == 0 {
+		t.Fatal("everything must be acknowledged")
+	}
+	sent := len(h.client.batches)
+	h.advance(EmptyBatchEvery)
+	h.step(s)
+	if len(h.client.batches) != sent+1 || len(h.client.accepted[len(h.client.accepted)-1].SkippedSources) != 0 {
+		t.Fatal("the skipped sources must stay out of later requests")
+	}
+}
+
+// TestShipperSplitsABatchTheServerFindsTooLarge checks that a 413 (a proxy body limit) splits the batch until
+// each part goes through, and that positions are committed only once every event of the batch was accepted.
+func TestShipperSplitsABatchTheServerFindsTooLarge(t *testing.T) {
+	h := newShipperHost(t)
+	h.client.validate = func(b api.LogBatchRequest) error {
+		if len(b.Events) > 1 {
+			return &api.HTTPError{StatusCode: http.StatusRequestEntityTooLarge}
+		}
+		return nil
+	}
+	var committedAt []int64
+	h.client.onAccept = func(api.LogBatchRequest) { committedAt = append(committedAt, h.committedOffset()) }
+	s := h.shipper()
+	s.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5})
+	h.step(s)
+	for _, command := range []string{"/usr/bin/a", "/usr/bin/b", "/usr/bin/c", "/usr/bin/d", "/usr/bin/e"} {
+		h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND="+command))
+	}
+	h.advance(6 * time.Second)
+	h.step(s)
+	if got := storedCommands(h.client.accepted, 0); strings.Join(got, ",") != "/usr/bin/a,/usr/bin/b,/usr/bin/c,/usr/bin/d,/usr/bin/e" {
+		t.Fatalf("stored = %v", got)
+	}
+	ids := map[string]bool{}
+	for _, b := range h.client.accepted {
+		ids[b.BatchID] = true
+	}
+	if len(ids) != 5 || s.Spool.Dropped() != 0 || !s.Spool.Empty() {
+		t.Fatalf("batch ids %d, dropped %d: each part needs its own batch_id and nothing may be dropped", len(ids), s.Spool.Dropped())
+	}
+	for i, offset := range committedAt {
+		if offset != 0 {
+			t.Fatalf("positions committed after part %d of 5, before the rest of the batch was accepted", i+1)
+		}
+	}
+	if h.committedOffset() == 0 {
+		t.Fatal("the last part must commit the positions")
+	}
+}
+
+// TestShipperSendsSkippedSourcesTheServerAccepts checks the case of a log_paths entry the server would reject
+// as a skipped path (over 1024 characters, a line feed in it): it is cut and cleaned before it is sent, so it
+// never gets the batches rejected. A skipped source the server still rejects for a reason of its own is left
+// out of the requests, and no event is lost.
+func TestShipperSendsSkippedSourcesTheServerAccepts(t *testing.T) {
+	long := "/var/www/" + strings.Repeat("a", 1500) + ".log"
+	for name, rejectApp := range map[string]bool{"cleaned": false, "rejected anyway": true} {
+		t.Run(name, func(t *testing.T) {
+			h := newShipperHost(t)
+			var rejectSkipped func(logs.SkippedSource) bool
+			if rejectApp {
+				rejectSkipped = func(src logs.SkippedSource) bool { return src.Source == logs.SourceApp }
+			}
+			h.client.validate = validateLikeTheServer(nil, rejectSkipped)
+			s, err := NewLogShipper(h.client, h.stateDir, logs.Options{Root: h.root, AppPaths: []string{long, "/var/www/a\nb.log"}, HasJournalctl: func() bool { return false }}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.Now = h.clock.Now
+			s.Configure(api.LogCollection{Sources: []string{"auth", "app"}, FlushIntervalSeconds: 5})
+			h.step(s)
+			h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/a"))
+			h.advance(6 * time.Second)
+			h.step(s)
+			if got := storedCommands(h.client.accepted, 0); strings.Join(got, ",") != "/usr/bin/a" || s.Spool.Dropped() != 0 {
+				t.Fatalf("stored = %v, dropped %d", got, s.Spool.Dropped())
+			}
+			sent := h.client.accepted[0].SkippedSources
+			if rejectApp {
+				// The server names the first rejected source only, so each takes one request.
+				if len(h.client.batches) != 3 || len(sent) != 0 {
+					t.Fatalf("requests %d, skipped sources %+v, want a retry without each rejected source", len(h.client.batches), sent)
+				}
+				h.advance(EmptyBatchEvery)
+				h.step(s)
+				if last := h.client.batches[len(h.client.batches)-1]; len(h.client.batches) != 4 || len(last.SkippedSources) != 0 {
+					t.Fatalf("requests %d, the rejected sources must stay out", len(h.client.batches))
+				}
+				return
+			}
+			if len(h.client.batches) != 1 || len(sent) != 2 || len(sent[0].Path) != 1024 || sent[1].Path != "/var/www/a\uFFFDb.log" {
+				t.Fatalf("requests %d, skipped sources %+v", len(h.client.batches), sent)
+			}
+		})
+	}
+}
+
+func TestOutgoingEventsStayWithinTheServerLimits(t *testing.T) {
+	now := time.Date(2026, 10, 31, 19, 0, 0, 0, time.UTC)
+	events := []logs.Event{
+		{Kind: "a", FirstAt: now.Add(-time.Minute), LastAt: now, Count: 2_000_000, SrcIP: "203.0.113.7"},
+		{Kind: "b", FirstAt: now.Add(time.Hour), LastAt: now.Add(2 * time.Hour), Count: 0, SrcIP: "not-an-ip"},
+		{Kind: "c", FirstAt: now.Add(-8 * 24 * time.Hour), LastAt: now.Add(-time.Hour), Count: 1, SrcIP: "fe80::1%eth0"},
+		{Kind: "d", FirstAt: now.Add(-8 * 24 * time.Hour), LastAt: now.Add(-8 * 24 * time.Hour), Count: 1},
+	}
+	got, expired := outgoingEvents(events, now)
+	if expired != 1 || len(got) != 3 {
+		t.Fatalf("kept %d, expired %d", len(got), expired)
+	}
+	if got[0].Count != MaxEventCount || got[0].SrcIP != "203.0.113.7" {
+		t.Fatalf("first = %+v", got[0])
+	}
+	if got[1].Count != 1 || got[1].SrcIP != "" || !got[1].FirstAt.Equal(now) || !got[1].LastAt.Equal(now) {
+		t.Fatalf("second = %+v", got[1])
+	}
+	if got[2].SrcIP != "" || !got[2].FirstAt.Equal(now.Add(-maxEventAge)) {
+		t.Fatalf("third = %+v", got[2])
+	}
+	if events[0].Count != 2_000_000 {
+		t.Fatal("the spooled events must not change")
 	}
 }
 
