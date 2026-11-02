@@ -74,8 +74,8 @@ type trafficKey struct {
 }
 
 // Aggregator keeps what detection needs and condenses the noise: failed SSH logins become one event per IP,
-// user name and minute, and normal web requests one http_traffic event per IP and minute with counts per
-// status class. Everything else passes through.
+// user name and minute, and web requests Redact did not mark suspicious one http_traffic event per IP and
+// minute with counts per status class. Everything else passes through.
 type Aggregator struct {
 	events       []Event
 	ssh          map[sshKey]*Event
@@ -98,7 +98,7 @@ func (a *Aggregator) Add(e Event) {
 		}
 		a.ssh[key] = &e
 		a.sshOrder = append(a.sshOrder, key)
-	case e.Kind == KindHTTPRequest && !Suspicious(e):
+	case e.Kind == KindHTTPRequest && !e.Suspicious:
 		key := trafficKey{e.SrcIP, e.FirstAt.Truncate(time.Minute)}
 		existing, ok := a.traffic[key]
 		if !ok {

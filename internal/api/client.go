@@ -43,6 +43,9 @@ type HTTPError struct {
 	Path       string
 	StatusCode int
 	Body       string
+	// RetryAfter is how long the server asked the agent to wait (the Retry-After header, in seconds or as an
+	// HTTP date, as sent with 429 and 503), at most 15 minutes. Zero when the server did not say.
+	RetryAfter time.Duration
 }
 
 func (e *HTTPError) Error() string {
@@ -218,13 +221,13 @@ func (c *Client) attempt(ctx context.Context, method, path string, body []byte, 
 		return 0, false, fmt.Errorf("%s %s: %w", method, path, ErrUnauthorized)
 	}
 
-	httpErr := &HTTPError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: errorBody(data)}
+	httpErr := &HTTPError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: errorBody(data), RetryAfter: retryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable ||
 		(idempotent && resp.StatusCode >= 500)
 	if !retryable {
 		return 0, false, httpErr
 	}
-	return retryAfter(resp.Header.Get("Retry-After"), time.Now()), true, httpErr
+	return httpErr.RetryAfter, true, httpErr
 }
 
 func encodeBody(payload any) ([]byte, error) {

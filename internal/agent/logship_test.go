@@ -208,6 +208,74 @@ func TestShipperSendsEmptyBatchesAsLiveness(t *testing.T) {
 	}
 }
 
+// A quiet host: flushes find nothing, then a line arrives just before the liveness batch is due and after the
+// last flush. The liveness batch carries the positions past that line, so it must carry the event too, or a
+// restart before the next flush would resume past an event that was never sent.
+func TestLivenessBatchNeverSkipsUnflushedEventsAcrossARestart(t *testing.T) {
+	h := newShipperHost(t)
+	first := h.shipper()
+	first.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 30})
+	h.step(first)
+	h.advance(45 * time.Second)
+	for h.step(first); h.clock.now.Before(time.Date(2026, 10, 31, 19, 4, 45, 0, time.UTC)); h.step(first) {
+		h.advance(30 * time.Second)
+	}
+	if len(h.client.batches) != 0 {
+		t.Fatalf("batches = %d before the liveness batch is due", len(h.client.batches))
+	}
+	h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/id"))
+	h.advance(15 * time.Second)
+	h.step(first)
+	if len(h.client.batches) != 1 {
+		t.Fatalf("batches = %d, want the liveness batch at 5 minutes", len(h.client.batches))
+	}
+	first.stopCollector()
+
+	second := h.shipper()
+	second.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 30})
+	for range 12 {
+		h.step(second)
+		h.advance(30 * time.Second)
+	}
+	var commands []string
+	for _, b := range h.client.batches {
+		for _, e := range b.Events {
+			commands = append(commands, e.Fields["command"].(string))
+		}
+	}
+	if strings.Join(commands, ",") != "/usr/bin/id" {
+		t.Fatalf("commands = %v, want the line sent exactly once", commands)
+	}
+}
+
+func TestShipperWaitsAsLongAsRetryAfter(t *testing.T) {
+	h := newShipperHost(t)
+	h.client.failWith = []error{&api.HTTPError{StatusCode: http.StatusTooManyRequests, RetryAfter: 120 * time.Second}, &api.HTTPError{StatusCode: http.StatusServiceUnavailable, RetryAfter: 30 * time.Minute}}
+	s := h.shipper()
+	s.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5})
+	h.step(s)
+	h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/id"))
+	h.advance(6 * time.Second)
+	h.step(s)
+	for range 119 {
+		h.advance(time.Second)
+		h.step(s)
+	}
+	if len(h.client.batches) != 1 {
+		t.Fatalf("batches = %d, want no retry within the 120 s the server asked for", len(h.client.batches))
+	}
+	h.advance(time.Second)
+	h.step(s)
+	if len(h.client.batches) != 2 {
+		t.Fatalf("batches = %d, want a retry once Retry-After passed", len(h.client.batches))
+	}
+	h.advance(30 * time.Minute)
+	h.step(s)
+	if len(h.client.batches) != 3 || !s.Spool.Empty() {
+		t.Fatalf("batches = %d, want the retry after 30 minutes to succeed", len(h.client.batches))
+	}
+}
+
 func TestShipperStopsAndDeletesSpoolWhenDisabled(t *testing.T) {
 	h := newShipperHost(t)
 	h.client.failWith = []error{&api.HTTPError{StatusCode: http.StatusBadGateway}}

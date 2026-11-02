@@ -6,10 +6,11 @@ if ! getent passwd oka-cyber >/dev/null 2>&1; then
 fi
 
 # Log collection reads auth logs (group adm) and the journal (group systemd-journal) without root. Also on an
-# upgrade, so the try-restart below starts the service with the groups.
+# upgrade, so the try-restart below starts the service with the groups. A group the host does not have is
+# skipped; any other usermod failure fails the install.
 for group in adm systemd-journal; do
 	if getent group "$group" >/dev/null 2>&1; then
-		usermod -a -G "$group" oka-cyber >/dev/null 2>&1 || true
+		usermod -a -G "$group" oka-cyber
 	fi
 done
 

@@ -311,6 +311,28 @@ func TestSecretsNeverFormat(t *testing.T) {
 	}
 }
 
+func TestHTTPErrorCarriesRetryAfter(t *testing.T) {
+	at := time.Now().Add(90 * time.Second).UTC().Format(http.TimeFormat)
+	for header, want := range map[string]time.Duration{"120": 120 * time.Second, at: 90 * time.Second, "": 0} {
+		srv, requests := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+			if header != "" {
+				w.Header().Set("Retry-After", header)
+			}
+			writeJSON(w, http.StatusTooManyRequests, `{"message":"Too Many Attempts."}`)
+		})
+		c := newClient(t, srv, "agent-secret", &sleeps{})
+		c.maxAttempts = 1
+		_, err := c.PostLogs(context.Background(), LogBatchRequest{BatchID: "b", Events: []logs.Event{}})
+		var httpErr *HTTPError
+		if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusTooManyRequests || requests.count() != 1 {
+			t.Fatalf("Retry-After %q: err = %v, requests = %d", header, err, requests.count())
+		}
+		if got := httpErr.RetryAfter; got > want || got < want-2*time.Second {
+			t.Errorf("Retry-After %q: RetryAfter = %v, want %v", header, got, want)
+		}
+	}
+}
+
 func TestRetryAfter(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 	tests := map[string]time.Duration{

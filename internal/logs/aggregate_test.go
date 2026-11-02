@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -82,11 +83,11 @@ func TestWebRequestsAreKeptOnlyWhenSuspicious(t *testing.T) {
 func TestNormalTrafficIsCountedPerIPAndMinute(t *testing.T) {
 	a := NewAggregator()
 	at := time.Date(2026, 10, 31, 12, 0, 10, 0, time.UTC)
-	a.Add(request("203.0.113.7", "GET", "/", "Mozilla/5.0", 200, at))
-	a.Add(request("203.0.113.7", "GET", "/a", "Mozilla/5.0", 200, at.Add(time.Second)))
-	a.Add(request("203.0.113.7", "POST", "/cart", "Mozilla/5.0", 302, at.Add(2*time.Second)))
-	a.Add(request("203.0.113.7", "GET", "/missing", "Mozilla/5.0", 404, at.Add(3*time.Second)))
-	a.Add(request("203.0.113.7", "GET", "/", "Mozilla/5.0", 200, at.Add(time.Minute)))
+	a.Add(Redact(request("203.0.113.7", "GET", "/", "Mozilla/5.0", 200, at)))
+	a.Add(Redact(request("203.0.113.7", "GET", "/a", "Mozilla/5.0", 200, at.Add(time.Second))))
+	a.Add(Redact(request("203.0.113.7", "POST", "/cart", "Mozilla/5.0", 302, at.Add(2*time.Second))))
+	a.Add(Redact(request("203.0.113.7", "GET", "/missing", "Mozilla/5.0", 404, at.Add(3*time.Second))))
+	a.Add(Redact(request("203.0.113.7", "GET", "/", "Mozilla/5.0", 200, at.Add(time.Minute))))
 	events := a.Flush()
 	if len(events) != 3 {
 		t.Fatalf("events = %+v", events)
@@ -134,6 +135,38 @@ func TestRealAccessLogsSplitIntoFullAndCounted(t *testing.T) {
 	}
 	if full != 7 || counted != 2 {
 		t.Fatalf("full = %d, counted = %d; want the 7 probes in full and the 2 plain requests counted", full, counted)
+	}
+}
+
+// Redaction hides the values of sensitive query parameters, so an attack sent in one must be recognized on the
+// raw request: the request is kept in full, with its payload redacted.
+func TestAttacksInSensitiveParametersStaySuspicious(t *testing.T) {
+	at := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	for _, path := range []string{
+		"/login?username=admin'%20OR%201=1--",
+		"/login?username=admin%27%20UNION%20SELECT%20password%20FROM%20users--",
+		"/?user=${jndi:ldap://x/a}",
+		"/reset?token=%24%7Bjndi%3Aldap%3A%2F%2Fx%2Fa%7D",
+	} {
+		a := NewAggregator()
+		a.Add(Redact(request("203.0.113.7", "GET", path, "Mozilla/5.0", 200, at)))
+		events := a.Flush()
+		if len(events) != 1 || events[0].Kind != KindHTTPRequest {
+			t.Errorf("%s: events = %+v, want the request in full", path, events)
+			continue
+		}
+		got := events[0].Fields["path"].(string)
+		if !strings.Contains(got, Redacted) || strings.Contains(got, "jndi") || strings.Contains(got, "OR") || strings.Contains(got, "UNION") {
+			t.Errorf("%s: path = %q, want the payload redacted", path, got)
+		}
+		if data, _ := json.Marshal(events[0]); strings.Contains(string(data), "uspicious") {
+			t.Errorf("the suspicious flag must not be sent: %s", data)
+		}
+	}
+	a := NewAggregator()
+	a.Add(Redact(request("203.0.113.7", "GET", "/login?username=alice", "Mozilla/5.0", 200, at)))
+	if events := a.Flush(); len(events) != 1 || events[0].Kind != KindHTTPTraffic {
+		t.Fatalf("a plain sensitive parameter must stay counted traffic: %+v", events)
 	}
 }
 

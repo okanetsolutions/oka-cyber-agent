@@ -100,7 +100,7 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 }
 
 // newLogShipper gives log uploads their own client without retries: the shipper retries a batch itself, with
-// its own backoff, and keeps collecting meanwhile.
+// its own backoff (at least as long as the server's Retry-After), and keeps collecting meanwhile.
 func newLogShipper(cfg config.Config, token, stateDir string, logger *slog.Logger) (*agent.LogShipper, error) {
 	client, err := api.New(cfg.URL, api.Options{Token: api.Secret(token), InsecureDev: cfg.InsecureDev, AgentVersion: agent.Version, MaxAttempts: 1})
 	if err != nil {

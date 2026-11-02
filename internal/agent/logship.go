@@ -158,7 +158,7 @@ func (s *LogShipper) Step(ctx context.Context) error {
 			s.flush()
 		}
 		if s.Spool.Empty() && now.Sub(s.lastSent) >= EmptyBatchEvery {
-			s.spoolBatch(nil)
+			s.liveness()
 		}
 	}
 	return s.upload(ctx)
@@ -247,6 +247,17 @@ func (s *LogShipper) flush() {
 	}
 }
 
+// liveness spools a batch so the server hears from the agent at least every EmptyBatchEvery. A batch carries
+// the collector's current positions, which cover the events still in the aggregator, so those are flushed into
+// it; an empty batch is only sent when nothing waits, or a restart would resume past unsent events.
+func (s *LogShipper) liveness() {
+	if s.aggregator.Pending() > 0 {
+		s.flush()
+		return
+	}
+	s.spoolBatch(nil)
+}
+
 // batchSize is how many events fit one batch: at most MaxBatchEvents and well under the 5 MB body limit.
 func batchSize(events []logs.Event) int {
 	size := 0
@@ -307,7 +318,11 @@ func (s *LogShipper) upload(ctx context.Context) error {
 			return nil
 		default:
 			s.failures++
-			s.retryAt = s.Now().Add(uploadBackoff(s.failures))
+			wait := uploadBackoff(s.failures)
+			if httpErr != nil {
+				wait = max(wait, httpErr.RetryAfter)
+			}
+			s.retryAt = s.Now().Add(wait)
 			s.Logger.Warn("log upload failed, retrying", "batch_id", b.ID, "error", err, "retry_at", s.retryAt)
 			return nil
 		}

@@ -17,10 +17,36 @@ func TestRedactQueryParameters(t *testing.T) {
 		"/a?pass%77ord=x":                                                 "/a?pass%77ord=[redacted]",
 		"/a?email=&phone=":                                                "/a?email=&phone=",
 		`"GET /x?auth=y HTTP/1.1" 200 1 "https://ref.example/?session=z"`: `"GET /x?auth=[redacted] HTTP/1.1" 200 1 "https://ref.example/?session=[redacted]"`,
+		"/search?q=%3Cscript%3E&page=2":                                   "/search?q=%3Cscript%3E&page=2",
+		"/go?next=/account/orders?page=2":                                 "/go?next=/account/orders?page=2",
 	}
 	for before, after := range tests {
 		if got := RedactQuery(before); got != after {
 			t.Errorf("RedactQuery(%q)\n got %q\nwant %q", before, got, after)
+		}
+	}
+}
+
+func TestRedactNestedQueries(t *testing.T) {
+	tests := map[string]string{
+		"/login?next=/reset?token=SECRET1":                                 "/login?next=/reset?token=[redacted]",
+		"/sso?redirect=https://app/cb?access_token=SECRET2":                "/sso?redirect=https://app/cb?access_token=[redacted]",
+		"/sso?redirect=https://app/cb?state=s;session=SECRET&page=2":       "/sso?redirect=https://app/cb?state=s;session=[redacted]&page=2",
+		"/sso?redirect=https%3A%2F%2Fapp%2Fcb%3Faccess_token%3DSECRET3":    "/sso?redirect=[redacted]",
+		"/sso?redirect=https%253A%252F%252Fapp%252Fcb%253Ftoken%253DSEC4":  "/sso?redirect=[redacted]",
+		"/sso?redirect=%zz%3Ftoken%3DSECRET5":                              "/sso?redirect=[redacted]",
+		"/sso?next=token=SECRET6":                                          "/sso?next=token=[redacted]",
+		"/sso?next=%2Faccount%3Fpage%3D2":                                  "/sso?next=%2Faccount%3Fpage%3D2",
+		"/a?next=/b?next=/c?next=/d?next=/e?next=/f?token=SECRET7":         "/a?next=/b?next=/c?next=/d?next=/e?next=[redacted]",
+		`"GET /login?next=/reset?token=SECRET8 HTTP/1.1" 302 0 "-" "curl"`: `"GET /login?next=/reset?token=[redacted] HTTP/1.1" 302 0 "-" "curl"`,
+	}
+	for before, after := range tests {
+		got := RedactQuery(before)
+		if got != after {
+			t.Errorf("RedactQuery(%q)\n got %q\nwant %q", before, got, after)
+		}
+		if strings.Contains(got, "SEC") {
+			t.Errorf("RedactQuery(%q) leaks a secret: %q", before, got)
 		}
 	}
 }
@@ -36,10 +62,56 @@ func TestRedactCommand(t *testing.T) {
 		"/usr/bin/env DB_PASSWORD=x API_TOKEN=y /app":      "/usr/bin/env DB_PASSWORD=[redacted] API_TOKEN=[redacted] /app",
 		"/usr/bin/apt update":                              "/usr/bin/apt update",
 		"/usr/bin/systemctl restart nginx":                 "/usr/bin/systemctl restart nginx",
+
+		"/usr/bin/env API_KEY=xyz /app":                                                                                "/usr/bin/env API_KEY=[redacted] /app",
+		"/usr/bin/env aws_secret_access_key=abc123 AWS_REGION=eu-west-1 /app":                                          "/usr/bin/env aws_secret_access_key=[redacted] AWS_REGION=eu-west-1 /app",
+		"/usr/bin/env DB_PASS='two words' GITHUB_AUTH=g OAUTH_CREDENTIALS=c /a":                                        "/usr/bin/env DB_PASS=[redacted] GITHUB_AUTH=[redacted] OAUTH_CREDENTIALS=[redacted] /a",
+		"alice : PWD=/srv ; USER=root ; ENV=AWS_SECRET_ACCESS_KEY=abc123 HOME=/root ; COMMAND=/usr/bin/aws s3 ls":      "alice : PWD=/srv ; USER=root ; ENV=AWS_SECRET_ACCESS_KEY=[redacted] HOME=/root ; COMMAND=/usr/bin/aws s3 ls",
+		"/usr/bin/kubeadm join 10.0.0.1:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:ab": "/usr/bin/kubeadm join 10.0.0.1:6443 --token [redacted] --discovery-token-ca-cert-hash sha256:ab",
+		"/usr/local/bin/tool --api-key=k1 --client-secret s2 --secret=s3 --pass p4":                                    "/usr/local/bin/tool --api-key=[redacted] --client-secret [redacted] --secret=[redacted] --pass [redacted]",
+		"/usr/local/bin/vault login --DB_PASSWORD x --token-ttl 24h":                                                   "/usr/local/bin/vault login --DB_PASSWORD [redacted] --token-ttl 24h",
+		"/usr/bin/curl -u admin:S3cret https://api.example/v1":                                                         "/usr/bin/curl -u admin:[redacted] https://api.example/v1",
+		"/usr/bin/curl --user=admin:S3cret https://api.example/v1":                                                     "/usr/bin/curl --user=admin:[redacted] https://api.example/v1",
+		"/usr/bin/curl -uadmin:S3cret https://api.example/v1":                                                          "/usr/bin/curl -uadmin:[redacted] https://api.example/v1",
+		"/usr/bin/curl -H Authorization: Bearer opaque-token https://api.example":                                      "/usr/bin/curl -H Authorization: Bearer [redacted] https://api.example",
+		"/usr/bin/curl -H 'Authorization: Bearer opaque-token' https://a.example":                                      "/usr/bin/curl -H 'Authorization: Bearer [redacted]' https://a.example",
+		`/usr/bin/curl --header "X-Api-Key: k3y" -H "Accept: text/plain" -o out`:                                       `/usr/bin/curl --header "X-Api-Key: [redacted]" -H "Accept: text/plain" -o out`,
+		"/usr/bin/curl -H Cookie: sid=abc; theme=dark -o /tmp/out https://a.example":                                   "/usr/bin/curl -H Cookie: [redacted] -o /tmp/out https://a.example",
+		"/usr/bin/git clone https://deploy:ghp_secret@github.com/acme/app.git":                                         "/usr/bin/git clone https://deploy:[redacted]@github.com/acme/app.git",
+		"/usr/bin/curl https://api.example/v1/items?api_key=k4&page=2":                                                 "/usr/bin/curl https://api.example/v1/items?api_key=[redacted]&page=2",
+
+		"/usr/bin/gpg --keyring=/usr/share/keyrings/a.gpg --recv-keys ABC": "/usr/bin/gpg --keyring=/usr/share/keyrings/a.gpg --recv-keys ABC",
+		"/usr/bin/mysql -u root shop":                                      "/usr/bin/mysql -u root shop",
+		"/usr/bin/ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519":          "/usr/bin/ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519",
+		"/usr/bin/curl -H 'Accept: application/json' https://a.example/":   "/usr/bin/curl -H 'Accept: application/json' https://a.example/",
+		"/usr/bin/dd if=/dev/zero of=/tmp/x bs=1M count=1":                 "/usr/bin/dd if=/dev/zero of=/tmp/x bs=1M count=1",
+		"/usr/bin/ssh -p 2222 git@github.com":                              "/usr/bin/ssh -p [redacted] git@github.com",
+		"/usr/bin/systemctl edit --full oka-cyber-agent.service":           "/usr/bin/systemctl edit --full oka-cyber-agent.service",
+		"/usr/bin/passwd alice":                                            "/usr/bin/passwd alice",
 	}
 	for before, after := range tests {
 		if got := RedactCommand(before); got != after {
 			t.Errorf("RedactCommand(%q)\n got %q\nwant %q", before, got, after)
+		}
+	}
+}
+
+func TestRedactText(t *testing.T) {
+	tests := map[string]string{
+		"[2026-10-31 19:00:03] production.ERROR: Request failed GET https://api.x/v1/items?api_key=SECRET4&page=2 {\"exception\":\"[object] (GuzzleHttp\\\\Exception\\\\ClientException(code: 401)\"}": "[2026-10-31 19:00:03] production.ERROR: Request failed GET https://api.x/v1/items?api_key=[redacted]&page=2 {\"exception\":\"[object] (GuzzleHttp\\\\Exception\\\\ClientException(code: 401)\"}",
+		`[2026-10-31 19:00:03] production.ERROR: Callback failed {"url":"https://x/cb?token=SECRET5","attempt":2}`:                                                                                     `[2026-10-31 19:00:03] production.ERROR: Callback failed {"url":"https://x/cb?token=[redacted]","attempt":2}`,
+		`[2026-10-31 19:00:03] production.ERROR: Login failed {"email_verified":false,"password":"hunter2","remember":true}`:                                                                           `[2026-10-31 19:00:03] production.ERROR: Login failed {"email_verified":false,"password":"[redacted]","remember":true}`,
+		`[2026-10-31 19:00:03] production.ERROR: Webhook rejected {"headers":{"authorization":"Bearer opaque","x-request-id":"r1"}}`:                                                                   `[2026-10-31 19:00:03] production.ERROR: Webhook rejected {"headers":{"authorization":"[redacted]","x-request-id":"r1"}}`,
+		`[2026-10-31 19:00:03] production.ERROR: Upstream said "bad \"token\"" {"api_token": "t\"0k", "id": 7}`:                                                                                        `[2026-10-31 19:00:03] production.ERROR: Upstream said "bad \"token\"" {"api_token": "[redacted]", "id": 7}`,
+		"[2026-10-31 19:00:03] production.ERROR: Mailer failed: SMTP auth with password=hunter2 rejected":                                                                                              "[2026-10-31 19:00:03] production.ERROR: Mailer failed: SMTP auth with password=[redacted] rejected",
+		"[2026-10-31 19:00:03] production.ERROR: Gateway call failed, Authorization: Bearer opaque-token, status 502":                                                                                  "[2026-10-31 19:00:03] production.ERROR: Gateway call failed, Authorization: Bearer [redacted], status 502",
+		"[2026-10-31 19:00:03] production.ERROR: SQLSTATE[HY000] [1045] Access denied (Connection: mysql://shop:S3cret@db:3306/shop)":                                                                  "[2026-10-31 19:00:03] production.ERROR: SQLSTATE[HY000] [1045] Access denied (Connection: mysql://shop:[redacted]@db:3306/shop)",
+		"[2026-10-31 19:00:03] production.ERROR: CSRF token mismatch. {\"exception\":\"TokenMismatchException(code: 419)\"}":                                                                           "[2026-10-31 19:00:03] production.ERROR: CSRF token mismatch. {\"exception\":\"TokenMismatchException(code: 419)\"}",
+		"[2026-10-31 19:00:03] production.ERROR: Undefined variable $order at /var/www/shop/app/Order.php:42":                                                                                          "[2026-10-31 19:00:03] production.ERROR: Undefined variable $order at /var/www/shop/app/Order.php:42",
+	}
+	for before, after := range tests {
+		if got := RedactText(before); got != after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", before, got, after)
 		}
 	}
 }
@@ -81,6 +153,15 @@ func TestRedactEvents(t *testing.T) {
 	app := newEvent(SourceApp, KindAppError, testNow, "[2026-10-31 19:00:03] production.ERROR: Mail to jane.doe@example.com failed {\"user\":\"jane%40example.org\"}")
 	if got := Redact(app); strings.Contains(got.Message, "jane") {
 		t.Fatalf("email leaked: %q", got.Message)
+	}
+
+	monolog := "[2026-10-31 19:00:03] production.ERROR: Request failed GET https://api.x/v1/items?api_key=SECRET4&page=2 {\"password\":\"hunter2\"}"
+	appError, ok := ParseMonolog(monolog, "/var/www/shop/storage/logs/laravel.log", testNow)
+	if !ok {
+		t.Fatal("not an app error")
+	}
+	if got := Redact(appError); strings.Contains(got.Message, "SECRET4") || strings.Contains(got.Message, "hunter2") || !strings.Contains(got.Message, "page=2") {
+		t.Fatalf("app error = %q", got.Message)
 	}
 
 	long := newEvent(SourceApp, KindAppError, testNow, strings.Repeat("é", MaxMessageLength))

@@ -37,6 +37,10 @@ type Event struct {
 	Username string         `json:"username,omitempty"`
 	Message  string         `json:"message"`
 	Fields   map[string]any `json:"fields,omitempty"`
+
+	// Suspicious is decided on the raw web request by Redact, before redaction can hide an attack payload in
+	// a sensitive query parameter. Only the decision is kept, and it is never sent.
+	Suspicious bool `json:"-"`
 }
 
 func newEvent(source, kind string, at time.Time, message string) Event {

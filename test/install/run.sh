@@ -68,7 +68,8 @@ if has_systemd; then
 	done
 	[ "$(stat_of inventories)" -ge 1 ] || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "no inventory from the service"; }
 	[ "$(stat_of last_inventory_packages)" -gt 0 ] || fail "the service sent an inventory without packages"
-	id -nG oka-cyber | tr ' ' '\n' | grep -qx systemd-journal || fail "oka-cyber is not in the systemd-journal group"
+	getent group systemd-journal >/dev/null || fail "a systemd host without the systemd-journal group"
+	check_log_groups "after install"
 
 	# journald records which program sent an entry, and the agent drops auth entries a program like logger
 	# sent under another name, so the probe is a real sudo call. It is repeated until one arrives, since the
