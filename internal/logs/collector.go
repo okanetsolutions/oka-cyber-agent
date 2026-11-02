@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"time"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
@@ -105,11 +106,11 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 				events = append(events, e)
 			}
 		}
-		if w.plan.Glob && result.Missing && !w.planned {
+		if w.plan.Pattern != "" && result.Missing && !w.planned {
 			c.dropWatch(path)
 			continue
 		}
-		if result.Removed && !w.plan.Glob {
+		if result.Removed && w.plan.Pattern == "" {
 			events = append(events, RemovedEvent(w.plan.Source, w.plan.Path, c.now().UTC()))
 		}
 	}
@@ -170,7 +171,7 @@ func (c *Collector) plan(ctx context.Context) {
 	c.skipped = p.Skipped
 	planned := map[string]FilePlan{}
 	for _, f := range p.Files {
-		if prev, ok := planned[f.Path]; !ok || prev.Glob {
+		if prev, ok := planned[f.Path]; !ok || prev.Pattern != "" {
 			planned[f.Path] = f
 		}
 	}
@@ -178,6 +179,7 @@ func (c *Collector) plan(ctx context.Context) {
 		f, ok := planned[path]
 		if w.planned = ok; ok {
 			w.plan = f
+			w.tailer.Pattern = c.options.patternPath(f.Pattern)
 		}
 	}
 	for path, f := range planned {
@@ -190,6 +192,7 @@ func (c *Collector) plan(ctx context.Context) {
 		}
 		startAtEnd := resume == nil && !createdSince(previous, path)
 		t := NewTailer(c.options.path(path), resume, startAtEnd)
+		t.Pattern = c.options.patternPath(f.Pattern)
 		t.Now = c.now
 		c.watches[path] = &watch{plan: f, tailer: t, planned: true}
 	}
@@ -229,8 +232,9 @@ func (c *Collector) listWatchedDirs() {
 	}
 }
 
+// readDirNames opens dir with O_DIRECTORY and O_NONBLOCK, so a FIFO put in its place cannot block the open.
 func readDirNames(dir string) (map[string]bool, error) {
-	f, err := os.Open(dir)
+	f, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
