@@ -875,3 +875,85 @@ func TestShipperStopsAroundTheAck(t *testing.T) {
 		})
 	}
 }
+
+func (h *shipperHost) appendAccessLog(path string) {
+	h.t.Helper()
+	file := filepath.Join(h.root, "var", "log", "nginx", "access.log")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer f.Close()
+	if path != "" {
+		fmt.Fprintf(f, "172.17.0.1 - - [%s] \"GET %s HTTP/1.1\" 404 153 \"-\" \"curl/8.18.0\" \"-\"\n", h.clock.now.Format("02/Jan/2006:15:04:05 -0700"), path)
+	}
+}
+
+func (h *shipperHost) sentPaths() []string {
+	var paths []string
+	for _, b := range h.client.accepted {
+		for _, e := range b.Events {
+			if path, ok := e.Fields["path"].(string); ok {
+				paths = append(paths, path)
+			}
+		}
+	}
+	return paths
+}
+
+// Switching web off and on again within minutes, with no batch committed in between (the server is
+// unreachable), must start web at the end again: the lines written while it was off are history. That holds
+// across a restart, and when the spool cannot record the change.
+func TestShipperStartsAtTheEndWhenASourceIsSwitchedOnAgain(t *testing.T) {
+	for _, mode := range []string{"running", "restart", "spool fails"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newShipperHost(t)
+			h.appendAccessLog("")
+			s := h.shipper()
+			s.Configure(api.LogCollection{Sources: []string{"auth", "web"}, FlushIntervalSeconds: 5})
+			h.step(s)
+			h.appendAccessLog("/before")
+			h.advance(6 * time.Second)
+			h.step(s)
+			if got := h.sentPaths(); strings.Join(got, ",") != "/before" {
+				t.Fatalf("paths = %v before web is switched off", got)
+			}
+
+			h.client.validate = func(api.LogBatchRequest) error { return &api.HTTPError{StatusCode: http.StatusBadGateway} }
+			spoolDir := s.Spool.Dir
+			if mode == "spool fails" {
+				blocker := filepath.Join(t.TempDir(), "file")
+				if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				s.Spool.Dir = filepath.Join(blocker, "spool")
+			}
+			s.Configure(api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5})
+			h.step(s)
+			s.Spool.Dir = spoolDir
+			for i := range 3 {
+				h.appendAccessLog(fmt.Sprintf("/while-off-%d", i))
+				h.advance(time.Minute)
+				h.step(s)
+			}
+			if mode == "restart" {
+				s.stopCollector()
+				s = h.shipper()
+			}
+			h.client.validate = nil
+			s.Configure(api.LogCollection{Sources: []string{"auth", "web"}, FlushIntervalSeconds: 5})
+			h.advance(maxUploadBackoff)
+			h.step(s)
+			h.appendAccessLog("/after")
+			h.advance(6 * time.Second)
+			h.step(s)
+			h.step(s)
+			if got := h.sentPaths(); strings.Join(got, ",") != "/before,/after" {
+				t.Fatalf("paths = %v, want none of the lines written while web was off", got)
+			}
+		})
+	}
+}

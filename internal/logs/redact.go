@@ -44,6 +44,7 @@ var (
 	// personalParameterWords are query parameters that are not secrets by name but hold personal data, one time
 	// codes or signatures.
 	personalParameterWords = []string{"sig", "code", "jwt", "mail", "phone", "user", "login"}
+	pamGroups              = []string{"auth", "account", "session", "password", "chauthtok"}
 	authSchemes            = []string{"basic", "bearer", "digest", "token", "negotiate", "apikey", "aws4-hmac-sha256"}
 
 	// attachedPasswordTools take their password attached to -p (-pS3cret). For other programs -p followed by a
@@ -66,14 +67,17 @@ var (
 	sshUserName    = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
 )
 
-// Redact removes secrets and personal data from an event before it reaches the spool:
+// Redact removes secrets and personal data from an event before it reaches the spool. In every string of every
+// event, the message, the user name, the program and each field (see redactEverywhere):
 //   - values of sensitive query parameters, also in a query nested in another parameter's value (attack
 //     payloads in other parameters stay, they are evidence),
-//   - JWT shaped strings and email addresses anywhere,
-//   - URL passwords, and in sudo commands the values of secret options, variables, key/value pairs and headers
-//     and SQL password literals,
-//   - in application errors the values of secret key/value pairs, JSON and PHP array entries (also JSON escaped
-//     inside a JSON string) and SQL password literals,
+//   - URL passwords, JWT shaped strings and email addresses,
+//   - the values of secret key/value pairs, JSON and PHP array entries (also JSON escaped inside a JSON
+//     string) and SQL password literals.
+//
+// Before that, by kind:
+//   - in sudo commands the values of secret options, variables, key/value pairs and headers read as a command line,
+//   - in application errors also the secret options of a command line the text quotes,
 //   - SSH user names on failed logins that are not valid user names, since people type passwords into the user prompt.
 //
 // Secret means a name secretName accepts. Detection must not lose what redaction hides, so whether a web request
@@ -100,16 +104,12 @@ func Redact(e Event) Event {
 		}
 	case KindHTTPRequest:
 		e.Suspicious = Suspicious(e)
-		e.Message = RedactQuery(e.Message)
-		if path, ok := e.Fields["path"].(string); ok {
-			e.Fields["path"] = RedactQuery(path)
-		}
 	case KindAppError:
 		e.Message = RedactText(e.Message)
 	}
 	e.Message = cut(redactEverywhere(e.Message), MaxMessageLength)
 	e.Username = cut(redactEverywhere(e.Username), maxNameLength)
-	e.Program = cut(e.Program, maxNameLength)
+	e.Program = cut(redactEverywhere(e.Program), maxNameLength)
 	for k, v := range e.Fields {
 		if s, ok := v.(string); ok {
 			e.Fields[k] = cut(redactEverywhere(s), maxFieldLength)
@@ -118,7 +118,11 @@ func Redact(e Event) Event {
 	return e
 }
 
+// redactEverywhere is the last pass over every string an event carries, whatever its kind, so that a URL with
+// a password in a referer or a user agent is redacted like one in an application error.
 func redactEverywhere(s string) string {
+	s = RedactQuery(redactURLUserinfo(s))
+	s = redactSpans(s, keyValueSpans(s, false))
 	s = jwtShaped.ReplaceAllString(s, Redacted)
 	return emailAddress.ReplaceAllString(s, Redacted)
 }
@@ -600,6 +604,10 @@ func keyValueSpans(s string, command bool) []span {
 		case loc[2] < 0 && keyStart > 0 && isWordByte(s[keyStart-1]):
 			pos = keyStart + 1
 			continue
+		case pamServiceType(s, keyStart, sepStart, sepEnd):
+		case loc[2] < 0 && loc[6] >= 0 && strings.TrimSpace(sep) == "":
+			// A quoted string that ends in a secret word and the quoted string after it, as a referer ending in
+			// /auth and the user agent of an access log line, are not a key and its value.
 		case separatorFits(sep, command, loc[2] >= 0 || loc[6] >= 0) && (secretName(key) || strings.EqualFold(key, "by") && identifiedBy.MatchString(s[:keyStart])):
 			if start, end := secretValue(s[sepEnd:], key, strings.TrimSpace(sep), command, keyQuote); end > start {
 				spans = append(spans, span{sepEnd + start, sepEnd + end})
@@ -608,6 +616,16 @@ func keyValueSpans(s string, command bool) []span {
 		pos = sepEnd
 	}
 	return spans
+}
+
+// pamServiceType tells whether s[keyStart:sepEnd] is the service in a PAM module's (service:type), as in
+// pam_unix(chpasswd:chauthtok), whose name holds a secret word while what follows is a PAM management group.
+func pamServiceType(s string, keyStart, sepStart, sepEnd int) bool {
+	if keyStart == 0 || s[keyStart-1] != '(' || s[sepStart:sepEnd] != ":" {
+		return false
+	}
+	group, _, ok := strings.Cut(s[sepEnd:], ")")
+	return ok && slices.Contains(pamGroups, group)
 }
 
 func isWordByte(c byte) bool {

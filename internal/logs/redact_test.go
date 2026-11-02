@@ -576,3 +576,67 @@ func FuzzRedactSecretShapes(f *testing.F) {
 		}
 	})
 }
+
+// An nginx line with user:password@ URLs in the request, the referer and the user agent, and the same strings
+// in every event kind and every string an event carries: the passwords are redacted whatever the kind.
+func TestRedactURLPasswordsInEveryEventKind(t *testing.T) {
+	line := `203.0.113.7 - - [31/Oct/2026:19:00:00 +0000] "GET /r?next=https://bob:s3cret@10.1.1.1/ HTTP/1.1" 404 153 "https://admin:hunter2@10.0.0.5/admin" "Mozilla/5.0 https://u:pw0rd@intranet/x" "-"`
+	secrets := []string{"s3cret", "hunter2", "pw0rd"}
+	leaked := func(e Event) string {
+		data, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range secrets {
+			if strings.Contains(string(data), secret) {
+				return secret
+			}
+		}
+		return ""
+	}
+
+	web, ok := ParseAccessLog(line, "shop")
+	if !ok {
+		t.Fatal("not an access log line")
+	}
+	got := Redact(web)
+	if secret := leaked(got); secret != "" {
+		t.Fatalf("%s leaked: %+v", secret, got)
+	}
+	want := `203.0.113.7 - - [31/Oct/2026:19:00:00 +0000] "GET /r?next=https://bob:[redacted]@10.1.1.1/ HTTP/1.1" 404 153 "https://admin:[redacted]@10.0.0.5/admin" "Mozilla/5.0 https://u:[redacted]@intranet/x" "-"`
+	if got.Message != want || got.Fields["path"] != "/r?next=https://bob:[redacted]@10.1.1.1/" || got.Fields["user_agent"] != "Mozilla/5.0 https://u:[redacted]@intranet/x" {
+		t.Fatalf("web = %+v", got)
+	}
+	if !got.Suspicious {
+		t.Fatal("a 404 stays suspicious")
+	}
+
+	kinds := []string{KindSSHLoginFailed, KindSSHLoginSucceeded, KindSudoCommand, KindSudoFailed, KindSuSession, KindUserCreated, KindUserGroupChanged, KindPasswordChanged, KindCronModified, KindHTTPRequest, KindHTTPTraffic, KindAppError, KindLogFileRemoved}
+	for _, kind := range kinds {
+		e := newEvent(SourceAuth, kind, testNow, line)
+		e.Username = "https://admin:hunter2@10.0.0.5/"
+		e.Program = "https://u:pw0rd@intranet/x"
+		for _, key := range []string{"path", "referer", "user_agent", "command", "target_user", "file", "group"} {
+			e.set(key, "https://bob:s3cret@10.1.1.1/ https://admin:hunter2@localhost:8080/")
+		}
+		if got := Redact(e); leaked(got) != "" {
+			t.Errorf("%s: %s leaked: %+v", kind, leaked(got), got)
+		}
+	}
+}
+
+// Every event gets the secret key/value rules, which must not take a PAM management group or the user agent
+// after a referer ending in a secret word for a secret.
+func TestRedactKeyValuesInEveryEventKind(t *testing.T) {
+	for _, tc := range []struct{ kind, message, want string }{
+		{KindPasswordChanged, "pam_unix(chpasswd:chauthtok): password changed for alice", "pam_unix(chpasswd:chauthtok): password changed for alice"},
+		{KindSuSession, "pam_unix(su-l:session): session opened for user root(uid=0) by alice(uid=1000)", "pam_unix(su-l:session): session opened for user root(uid=0) by alice(uid=1000)"},
+		{KindHTTPRequest, `203.0.113.7 - - [31/Oct/2026:19:00:00 +0000] "GET /x HTTP/1.1" 404 1 "https://shop.example/account/auth" "Mozilla/5.0 (X11; Linux x86_64)"`, `203.0.113.7 - - [31/Oct/2026:19:00:00 +0000] "GET /x HTTP/1.1" 404 1 "https://shop.example/account/auth" "Mozilla/5.0 (X11; Linux x86_64)"`},
+		{KindHTTPRequest, `203.0.113.7 - - [31/Oct/2026:19:00:00 +0000] "GET /x HTTP/1.1" 404 1 "-" "okhttp/4.9 (token: abc123)"`, `203.0.113.7 - - [31/Oct/2026:19:00:00 +0000] "GET /x HTTP/1.1" 404 1 "-" "okhttp/4.9 (token: [redacted])"`},
+		{KindCronModified, `(root) CMD (curl -s "https://x/?api_key=K1" -d password=hunter2)`, `(root) CMD (curl -s "https://x/?api_key=[redacted]" -d password=[redacted])`},
+	} {
+		if got := Redact(newEvent(SourceAuth, tc.kind, testNow, tc.message)); got.Message != tc.want {
+			t.Errorf("%s: message = %q, want %q", tc.kind, got.Message, tc.want)
+		}
+	}
+}

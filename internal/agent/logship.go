@@ -82,6 +82,8 @@ type LogShipper struct {
 	// sources left out of it.
 	bare        string
 	bareOmitted []logs.SkippedSource
+	// switchedOff are sources switched off whose removal from the checkpoint could not be spooled yet.
+	switchedOff map[string]bool
 }
 
 // NewLogShipper keeps its spool and positions under stateDir. When root runs the agent, the files it writes
@@ -208,10 +210,7 @@ func (s *LogShipper) apply(ctx context.Context, lc api.LogCollection) {
 		s.Logger.Info("log collection is off")
 		return
 	}
-	resume := s.committed()
-	if newest, ok := s.Spool.Newest(); ok {
-		resume = newest.Checkpoint
-	}
+	resume := s.resumeAt(sources)
 	s.collector = logs.NewCollector(sources, s.Options, resume, s.Start, s.Now)
 	s.aggregator = logs.NewAggregator()
 	s.lastFlush = s.Now()
@@ -219,6 +218,40 @@ func (s *LogShipper) apply(ctx context.Context, lc api.LogCollection) {
 		s.lastSent = s.Now()
 	}
 	s.Logger.Info("log collection started", "sources", sources)
+}
+
+// resumeAt is where a collector for sources starts: the newest spooled checkpoint, or the committed one. The
+// positions of a source that is off are void, so that switching it on again starts at the current end like a
+// first enable, and lines written while it was off are never uploaded. A source the checkpoint lists but that
+// is off now is taken out of it, and that is recorded at once in an empty batch with the new checkpoint, as
+// the newest batch is where the next start resumes, also after a restart. Should the spool fail, the source is
+// remembered here as switched off.
+func (s *LogShipper) resumeAt(sources []string) logs.Checkpoint {
+	resume := s.committed()
+	if newest, ok := s.Spool.Newest(); ok {
+		resume = newest.Checkpoint
+	}
+	if s.switchedOff == nil {
+		s.switchedOff = map[string]bool{}
+	}
+	changed := false
+	resume.Sources = slices.DeleteFunc(slices.Clone(resume.Sources), func(src string) bool {
+		if !slices.Contains(sources, src) {
+			s.switchedOff[src] = true
+		}
+		changed = changed || s.switchedOff[src]
+		return s.switchedOff[src]
+	})
+	if !slices.Contains(resume.Sources, logs.SourceAuth) {
+		resume.JournalCursor = ""
+	}
+	if changed && s.spoolBatch(nil, resume) {
+		clear(s.switchedOff)
+	}
+	for _, src := range sources {
+		delete(s.switchedOff, src)
+	}
+	return resume
 }
 
 func (s *LogShipper) stopCollector() {
@@ -256,7 +289,7 @@ func (s *LogShipper) flush() {
 	s.lastFlush = s.Now()
 	for len(events) > 0 {
 		n := batchSize(events)
-		s.spoolBatch(events[:n])
+		s.spoolBatch(events[:n], s.collector.Checkpoint())
 		events = events[n:]
 	}
 }
@@ -269,7 +302,7 @@ func (s *LogShipper) liveness() {
 		s.flush()
 		return
 	}
-	s.spoolBatch(nil)
+	s.spoolBatch(nil, s.collector.Checkpoint())
 }
 
 // batchSize is how many events fit one batch: at most MaxBatchEvents and well under the 5 MB body limit.
@@ -285,14 +318,16 @@ func batchSize(events []logs.Event) int {
 	return len(events)
 }
 
-func (s *LogShipper) spoolBatch(events []logs.Event) {
+func (s *LogShipper) spoolBatch(events []logs.Event, cp logs.Checkpoint) bool {
 	if events == nil {
 		events = []logs.Event{}
 	}
-	b := logs.Batch{ID: logs.NewBatchID(), Events: events, Checkpoint: s.collector.Checkpoint(), CreatedAt: s.Now().UTC()}
+	b := logs.Batch{ID: logs.NewBatchID(), Events: events, Checkpoint: cp, CreatedAt: s.Now().UTC()}
 	if err := s.Spool.Append(b); err != nil {
 		s.Logger.Error("spool log batch", "error", err, "events", len(events))
+		return false
 	}
+	return true
 }
 
 // upload sends the spooled batches in order. A batch the server rejects is never dropped whole on the word of
