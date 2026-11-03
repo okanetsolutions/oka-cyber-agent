@@ -40,6 +40,7 @@ These are product promises written in the README. A change that breaks one is a 
 - `testdata` directories next to the code they feed: real sample files, never generated at test time.
 - `install.sh`: the one line installer (POSIX `sh`, it runs as `curl ... | sudo sh -s --`). It embeds the systemd unit, which must stay identical to `packaging/oka-cyber-agent.service` apart from the binary path (`test/install/check-unit.sh` enforces it).
 - `packaging`: the systemd unit and the `.deb`/`.rpm` maintainer scripts used by `.goreleaser.yaml`.
+- `.github/workflows`: CI, `tag.yml` with `tag.sh` (tags every merge to main that passes CI with the next patch version and dispatches the release, tested by `test/release/tag.sh`) and `release.yml` (goreleaser, cosign signature).
 - `test/faketenant` and `test/install`: a stand in for the agent API and the CI scripts that install, rerun, upgrade and uninstall the agent (script and packages) on Ubuntu, Debian, Rocky and RHEL 8 (systemd 239, without `LoadCredential`).
 
 Update this section in the same PR when a package is added, moved or removed.
@@ -82,7 +83,7 @@ gofmt -l .
 go vet ./...
 staticcheck ./...
 go test -race ./...
-shellcheck -s sh install.sh packaging/*.sh test/install/*.sh   # when shell scripts changed
+shellcheck -s sh install.sh packaging/*.sh test/install/*.sh .github/workflows/tag.sh test/release/*.sh   # when shell scripts changed
 ```
 
 Installer and packaging changes are verified by the `install` and `packages` CI jobs; to run them locally, start the fake tenant with `sh test/install/prepare.sh` and run `test/install/run.sh` or `test/install/packages.sh` as root in a disposable container (`docker run --rm --network host -v "$PWD:/src:ro" debian:12 sh /src/test/install/run.sh`).

@@ -29,7 +29,9 @@ jobs:
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
       - name: shellcheck
-        run: shellcheck -s sh install.sh packaging/*.sh test/install/*.sh
+        run: shellcheck -s sh install.sh packaging/*.sh test/install/*.sh .github/workflows/tag.sh test/release/*.sh
+      - name: release tagging picks the next version
+        run: sh test/release/tag.sh
       - name: install.sh unit matches packaging/oka-cyber-agent.service
         run: sh test/install/check-unit.sh
       - name: install.sh tells an old cosign from a bad signature
