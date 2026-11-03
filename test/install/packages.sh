@@ -2,9 +2,10 @@
 # Installs the .deb or .rpm built by GoReleaser and enrolls against the fake tenant, then checks how the
 # maintainer scripts treat the service: a first install on an enrolled host enables and starts it, an upgrade
 # restarts it but keeps it disabled when the admin disabled it, and on deb a reinstall after "remove" enables
-# it again only if it was enabled. It also checks that install.sh and the package refuse to install over each
-# other, and that a script install can be replaced by the package keeping its enrollment. Finally it erases the
-# package and checks nothing is left behind. Runs as root in a disposable container or host with the packages in
+# it again only if it was enabled. Every install and upgrade must put the oka-cyber user in adm and
+# systemd-journal where the host has them. It also checks that install.sh and the package refuse to install over
+# each other, and that a script install can be replaced by the package keeping its enrollment. Finally it erases
+# the package and checks nothing is left behind. Runs as root in a disposable container or host with the packages in
 # $DIST and this repository's install.sh; the service checks need systemd.
 set -eu
 
@@ -86,6 +87,8 @@ install_package
 [ -x /usr/bin/oka-cyber-agent ] || fail "binary missing"
 [ -f /usr/lib/systemd/system/oka-cyber-agent.service ] || fail "unit missing"
 getent passwd oka-cyber >/dev/null || fail "the oka-cyber user was not created"
+getent group adm >/dev/null || fail "the image has no adm group, so the log group check would test nothing"
+check_log_groups "after the first install"
 check_disabled "before enroll"
 
 echo "== enroll under umask 077 (a hardened host)"
@@ -101,9 +104,12 @@ admin_enable
 echo "== install.sh refuses to install over the package"
 refuses_script_install "install"
 
-echo "== upgrade restarts an enabled service"
+echo "== upgrade restarts an enabled service and grants the log groups again"
+# A host where an admin took the user out of adm (or an upgrade from a version without log collection).
+gpasswd -d oka-cyber adm >/dev/null
 before=$(stat_of_systemd heartbeats)
 upgrade_package
+check_log_groups "after an upgrade"
 check_enrollment_files
 check_enabled_and_reporting "$before" "after an upgrade"
 
@@ -122,6 +128,7 @@ if command -v apt-get >/dev/null 2>&1; then
 	refuses_script_install "removed but not purged"
 	before=$(stat_of_systemd heartbeats)
 	install_package
+	check_log_groups "after a reinstall"
 	[ ! -e /etc/oka-cyber-agent/package-removed ] || fail "reinstall kept the remove marker"
 	check_enrollment_files
 	check_enabled_and_reporting "$before" "after a reinstall"

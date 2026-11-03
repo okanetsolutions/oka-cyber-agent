@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/collect"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/config"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/logs"
 )
 
 type result struct {
@@ -701,4 +703,60 @@ func useRoot(t *testing.T, root string) {
 	previous := collectRoot
 	collectRoot = root
 	t.Cleanup(func() { collectRoot = previous })
+}
+
+// The server answers POST /logs over its daily cap with 429 and Retry-After; the log client does not retry
+// itself, so the shipper must wait that long before it sends the batch again.
+func TestLogUploadsHonourRetryAfter(t *testing.T) {
+	var mu sync.Mutex
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cyber-agent/v1/logs" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		posts++
+		n := posts
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"message":"Too Many Attempts."}`)
+			return
+		}
+		io.WriteString(w, `{"accepted":0}`)
+	}))
+	t.Cleanup(srv.Close)
+	stateDir := t.TempDir()
+	shipper, err := newLogShipper(config.Config{URL: srv.URL, InsecureDev: true}, "agent-secret", stateDir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	shipper.Now = func() time.Time { return now }
+	if err := shipper.Spool.Append(logs.Batch{ID: logs.NewBatchID(), Events: []logs.Event{}, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return posts
+	}
+	for range 120 {
+		if err := shipper.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Second)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("POST /logs sent %d times within Retry-After: 120, want 1", got)
+	}
+	if err := shipper.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(); got != 2 || !shipper.Spool.Empty() {
+		t.Fatalf("POST /logs sent %d times, want the batch sent again once Retry-After passed", got)
+	}
 }

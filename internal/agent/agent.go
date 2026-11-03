@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
@@ -38,9 +40,11 @@ type Agent struct {
 	StateDir string
 	Client   Client
 	Collect  func(ctx context.Context) (*collect.Inventory, error)
-	Logger   *slog.Logger
-	Now      func() time.Time
-	Wait     func(ctx context.Context, d time.Duration) error
+	// Logs ships log events alongside the reports when set; heartbeats hand it the server's log configuration.
+	Logs   *LogShipper
+	Logger *slog.Logger
+	Now    func() time.Time
+	Wait   func(ctx context.Context, d time.Duration) error
 	// ConfigChanged reports whether enroll --force or an edit replaced the configuration or the token, so Run
 	// returns ErrConfigChanged and the service manager restarts the agent with them. Nil disables the check.
 	ConfigChanged func() (bool, error)
@@ -50,9 +54,23 @@ type Agent struct {
 }
 
 // Run reports until the context is cancelled, the server revokes the agent (ErrRevoked) or the configuration
-// or the token changed (ErrConfigChanged).
+// or the token changed (ErrConfigChanged). Log shipping, when the agent has a LogShipper, runs alongside and
+// stops with it; a 401 on a log upload stops the agent with ErrRevoked too.
 func (a *Agent) Run(ctx context.Context) error {
 	a.init()
+	ctx, cancel := context.WithCancel(ctx)
+	var shipping sync.WaitGroup
+	var logsRevoked atomic.Bool
+	if a.Logs != nil {
+		shipping.Go(func() {
+			if err := a.Logs.Run(ctx); errors.Is(err, ErrRevoked) {
+				logsRevoked.Store(true)
+				cancel()
+			}
+		})
+	}
+	defer shipping.Wait()
+	defer cancel()
 	for {
 		err := a.Cycle(ctx)
 		if errors.Is(err, ErrRevoked) {
@@ -61,7 +79,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err != nil && ctx.Err() == nil {
 			a.Logger.Error("report failed, retrying at the next interval", "error", err)
 		}
-		if err := a.waitNext(ctx); err != nil {
+		err = a.waitNext(ctx)
+		if logsRevoked.Load() {
+			a.recordError(ErrRevoked)
+			a.save()
+			return ErrRevoked
+		}
+		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
@@ -147,6 +171,9 @@ func (a *Agent) heartbeat(ctx context.Context) error {
 	}
 	a.state.LastHeartbeatAt = a.Now().UTC()
 	a.setInterval(resp.ReportIntervalSeconds)
+	if a.Logs != nil && resp.LogCollection != nil {
+		a.Logs.Configure(*resp.LogCollection)
+	}
 	return nil
 }
 

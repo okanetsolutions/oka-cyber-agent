@@ -5,6 +5,15 @@ if ! getent passwd oka-cyber >/dev/null 2>&1; then
 	useradd --system --user-group --no-create-home --home-dir /var/lib/oka-cyber-agent --shell /usr/sbin/nologin oka-cyber
 fi
 
+# Log collection reads auth logs (group adm) and the journal (group systemd-journal) without root. Also on an
+# upgrade, so the try-restart below starts the service with the groups. A group the host does not have is
+# skipped; any other usermod failure fails the install.
+for group in adm systemd-journal; do
+	if getent group "$group" >/dev/null 2>&1; then
+		usermod -a -G "$group" oka-cyber
+	fi
+done
+
 # On an enrolled host, a first install enables and starts the service and an upgrade only restarts it, so a
 # service the admin disabled stays disabled. rpm passes 1 on install and 2 on upgrade. deb passes "configure"
 # with the previously configured version, which is empty on a first install but also set when the package is

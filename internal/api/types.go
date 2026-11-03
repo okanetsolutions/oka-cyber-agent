@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/logs"
 )
 
 // Secret is a string that never prints: fmt verbs and loggers see [redacted], JSON encoding sees the value.
@@ -34,7 +36,27 @@ type HeartbeatRequest struct {
 }
 
 type HeartbeatResponse struct {
-	ReportIntervalSeconds int `json:"report_interval_seconds"`
+	ReportIntervalSeconds int            `json:"report_interval_seconds"`
+	LogCollection         *LogCollection `json:"log_collection"`
+}
+
+// LogCollection is the log configuration an admin chose for this server: which built in sources run.
+// Sources is empty when collection is off. It never contains file paths.
+type LogCollection struct {
+	Sources              []string `json:"sources"`
+	FlushIntervalSeconds int      `json:"flush_interval_seconds"`
+}
+
+type LogBatchRequest struct {
+	BatchID        string               `json:"batch_id"`
+	Events         []logs.Event         `json:"events"`
+	SkippedSources []logs.SkippedSource `json:"skipped_sources"`
+	DroppedEvents  int                  `json:"dropped_events"`
+}
+
+type LogBatchResponse struct {
+	Accepted      int            `json:"accepted"`
+	LogCollection *LogCollection `json:"log_collection"`
 }
 
 type InventoryResponse struct {

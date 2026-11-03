@@ -203,6 +203,18 @@ create_user() {
 	say "created the $SERVICE_USER system user"
 }
 
+# Log collection reads auth logs and the journal without root: Debian family logs are readable by the adm
+# group and the journal by systemd-journal. On RHEL family systems /var/log/secure is root only, so the
+# agent reads the journal there. Run on every install, so an upgrade from a version without log collection
+# gets the groups too; a running service picks them up when start_service restarts it.
+grant_log_access() {
+	for group in adm systemd-journal; do
+		if getent group "$group" >/dev/null 2>&1 && ! id -nG "$SERVICE_USER" | tr ' ' '\n' | grep -qx "$group"; then
+			usermod -a -G "$group" "$SERVICE_USER" 2>/dev/null || addgroup "$SERVICE_USER" "$group" 2>/dev/null || true
+		fi
+	done
+}
+
 has_systemd() {
 	[ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
 }
@@ -311,6 +323,7 @@ main() {
 	download_and_verify
 	install_binary
 	create_user
+	grant_log_access
 	detect_first_install
 	write_unit
 	enroll

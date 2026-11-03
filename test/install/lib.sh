@@ -19,6 +19,15 @@ stat_of() {
 	curl -fsS "$TENANT/stats" | tr -d ' \n' | sed -n "s/.*\"$1\":\([0-9]*\).*/\1/p"
 }
 
+# The oka-cyber user must be in adm and systemd-journal, where the host has them, to read auth logs and the
+# journal. $1 says after which step.
+check_log_groups() {
+	for group in adm systemd-journal; do
+		getent group "$group" >/dev/null 2>&1 || continue
+		id -nG oka-cyber | tr ' ' '\n' | grep -qx "$group" || fail "oka-cyber is not in the $group group $1"
+	done
+}
+
 has_systemd() {
 	[ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
 }

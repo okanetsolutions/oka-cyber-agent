@@ -13,6 +13,7 @@ import (
 	"github.com/okanetsolutions/oka-cyber-agent/internal/api"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/collect"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/config"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/logs"
 )
 
 var collectRoot = "/"
@@ -74,6 +75,10 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 	if *once {
 		err = a.Cycle(ctx)
 	} else {
+		if a.Logs, err = newLogShipper(cfg, token, *stateDir, logger); err != nil {
+			logger.Error("cannot start", "error", err)
+			return exitFailure
+		}
 		logger.Info("agent started", "version", agent.Version, "url", cfg.URL, "server_id", cfg.ServerID)
 		err = a.Run(ctx)
 	}
@@ -92,6 +97,16 @@ func runCommand(ctx context.Context, args []string, io streams) int {
 		return exitFailure
 	}
 	return exitOK
+}
+
+// newLogShipper gives log uploads their own client without retries: the shipper retries a batch itself, with
+// its own backoff (at least as long as the server's Retry-After), and keeps collecting meanwhile.
+func newLogShipper(cfg config.Config, token, stateDir string, logger *slog.Logger) (*agent.LogShipper, error) {
+	client, err := api.New(cfg.URL, api.Options{Token: api.Secret(token), InsecureDev: cfg.InsecureDev, AgentVersion: agent.Version, MaxAttempts: 1})
+	if err != nil {
+		return nil, err
+	}
+	return agent.NewLogShipper(client, stateDir, logs.Options{Root: collectRoot, AppPaths: cfg.LogPaths}, logger)
 }
 
 func collectOptions(cfg config.Config) collect.Options {

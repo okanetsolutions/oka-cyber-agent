@@ -2,6 +2,7 @@ package logs
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -78,14 +79,15 @@ func TestAuthLogsPerDistribution(t *testing.T) {
 			KindSSHLoginFailed: 2, KindSSHLoginSucceeded: 1, KindSudoCommand: 2, KindSudoFailed + ":not_in_sudoers": 1,
 			KindSuSession: 5, KindUserCreated: 3, KindUserGroupChanged: 3, KindPasswordChanged: 4,
 		},
-		"debian-12.groups.log":    {KindUserCreated: 3, KindUserGroupChanged: 5},
-		"ubuntu-24.04.groups.log": {KindUserCreated: 3, KindUserGroupChanged: 5},
-		"rocky-9.groups.secure":   {KindUserCreated: 3, KindUserGroupChanged: 5},
-		"debian-12.sudo.log":      {KindSudoCommand: 8},
-		"ubuntu-24.04.sudo.log":   {KindSudoCommand: 8},
-		"rocky-9.sudo.secure":     {KindSudoCommand: 8},
-		"debian-12.cron.log":      {KindCronModified: 3},
-		"rocky-9.cron":            {KindCronModified: 3},
+		"debian-12.groups.log":         {KindUserCreated: 3, KindUserGroupChanged: 5},
+		"ubuntu-24.04.groups.log":      {KindUserCreated: 3, KindUserGroupChanged: 5},
+		"rocky-9.groups.secure":        {KindUserCreated: 3, KindUserGroupChanged: 5},
+		"debian-12.sudo.log":           {KindSudoCommand: 8},
+		"ubuntu-24.04.sudo.log":        {KindSudoCommand: 8},
+		"rocky-9.sudo.secure":          {KindSudoCommand: 8},
+		"debian-12.sudo-continued.log": {KindSudoCommand: 2},
+		"debian-12.cron.log":           {KindCronModified: 3},
+		"rocky-9.cron":                 {KindCronModified: 3},
 	}
 	for fixture, want := range tests {
 		t.Run(fixture, func(t *testing.T) {
@@ -131,7 +133,7 @@ func TestSSHEventFields(t *testing.T) {
 func TestSudoSuAndAccountFields(t *testing.T) {
 	events := authEvents(t, "debian-12.auth.log")
 	cmd := findEvent(t, events, KindSudoCommand, nil)
-	if cmd.Username != "alice" || cmd.Fields["target_user"] != "root" || cmd.Fields["command"] != "/usr/bin/ls /root" {
+	if cmd.Username != "alice" || cmd.Fields["target_user"] != "root" || cmd.Fields["command"] != "/usr/bin/ls [1 arg]" || !strings.HasSuffix(cmd.Message, "; COMMAND=/usr/bin/ls [1 arg]") {
 		t.Fatalf("sudo command = %+v", cmd)
 	}
 	denied := findEvent(t, events, KindSudoFailed, func(e Event) bool { return e.Fields["reason"] == "not_in_sudoers" })
@@ -190,19 +192,19 @@ func TestUseraddReportsSupplementaryGroups(t *testing.T) {
 // allowed to run anything: a plain command, from the directory "/tmp/x ; USER=bob ; COMMAND=/bin/true", with
 // arguments holding " ; USER=bob ; COMMAND=/bin/true", both, with a variable on the command line holding
 // " ; COMMAND=/bin/true", with -g adm and with I/O logging (TSID). sudo writes the working directory, the
-// variables and the arguments without escaping " ; ", so a field is reported only when the line has one
-// reading of it.
+// variables and the arguments without escaping " ; ", so the target user is reported only when the line has
+// one reading of it, and the command only when every reading gives the same executable and argument count.
 func TestSudoFieldsAreNotTakenFromCraftedValues(t *testing.T) {
 	type fields struct{ targetUser, command any }
 	want := []fields{
-		{"root", "/bin/ls /root"},
-		{nil, nil},
-		{nil, nil},
-		{nil, nil},
-		{nil, nil},
-		{"root", nil},
-		{"root", "/bin/sh -c true"},
-		{"root", "/usr/bin/id"},
+		{"root", "/bin/ls [1 arg]"},
+		{nil, "[unparsed]"},
+		{nil, "[unparsed]"},
+		{nil, "[unparsed]"},
+		{nil, "[unparsed]"},
+		{"root", "[unparsed]"},
+		{"root", "/bin/sh [2 args]"},
+		{"root", "/usr/bin/id [0 args]"},
 	}
 	for _, fixture := range []string{"debian-12.sudo.log", "ubuntu-24.04.sudo.log", "rocky-9.sudo.secure"} {
 		events := authEvents(t, fixture)
@@ -211,7 +213,7 @@ func TestSudoFieldsAreNotTakenFromCraftedValues(t *testing.T) {
 		}
 		for i, e := range events {
 			got := fields{e.Fields["target_user"], e.Fields["command"]}
-			if e.Kind != KindSudoCommand || e.Username != "alice" || got != want[i] {
+			if e.Kind != KindSudoCommand || e.Username != "alice" || got != want[i] || !strings.HasSuffix(e.Message, " ; COMMAND="+want[i].command.(string)) {
 				t.Errorf("%s line %d: %s by %q target_user=%v command=%v, want %v", fixture, i+1, e.Kind, e.Username, got.targetUser, got.command, want[i])
 			}
 		}
@@ -222,13 +224,14 @@ func TestSudoKeyOrder(t *testing.T) {
 	for _, tc := range []struct {
 		message, targetUser, command string
 	}{
-		{"alice : TTY=pts/0 ; PWD=/srv ; USER=postgres ; GROUP=postgres ; TSID=000001 ; ENV=PGDATA=/srv/db ; COMMAND=/usr/bin/psql -c select 1 ; select 2", "postgres", "/usr/bin/psql -c select 1 ; select 2"},
-		{"alice : HOST=web1 ; TTY=pts/0 ; CHROOT=/jail ; PWD=/ ; USER=root ; COMMAND=/bin/ls", "root", "/bin/ls"},
-		{"alice : TTY=pts/0 ; PWD=/tmp/USER=bob ; USER=root ; COMMAND=/bin/ls", "root", "/bin/ls"},
-		{"alice : TTY=pts/0 ; PWD=/tmp/a ; USER=bob ; USER=root ; COMMAND=/bin/ls", "root", "/bin/ls"},
-		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/echo USER=bob ; GROUP=x", "root", "/bin/echo USER=bob ; GROUP=x"},
-		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; ENV=A=1 ; USER=bob ; COMMAND=/bin/ls", "", "/bin/ls"},
-		{"alice : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/x ; USER=bob ; COMMAND=/y ; USER=root ; COMMAND=/bin/sh", "", ""},
+		{"alice : TTY=pts/0 ; PWD=/srv ; USER=postgres ; GROUP=postgres ; TSID=000001 ; ENV=PGDATA=/srv/db ; COMMAND=/usr/bin/psql -c select 1 ; select 2", "postgres", "/usr/bin/psql [6 args]"},
+		{"alice : HOST=web1 ; TTY=pts/0 ; CHROOT=/jail ; PWD=/ ; USER=root ; COMMAND=/bin/ls", "root", "/bin/ls [0 args]"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/USER=bob ; USER=root ; COMMAND=/bin/ls", "root", "/bin/ls [0 args]"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/a ; USER=bob ; USER=root ; COMMAND=/bin/ls", "root", "/bin/ls [0 args]"},
+		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/echo USER=bob ; GROUP=x", "root", "/bin/echo [3 args]"},
+		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; ENV=A=1 ; USER=bob ; COMMAND=/bin/ls", "", "/bin/ls [0 args]"},
+		{"alice : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/x ; USER=bob ; COMMAND=/y ; USER=root ; COMMAND=/bin/sh", "", "[unparsed]"},
+		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=", "root", "[unparsed]"},
 	} {
 		e, ok := ParseAuth("sudo", tc.message, testNow)
 		if !ok {
@@ -244,6 +247,179 @@ func TestSudoKeyOrder(t *testing.T) {
 	if _, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/x ; COMMAND=/bin/ls", testNow); ok {
 		t.Error("a line without USER is not a sudo command")
 	}
+}
+
+// A sudo event keeps only the executable and the number of arguments of the command, and no variable: tools
+// take passwords through options of their own and positional arguments, which no redaction rule knows of all.
+func TestSudoKeepsNoArguments(t *testing.T) {
+	const prefix = "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; "
+	for _, tc := range []struct{ command, want string }{
+		{"/usr/bin/ldapmodify -x -D cn=admin -w hunter2pw", "/usr/bin/ldapmodify [5 args]"},
+		{"/opt/mssql-tools18/bin/sqlcmd -S host -U sa -P S3cretPw", "/opt/mssql-tools18/bin/sqlcmd [6 args]"},
+		{"/usr/bin/htpasswd -b /etc/nginx/.htpasswd bob S3cretPw", "/usr/bin/htpasswd [4 args]"},
+		{"/usr/bin/smbclient //h/s -U bob%S3cretPw", "/usr/bin/smbclient [3 args]"},
+		{"/usr/local/bin/aws configure set aws_secret_access_key S3cretPw", "/usr/local/bin/aws [4 args]"},
+		{"/usr/bin/redis-cli -h x AUTH S3cretPw", "/usr/bin/redis-cli [4 args]"},
+		{"/usr/sbin/rabbitmqctl add_user bob S3cretPw", "/usr/sbin/rabbitmqctl [3 args]"},
+		{"/usr/bin/mysql -pS3cretPw shop", "/usr/bin/mysql [2 args]"},
+		{`/bin/sh -c 'mysql -pS3cretPw -e \'select 1\''`, "/bin/sh [2 args]"},
+		{"/bin/sh -c mysql -pS3cretPw -e select 1", "/bin/sh [6 args]"},
+	} {
+		for _, line := range []string{
+			prefix + "COMMAND=" + tc.command,
+			prefix + "ENV=MYSQL_PWD=S3cretPw REDISCLI_AUTH=hunter2pw ; COMMAND=" + tc.command,
+			prefix + "ENV=A=1 ; B=S3cretPw ; COMMAND=" + tc.command,
+			"alice : 3 incorrect password attempts ; " + prefix[len("alice : "):] + "COMMAND=" + tc.command,
+		} {
+			e, ok := ParseAuth("sudo", line, testNow)
+			if !ok {
+				t.Fatalf("not a sudo line: %q", line)
+			}
+			got := Redact(e)
+			data, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "S3cretPw") || strings.Contains(string(data), "hunter2pw") {
+				t.Errorf("%q leaks a password: %s", line, data)
+			}
+			if got.Fields["command"] != tc.want || got.Fields["target_user"] != "root" || !strings.HasSuffix(got.Message, " ; COMMAND="+tc.want) {
+				t.Errorf("%q: command = %v, target_user = %v, message = %q, want %q", line, got.Fields["command"], got.Fields["target_user"], got.Message, tc.want)
+			}
+			if strings.Contains(line, "ENV=") && !strings.HasSuffix(got.Message, " ; USER=root ; ENV=[redacted] ; COMMAND="+tc.want) {
+				t.Errorf("%q: message = %q", line, got.Message)
+			}
+		}
+	}
+}
+
+// A working directory or variable that copies sudo's own fields can only turn the command into [unparsed]: it
+// can neither change the executable or argument count reported nor bring an argument into the message.
+func TestSudoCraftedFieldsHideNoArgument(t *testing.T) {
+	for _, tc := range []struct{ line, command, message string }{
+		{"alice : TTY=pts/0 ; PWD=/tmp/x ; USER=root ; COMMAND=/usr/bin/id ; USER=root ; COMMAND=/usr/bin/ldapmodify -w hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=[unparsed]"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/x ; USER=root ; COMMAND=/usr/bin/ldapmodify -w ; USER=root ; COMMAND=/usr/bin/ldapmodify -w hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=[unparsed]"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/x ; ENV=y ; USER=root ; ENV=MYSQL_PWD=hunter2pw ; COMMAND=/usr/bin/mysql", "/usr/bin/mysql [0 args]", "alice : TTY=pts/0 ; PWD=[redacted] ; ENV=[redacted] ; COMMAND=/usr/bin/mysql [0 args]"},
+		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; ENV=A=x ; COMMAND=/bin/true ; COMMAND=/usr/bin/redis-cli AUTH hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; ENV=[redacted] ; COMMAND=[unparsed]"},
+		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/htpasswd -b f bob hunter2pw ; COMMAND=/bin/true", "/usr/bin/htpasswd [6 args]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/htpasswd [6 args]"},
+	} {
+		e, ok := ParseAuth("sudo", tc.line, testNow)
+		if !ok {
+			t.Fatalf("not a sudo line: %q", tc.line)
+		}
+		got := Redact(e)
+		if got.Fields["command"] != tc.command || got.Message != tc.message || strings.Contains(fmt.Sprint(got.Fields), "hunter2pw") {
+			t.Errorf("%q:\n got %q %v\nwant %q %q", tc.line, got.Message, got.Fields, tc.message, tc.command)
+		}
+	}
+}
+
+// The fixture was captured on Debian 12 (sudo 1.9.13) with alice running /bin/true with 150 arguments and
+// -w S3cretPass, then with three times as many: sudo logs a command longer than 960 bytes in several lines, the
+// later ones "alice : (command continued) <arguments>". They hold only arguments and give no event.
+func TestSudoContinuedCommandLines(t *testing.T) {
+	events := authEvents(t, "debian-12.sudo-continued.log")
+	if len(events) != 2 {
+		t.Fatalf("%d events, want 2: %+v", len(events), events)
+	}
+	for _, e := range events {
+		data, err := json.Marshal(Redact(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Kind != KindSudoCommand || e.Fields["command"] != "/bin/true [130 args]" || strings.Contains(string(data), "S3cretPass") || strings.Contains(string(data), "arg129") {
+			t.Errorf("event = %s", data)
+		}
+	}
+}
+
+// Only sudo's own fields and the failures it is known to log reach an event: a line of any other shape is
+// dropped, or keeps only its fields when it has those of a command, so its text can never carry an argument.
+func TestSudoShipsNoUnparsedText(t *testing.T) {
+	for _, tc := range []struct{ line, kind, reason, message string }{
+		{line: "   alice : (command continued) -D cn=admin -w S3cretPass -f /tmp/x.ldif"},
+		{line: "alice : (command continued) x ; PWD=/ ; USER=root ; COMMAND=/bin/true -w S3cretPass"},
+		{line: "alice : (command continued) 3 incorrect password attempts -w S3cretPass"},
+		{line: "alice : unable to execute /usr/bin/ldapmodify -w S3cretPass: Permission denied"},
+		{line: "alice : S3cretPass"},
+		{line: "alice : PWD=/ ; S3cretPass"},
+		{line: "alice : 3 incorrect password attempts -w S3cretPass ; TTY=pts/0"},
+		{
+			"alice : command not found -w S3cretPass ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ldapmodify -w S3cretPass",
+			KindSudoFailed, "other", "alice : [unparsed] ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ldapmodify [2 args]",
+		},
+		{
+			"alice : 3 incorrect password attempts -w S3cretPass ; PWD=/ ; USER=root ; COMMAND=/bin/ls",
+			KindSudoFailed, "other", "alice : [unparsed] ; PWD=/ ; USER=root ; COMMAND=/bin/ls [0 args]",
+		},
+		{
+			"alice : 3 incorrect password attempts ; TTY=pts/0 ; S3cretPass ; PWD=/ ; USER=root ; COMMAND=/bin/ls",
+			KindSudoFailed, "incorrect_password", "alice : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/ls [0 args]",
+		},
+		{
+			"alice : TTY=pts/0 ; PWD=/tmp/a ; S3cretPass ; USER=root ; COMMAND=/bin/ls",
+			KindSudoCommand, "", "alice : TTY=pts/0 ; PWD=/tmp/a ; USER=root ; COMMAND=/bin/ls [0 args]",
+		},
+		{
+			"bob : user NOT in sudoers ; TTY=pts/0 ; PWD=/x ; S3cretPass",
+			KindSudoFailed, "not_in_sudoers", "bob : user NOT in sudoers ; TTY=pts/0 ; PWD=/x",
+		},
+		{
+			"bob : user NOT authorized on host ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/ls",
+			KindSudoFailed, "other", "bob : user NOT authorized on host ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/ls [0 args]",
+		},
+	} {
+		e, ok := ParseAuth("sudo", tc.line, testNow)
+		if tc.kind == "" {
+			if ok {
+				t.Errorf("%q must give no event, got %+v", tc.line, e)
+			}
+			continue
+		}
+		if !ok {
+			t.Errorf("%q gave no event", tc.line)
+			continue
+		}
+		reason, _ := e.Fields["reason"].(string)
+		data, err := json.Marshal(Redact(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Kind != tc.kind || reason != tc.reason || e.Message != tc.message || strings.Contains(string(data), "S3cretPass") {
+			t.Errorf("%q:\n got %s %q %q\nwant %s %q %q", tc.line, e.Kind, reason, e.Message, tc.kind, tc.reason, tc.message)
+		}
+	}
+}
+
+// FuzzSudoKeepsNoArguments checks that whatever a user puts in the working directory, the variables and the
+// arguments of a sudo command, no argument reaches the event, and the command reported is the one sudo ran or
+// [unparsed].
+func FuzzSudoKeepsNoArguments(f *testing.F) {
+	f.Add("/tmp/x ; USER=root ; COMMAND=/bin/true", "A=1 ; COMMAND=/bin/ls", "-w ; USER=bob ; COMMAND=/bin/x 'a b'")
+	f.Add("/", "", "-x -D cn=admin -w")
+	f.Add("/Bob's files", "MYSQL_PWD=x", "-c 'mysql -p\\'x\\''")
+	f.Fuzz(func(t *testing.T, pwd, env, args string) {
+		if strings.Contains(pwd+env+args, "Zq9") {
+			t.Skip()
+		}
+		command := "/usr/bin/tool " + args + " Zq9secret"
+		line := "alice : TTY=pts/0 ; PWD=" + pwd + " ; USER=root ; "
+		if env != "" {
+			line += "ENV=" + env + " Zq9env ; "
+		}
+		line += "COMMAND=" + command
+		e, ok := ParseAuth("sudo", line, testNow)
+		if !ok {
+			return
+		}
+		got := Redact(e)
+		if strings.Contains(got.Message+fmt.Sprint(got.Fields), "Zq9") {
+			t.Fatalf("%q leaks: %q %v", line, got.Message, got.Fields)
+		}
+		if c := e.Fields["command"]; c != unparsedCommand && c != commandSummary(command) {
+			t.Fatalf("%q: command = %q, want %q or %q", line, c, commandSummary(command), unparsedCommand)
+		}
+	})
 }
 
 // The cron fixtures were captured on Debian 12 (cron, rsyslog) and Rocky 9 (cronie, rsyslog) after root ran
@@ -289,7 +465,7 @@ func TestAuthFailuresFromPAM(t *testing.T) {
 		t.Fatalf("passwd = %+v", e)
 	}
 	e, ok = ParseAuth("sudo", "   alice : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/bin/sh -c echo a ; echo b", at)
-	if !ok || e.Fields["command"] != "/bin/sh -c echo a ; echo b" || e.Fields["reason"] != "incorrect_password" {
+	if !ok || e.Fields["command"] != "/bin/sh [6 args]" || e.Fields["reason"] != "incorrect_password" {
 		t.Fatalf("sudo with ; in the command = %+v", e)
 	}
 	e, ok = ParseAuth("sshd", "Failed publickey for git from 2001:db8::7 port 50022 ssh2: ED25519 SHA256:abc", at)

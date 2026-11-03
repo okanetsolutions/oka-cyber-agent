@@ -37,6 +37,21 @@ type SkippedSource struct {
 	Reason string `json:"reason"`
 }
 
+// MaxSkippedPathLength is the longest path the server accepts in a skipped source.
+const MaxSkippedPathLength = 1024
+
+// Sendable returns the skipped source as the server accepts it, ok false when it cannot be: the server
+// requires an absolute path of at most MaxSkippedPathLength characters without NUL, CR or LF, and rejects the
+// whole request otherwise. A path a glob matched may hold any byte, so those are replaced and a long path cut.
+func (s SkippedSource) Sendable() (SkippedSource, bool) {
+	if !strings.HasPrefix(s.Path, "/") || s.Source == "" || s.Reason == "" {
+		return s, false
+	}
+	s.Path = cut(strings.NewReplacer("\x00", "\uFFFD", "\r", "\uFFFD", "\n", "\uFFFD").Replace(s.Path), MaxSkippedPathLength)
+	s.Reason = cut(s.Reason, maxNameLength)
+	return s, true
+}
+
 type FilePlan struct {
 	Source string
 	Path   string
@@ -88,12 +103,12 @@ func PlanSources(enabled []string, o Options) Plan {
 // local user can write a line with any program name to them (logger -p auth.info -t sshd), while journald
 // records who really sent each entry (see TrustedAuthEntry).
 func (o Options) planAuth(p *Plan) {
-	switch o.journalAccess() {
+	switch reason, dir := o.journalAccess(); reason {
 	case "":
 		p.Journal = true
 		return
 	case ReasonPermissionDenied:
-		p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, "journal", ReasonPermissionDenied})
+		p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, dir, ReasonPermissionDenied})
 		return
 	}
 	for _, path := range authFiles {
@@ -115,29 +130,30 @@ func (o Options) planAuth(p *Plan) {
 	p.Skipped = append(p.Skipped, SkippedSource{SourceAuth, authFiles[0], ReasonNotFound})
 }
 
-// journalAccess returns "" when the system journal can be read, permission_denied when its files exist
-// but are not readable (the agent's user is not in the systemd-journal or adm group), and not_found
-// when there is no journal or no journalctl.
-func (o Options) journalAccess() string {
+// journalAccess returns "" when the system journal can be read, permission_denied and the first journal
+// directory that has files when they are not readable (the agent's user is not in the systemd-journal or adm
+// group), and not_found when there is no journal or no journalctl.
+func (o Options) journalAccess() (reason, dir string) {
 	if o.HasJournalctl == nil || !o.HasJournalctl() {
-		return ReasonNotFound
+		return ReasonNotFound, ""
 	}
-	found := false
-	for _, dir := range journalDirs {
-		pattern := o.path(filepath.Join(dir, "*", "system*.journal"))
+	for _, journalDir := range journalDirs {
+		pattern := o.path(filepath.Join(journalDir, "*", "system*.journal"))
 		files, _ := filepath.Glob(pattern)
 		for _, file := range files {
-			found = true
+			if dir == "" {
+				dir = journalDir
+			}
 			if f, err := openLogFile(file, pattern); err == nil {
 				f.Close()
-				return ""
+				return "", ""
 			}
 		}
 	}
-	if found {
-		return ReasonPermissionDenied
+	if dir != "" {
+		return ReasonPermissionDenied, dir
 	}
-	return ReasonNotFound
+	return ReasonNotFound, ""
 }
 
 func (o Options) planWeb(p *Plan) {

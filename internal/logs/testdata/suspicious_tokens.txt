@@ -1,0 +1,76 @@
+# Tokens that make a web request suspicious (case insensitive). Such requests are sent in full; every other
+# request below status 400 only counts toward http_traffic.
+#
+# Tokens under [uri] are only looked for in the URI, because they are part of ordinary browser user agents
+# ("Mozilla/5.0 (X11; Linux x86_64)"). Tokens under [any] are looked for in the URI and the user agent.
+[uri]
+;
+%3b
+"
+%22
+[any]
+# Path traversal and encoding tricks
+..
+%2e
+%2f
+%5c
+%00
+%0a
+%0d
+/.
+# Injection
+${
+%24%7b
+<
+%3c
+'
+%27
+|
+%7c
+`
+%60
+union
+select
+sleep(
+benchmark(
+waitfor
+information_schema
+/etc/passwd
+/bin/sh
+cmd.exe
+base64_decode
+eval(
+jndi
+# Commonly probed paths
+cgi-bin
+phpunit
+_ignition
+wp-
+xmlrpc
+phpmyadmin
+.env
+.git
+actuator
+server-status
+vendor/
+eval-stdin
+# Scanners
+sqlmap
+nikto
+nmap
+masscan
+zgrab
+nuclei
+wpscan
+dirbuster
+gobuster
+ffuf
+feroxbuster
+acunetix
+nessus
+openvas
+w3af
+zmeu
+jorgee
+hydra
+libwww-perl

@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/okanetsolutions/oka-cyber-agent/internal/logs"
 )
 
 type recordedRequest struct {
@@ -223,6 +225,30 @@ func TestValidationErrorIsReturnedWithoutRetryOrRequestBody(t *testing.T) {
 	}
 }
 
+func TestValidationErrorNamesTheRejectedFields(t *testing.T) {
+	srv, _ := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusUnprocessableEntity, `{"message":"The skipped_sources.0.path field format is invalid. (and 1 more error)","errors":{"skipped_sources.0.path":["The skipped_sources.0.path field format is invalid."],"events.3.first_at":["too old"]}}`)
+	})
+	_, err := newClient(t, srv, "agent-secret", &sleeps{}).PostLogs(context.Background(), LogBatchRequest{BatchID: "b", Events: []logs.Event{{Message: "payload-value"}}})
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || !slices.Equal(httpErr.Fields, []string{"events.3.first_at", "skipped_sources.0.path"}) {
+		t.Fatalf("err = %#v", err)
+	}
+	if strings.Contains(err.Error(), "payload-value") {
+		t.Fatalf("error %q leaks the request", err)
+	}
+
+	for _, body := range []string{`<html>413 Request Entity Too Large</html>`, `{"message":"x","errors":[]}`, `{"message":"x"}`} {
+		srv, _ := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+			writeJSON(w, http.StatusBadRequest, body)
+		})
+		_, err := newClient(t, srv, "agent-secret", &sleeps{}).PostLogs(context.Background(), LogBatchRequest{BatchID: "b"})
+		if !errors.As(err, &httpErr) || httpErr.Fields != nil {
+			t.Fatalf("body %s: err = %#v", body, err)
+		}
+	}
+}
+
 func TestPutInventorySendsTheExactSnapshotBytes(t *testing.T) {
 	snapshot := json.RawMessage(`{"os":{},"packages":[]}`)
 	srv, requests := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
@@ -309,6 +335,28 @@ func TestSecretsNeverFormat(t *testing.T) {
 	}
 }
 
+func TestHTTPErrorCarriesRetryAfter(t *testing.T) {
+	at := time.Now().Add(90 * time.Second).UTC().Format(http.TimeFormat)
+	for header, want := range map[string]time.Duration{"120": 120 * time.Second, at: 90 * time.Second, "": 0} {
+		srv, requests := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+			if header != "" {
+				w.Header().Set("Retry-After", header)
+			}
+			writeJSON(w, http.StatusTooManyRequests, `{"message":"Too Many Attempts."}`)
+		})
+		c := newClient(t, srv, "agent-secret", &sleeps{})
+		c.maxAttempts = 1
+		_, err := c.PostLogs(context.Background(), LogBatchRequest{BatchID: "b", Events: []logs.Event{}})
+		var httpErr *HTTPError
+		if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusTooManyRequests || requests.count() != 1 {
+			t.Fatalf("Retry-After %q: err = %v, requests = %d", header, err, requests.count())
+		}
+		if got := httpErr.RetryAfter; got > want || got < want-2*time.Second {
+			t.Errorf("Retry-After %q: RetryAfter = %v, want %v", header, got, want)
+		}
+	}
+}
+
 func TestRetryAfter(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 	tests := map[string]time.Duration{
@@ -339,5 +387,60 @@ func TestBackoffStaysWithinCeiling(t *testing.T) {
 				t.Fatalf("backoff(%d) = %v, want (0, %v]", attempt, d, ceiling)
 			}
 		}
+	}
+}
+
+func TestPostLogsSendsTheBatchAndReadsTheConfiguration(t *testing.T) {
+	srv, requests := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusOK, `{"accepted":1,"log_collection":{"sources":["auth"],"flush_interval_seconds":30}}`)
+	})
+	batch := LogBatchRequest{
+		BatchID:        "0b8f5d0e-3c1a-4c55-9f43-2f1d0f0b6a11",
+		Events:         []logs.Event{{Source: "auth", Kind: "sudo_command", Count: 1, Message: "m"}},
+		SkippedSources: []logs.SkippedSource{{Source: "web", Path: "/var/log/nginx", Reason: "not_found"}},
+		DroppedEvents:  3,
+	}
+	resp, err := newClient(t, srv, "agent-secret", &sleeps{}).PostLogs(context.Background(), batch)
+	if err != nil || resp.Accepted != 1 || resp.LogCollection == nil || resp.LogCollection.Sources[0] != "auth" {
+		t.Fatalf("resp = %+v, err = %v", resp, err)
+	}
+	r := requests.all()[0]
+	var sent map[string]any
+	if err := json.Unmarshal(r.body, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if r.method != http.MethodPost || r.path != "/cyber-agent/v1/logs" || sent["batch_id"] != batch.BatchID || sent["dropped_events"] != float64(3) || len(sent["events"].([]any)) != 1 || len(sent["skipped_sources"].([]any)) != 1 {
+		t.Fatalf("request = %s %s %s", r.method, r.path, r.body)
+	}
+}
+
+func TestPostLogsReportsAMissingEndpoint(t *testing.T) {
+	srv, requests := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusNotFound, `{"message":"not found"}`)
+	})
+	_, err := newClient(t, srv, "agent-secret", &sleeps{}).PostLogs(context.Background(), LogBatchRequest{BatchID: "b", Events: []logs.Event{}})
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusNotFound || len(requests.all()) != 1 {
+		t.Fatalf("err = %v, requests = %d", err, len(requests.all()))
+	}
+}
+
+func TestHeartbeatReadsLogCollection(t *testing.T) {
+	srv, _ := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusOK, `{"report_interval_seconds":300,"log_collection":{"sources":[],"flush_interval_seconds":30}}`)
+	})
+	resp, err := newClient(t, srv, "agent-secret", &sleeps{}).Heartbeat(context.Background(), HeartbeatRequest{})
+	if err != nil || resp.LogCollection == nil || len(resp.LogCollection.Sources) != 0 {
+		t.Fatalf("resp = %+v, err = %v", resp, err)
+	}
+}
+
+func TestHeartbeatWithoutLogCollection(t *testing.T) {
+	srv, _ := testServer(t, func(w http.ResponseWriter, _ recordedRequest, _ int) {
+		writeJSON(w, http.StatusOK, `{"report_interval_seconds":300}`)
+	})
+	resp, err := newClient(t, srv, "agent-secret", &sleeps{}).Heartbeat(context.Background(), HeartbeatRequest{})
+	if err != nil || resp.LogCollection != nil {
+		t.Fatalf("resp = %+v, err = %v", resp, err)
 	}
 }

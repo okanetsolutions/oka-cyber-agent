@@ -68,6 +68,29 @@ if has_systemd; then
 	done
 	[ "$(stat_of inventories)" -ge 1 ] || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "no inventory from the service"; }
 	[ "$(stat_of last_inventory_packages)" -gt 0 ] || fail "the service sent an inventory without packages"
+	getent group systemd-journal >/dev/null || fail "a systemd host without the systemd-journal group"
+	check_log_groups "after install"
+
+	# journald records which program sent an entry, and the agent drops auth entries a program like logger
+	# sent under another name, so the probe is a real sudo call. It is repeated until one arrives, since the
+	# service starts at the end of the journal once the heartbeat enabled the auth source. The event carries
+	# the executable and the number of arguments only (sudo may log /bin/true as /usr/bin/true).
+	echo "== a sudo command reaches the tenant through journald, without its arguments"
+	if command -v sudo >/dev/null 2>&1; then
+		for i in $(seq 1 30); do
+			sudo -u nobody /bin/true -p Typed-Pa55word "oka-probe-$i" || true
+			sleep 2
+			curl -fsS "$TENANT/log-events" | grep -q 'true \[3 args\]' && break
+		done
+		events=$(curl -fsS "$TENANT/log-events")
+		echo "$events" | grep -q '"kind":"sudo_command"' || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "the sudo command was not shipped"; }
+		echo "$events" | grep -q '"command":"[^"]*/bin/true \[3 args\]"' || fail "the shipped sudo event has no command"
+		if echo "$events" | grep -q -e 'Typed-Pa55word' -e 'oka-probe-'; then
+			fail "a sudo argument was shipped"
+		fi
+	else
+		echo "sudo is not installed here: skipped"
+	fi
 else
 	echo "== no systemd: one report as root"
 	/usr/local/bin/oka-cyber-agent run --once
