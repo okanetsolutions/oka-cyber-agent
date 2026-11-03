@@ -1,0 +1,35 @@
+name: Tag
+
+# Every merge to main that passes CI becomes a patch release: this workflow tags the commit and starts
+# release.yml on the tag. A tag pushed with GITHUB_TOKEN does not start other workflows, so release.yml is
+# dispatched on the tag ref instead, which keeps the signing identity release.yml@refs/tags/v* that
+# install.sh and the README verify. Push a vX.Y.0 tag by hand for a minor or major release.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Tag the next patch release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: sh .github/workflows/tag.sh "$HEAD_SHA"

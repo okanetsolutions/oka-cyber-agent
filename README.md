@@ -79,7 +79,7 @@ The package does not install over an agent installed by the install script, whos
 
 ### Verify a release
 
-Releases are built by GitHub Actions and `checksums.txt` is signed keylessly with [cosign](https://github.com/sigstore/cosign). Each binary also has an SPDX SBOM.
+Every pull request merged into `main` is released once CI passes on it: the next patch version is tagged (`v0.1.0` for the first release) and GitHub Actions builds and publishes it. Releases are built by GitHub Actions and `checksums.txt` is signed keylessly with [cosign](https://github.com/sigstore/cosign). Each binary also has an SPDX SBOM.
 
 ```bash
 cosign verify-blob --bundle checksums.txt.sigstore.json \
