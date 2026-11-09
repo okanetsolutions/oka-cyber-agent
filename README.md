@@ -2,7 +2,7 @@
 
 Oka Cyber Agent is the open source, lightweight server agent of [Oka Cyber](https://github.com/okanetsolutions). It reports the software installed on a Linux server to your Oka Cyber dashboard, where every package is matched against known vulnerabilities (OSV.dev, with CVE aliases).
 
-It is a single static binary with no runtime dependencies. This repository is public so you can read exactly what you install on your servers before you install it.
+It is a single static binary with no runtime dependencies for inventory; optional log sources use the host journal tools, and command metadata also requires auditd and its auditctl tool. This repository is public so you can read exactly what you install on your servers before you install it.
 
 > Status: under active development. The collectors, enrollment, installer and log shipping are tracked in the [issues](https://github.com/okanetsolutions/oka-cyber-agent/issues).
 
@@ -12,7 +12,7 @@ It is a single static binary with no runtime dependencies. This repository is pu
 - Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine). On Red Hat Enterprise Linux it also reads which repository each package was installed from in the dnf history database, never the commands recorded there.
 - Application dependencies: name and resolved version of the libraries listed in common lock files, with the path of the file each one came from (see [Dependency files](#dependency-files)). You can turn this off.
 - Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. The process ID is not sent, so restarting a service does not count as an inventory change. You can turn this off.
-- Security log events, only when an admin turns log collection on for that server in the dashboard: SSH logins and session boundaries, sudo and su use, account and cron changes, suspicious web requests and application errors. Lines are redacted on your server before they are sent, and normal web traffic is only sent as counts per IP and minute.
+- Security log events, only when an admin turns log collection on for that server in the dashboard: SSH logins and session boundaries, sudo and su use, account and cron changes, suspicious web requests and application errors; a separate `commands` toggle adds interactive SSH command metadata through auditd. Lines are redacted on your server before they are sent, and normal web traffic is only sent as counts per IP and minute.
 
 To see exactly what the agent would report from a server, without sending anything:
 
@@ -28,7 +28,7 @@ oka-cyber-agent inventory
 - Your users' data: databases, uploads, mail or application data.
 - Anything from a path chosen by the dashboard. The dashboard can only switch built in sources on and off; every file path the agent reads comes from its local configuration on your server.
 
-The agent is read only. It never installs, updates or removes packages, never changes services, firewall rules or users, and never runs commands sent from the dashboard.
+The main agent is read only. It never installs, updates or removes packages, never changes services, firewall rules or users, and never runs commands sent from the dashboard. The optional `commands` source has one fixed exception: an isolated systemd helper installs or removes only the packaged Oka command audit rule when its on/off flag changes.
 
 ## Where it sends it
 
@@ -61,7 +61,7 @@ The [install script](install.sh) is short; read it first if you like. It:
 
 Rerunning it upgrades the agent, keeps the enrollment and restarts the service on the new binary. A service you disabled stays disabled. Pass `--version v1.2.3` to install a specific release. It refuses to run on a server where the agent was installed from a package: upgrade that one with your package manager.
 
-The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It can only write its state directory, `/var/lib/oka-cyber-agent`. The agent token stays root only (mode 0600) and systemd hands it to the service with `LoadCredential`. systemd older than 247 (the RHEL 8 family) has no `LoadCredential`, so there `enroll` makes the token readable by the `oka-cyber` group only (mode 0640), for the install script and the packages alike.
+The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It writes its state directory, `/var/lib/oka-cyber-agent`, and the empty command-source flag in its systemd runtime directory, `/run/oka-cyber-agent`. The agent token stays root only (mode 0600) and systemd hands it to the service with `LoadCredential`. systemd older than 247 (the RHEL 8 family) has no `LoadCredential`, so there `enroll` makes the token readable by the `oka-cyber` group only (mode 0640), for the install script and the packages alike.
 
 ### Packages
 
@@ -75,7 +75,7 @@ sudo systemctl enable --now oka-cyber-agent
 
 Upgrading the package restarts the service on the new binary, and leaves it disabled if you disabled it. Installing the package on a server that is already enrolled enables and starts the service. After `apt remove`, which keeps the enrollment, installing it again starts the service only if it was enabled before the removal.
 
-The package does not install over an agent installed by the install script, whose unit would take precedence over the package's. Run `sudo /usr/local/bin/oka-cyber-agent uninstall` first, which also deletes the enrollment. To keep the enrollment instead, run `sudo systemctl disable --now oka-cyber-agent` and delete `/usr/local/bin/oka-cyber-agent` and `/etc/systemd/system/oka-cyber-agent.service`: the package then enables and starts the service on its first install.
+The package does not install over an agent installed by the install script, whose unit would take precedence over the package's. Run `sudo /usr/local/bin/oka-cyber-agent uninstall` first, which also deletes the enrollment. To keep the enrollment instead, run `sudo systemctl disable --now oka-cyber-agent` and delete `/usr/local/bin/oka-cyber-agent`, `/etc/systemd/system/oka-cyber-agent.service`, `/etc/systemd/system/oka-cyber-audit.service` and `/etc/systemd/system/oka-cyber-audit.path`: the package then enables and starts the service on its first install.
 
 ### Verify a release
 
@@ -183,6 +183,20 @@ On the server, before anything is stored or sent:
 Events wait in a spool under `/var/lib/oka-cyber-agent/spool` (at most 100 MB; when full, the oldest events are dropped and counted) and are sent in order every 30 seconds. Read positions are saved in `/var/lib/oka-cyber-agent/logs.json` only after the server acknowledged a batch, so nothing is lost when the server is unreachable. When the server rejects a request, the agent leaves out only what it names (one event, one unreadable file of the list); a request it rejects without saying why, or as too large, is split in halves. An event is dropped (and counted) only when the server rejects it alone while it accepts an empty request, so a server or proxy that rejects everything never makes the agent drop events. Turning every source off stops the readers and deletes the spool and the positions. If your Oka Cyber does not accept logs yet (it answers `POST /logs` with 404), the agent stops reading, keeps what it already read, and tries again an hour later.
 
 The installer and the packages add the `oka-cyber` user to the `adm` and `systemd-journal` groups when they exist, so it can read the journal and the logs in `/var/log` without root.
+
+### Optional SSH command metadata through auditd
+
+`commands` is off by default and is enabled only by the server setting supplied by the panel; Oka Core #4074 supplies the administrator acknowledgement and privacy disclosures, which must be deployed before enabling it in production. It requires a running auditd, a mutable audit policy, systemd, and a system journal already readable by `oka-cyber`. The agent reads only journald's trusted `_TRANSPORT=audit` entries through its existing journal group membership. It never changes audit.log permissions or grants the main agent capabilities.
+
+An enabled source requests the packaged fixed rule with an empty `/run/oka-cyber-agent/commands.enabled` flag. `oka-cyber-audit.path` starts the separate `oka-cyber-audit.service`, which runs the fixed helper with only `CAP_AUDIT_CONTROL`; root ownership lets it write `/etc/audit/rules.d/oka-cyber-commands.rules` without a DAC override capability. Its systemd sandbox permits writes only to the audit rules directory and its own status directory, hides agent credentials and denies privilege escalation. The runtime flag directory is traversable so the helper needs no access to the private state directory. Flag contents, panel paths, rule text and command arguments are never accepted as input.
+
+The helper loads the compiled-in copy of the shipped template with `auditctl -R` at the fixed path; a key-scoped deletion makes application idempotent. Disabling collection or stopping the agent removes the flag and the helper removes the persistent file and only the running rules keyed `oka_cyber_commands` using `auditctl -D -k`. It never reloads the whole host policy or removes another key. Install, upgrade and uninstall manage the helper units alongside the main unit; uninstall confirms removal before deleting the helper. Immutable audit policies can prevent removal of a running rule and need operator intervention, normally a reboot. A missing helper, missing auditd, inaccessible journal or failed rule application is reported as a skipped `commands` source, with a reason such as `helper_missing`, `auditd_missing`, `journal_permission_denied` or `rule_apply_failed`; `helper_pending` means its acknowledgement has not arrived. The agent rechecks prerequisites every minute and reads the acknowledgement on every poll.
+
+The fixed rules audit successful and failed exec attempts with login UID 0 or at least 1000, excluding the unset UID; the collector emits only successful executions with a PTY in an SSH session proven by a successful audit `USER_LOGIN` or SSH PAM `USER_START` from a system sshd executable with a kernel-supplied root UID. Cron, services, other login types, missing login/session IDs and the agent's own processes are ignored. Open a new interactive SSH login after enabling collection: existing sessions whose login the collector did not observe are deliberately excluded. SSH shell builtins do not exec a process and produce no command event; commands launched by a script inside an interactive SSH session do, and a non-interactive SSH command without a PTY does not. Checkpoints retain only the audit cursor and proven session metadata across agent restarts, never raw records or arguments. No equality with a logind identifier is assumed: the event sends the kernel audit `ses` and the panel correlates it.
+
+A `command` event carries `ses`, `auid`, `cwd`, `executable`, `arg_count` and `tty`, with the login user name when present (otherwise the numeric login UID). `arg_count` excludes argv[0], as with sudo. EXECVE argument strings, hex-encoded strings, split arguments, PROCTITLE and syscall argument registers are discarded without decoding or copying into an event, checkpoint or spool. Metadata still passes through the existing redaction pipeline. Identical metadata is aggregated per audit session and minute; short flushes may split a minute into several count events. Distinct groups are limited to 60 per session and 512 globally per minute, preserving the budget across flushes and counting rejected commands in `dropped_events`. These bounds protect the spool even when executable paths change in a loop. Local spool capacity and upload-age compatibility are unchanged; the 30-day retention policy belongs to the server.
+
+The audit framework also writes raw EXECVE arguments to its own local audit logs when these rules are active. The agent never ships those arguments and does not manage auditd's own storage or retention. Disabling the source removes the Oka rules, not existing local audit records.
 
 ## Uninstall
 

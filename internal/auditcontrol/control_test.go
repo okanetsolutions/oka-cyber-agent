@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -28,12 +29,17 @@ func TestFixedRuleLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	var loads []string
+	deletions := 0
 	h.Run = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if name != "auditctl" {
 			t.Fatalf("unexpected executable %s", name)
 		}
 		if slices.Equal(args, []string{"-s"}) {
 			return []byte("enabled 1\npid 512\n"), nil
+		}
+		if slices.Equal(args, []string{"-D", "-k", "oka_cyber_commands"}) {
+			deletions++
+			return nil, nil
 		}
 		if !slices.Equal(args, []string{"-R", RulePath}) {
 			t.Fatalf("unexpected arguments %q", args)
@@ -73,9 +79,13 @@ func TestFixedRuleLifecycle(t *testing.T) {
 			t.Fatalf("rule exists after on=%v: %v", on, err)
 		}
 	}
-	if len(loads) != 4 || loads[0] != string(rules) || loads[1] != string(rules) || loads[2] != "-D -k oka_cyber_commands\n" || loads[3] != loads[2] {
-		t.Fatalf("loads = %q", loads)
+	if len(loads) != 2 || loads[0] != string(rules) || loads[1] != string(rules) || deletions != 4 {
+		t.Fatalf("loads = %q, deletions = %d", loads, deletions)
 	}
+	if strings.Contains(string(rules), "-D") {
+		t.Fatal("persistent rule template overrides augenrules deletion policy")
+	}
+
 	b, _ := os.ReadFile(unrelated)
 	if string(b) != "customer policy" {
 		t.Fatal("unrelated rules changed")
@@ -140,8 +150,7 @@ func TestHelperNeverFollowsFlagOrRuleSymlinks(t *testing.T) {
 		if args[0] == "-s" {
 			return []byte("pid 1\n"), nil
 		}
-		b, _ := os.ReadFile(h.path(RulePath))
-		if string(b) != "-D -k oka_cyber_commands\n" {
+		if !slices.Equal(args, []string{"-D", "-k", "oka_cyber_commands"}) {
 			t.Fatal("symlink enabled capture")
 		}
 		return nil, nil
@@ -152,5 +161,49 @@ func TestHelperNeverFollowsFlagOrRuleSymlinks(t *testing.T) {
 	info, _ := os.Stat(target)
 	if info.Size() != 0 {
 		t.Fatal("followed rule symlink")
+	}
+}
+
+func TestCleanupFailsWhenKernelRemovalCannotBeConfirmed(t *testing.T) {
+	h := helperHost(t)
+	if err := os.WriteFile(h.path(RulePath), rules, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.Run = func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("locked") }
+	if err := h.Cleanup(context.Background()); err == nil {
+		t.Fatal("claimed the kernel rule was removed")
+	}
+	if _, err := os.Stat(h.path(RulePath)); !os.IsNotExist(err) {
+		t.Fatal("persistent rule survived removal")
+	}
+	h.Run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+	if err := h.Cleanup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMissingAuditToolsAndDisabledAuditAreReported(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		h := helperHost(t)
+		if err := os.WriteFile(h.path(FlagPath), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		h.Run = func(context.Context, string, ...string) ([]byte, error) {
+			if disabled {
+				return []byte("enabled 0\npid 123\n"), nil
+			}
+			return nil, exec.ErrNotFound
+		}
+		if err := h.Apply(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		want := "auditd_missing\n"
+		if disabled {
+			want = "audit_disabled\n"
+		}
+		b, _ := os.ReadFile(h.path(StatusPath))
+		if string(b) != want {
+			t.Fatalf("status=%s", b)
+		}
 	}
 }

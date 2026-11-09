@@ -178,3 +178,31 @@ func TestUninstallRefusesDangerousPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestUninstallCleansAuditBeforeDeletingHelper(t *testing.T) {
+	u, _ := installedTree(t)
+	helper := filepath.Join(filepath.Dir(u.UnitPath), "oka-cyber-audit.service")
+	if err := os.WriteFile(helper, []byte("helper"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	u.ExtraPaths = []string{helper}
+	called := false
+	u.RemoveAudit = func(context.Context) error {
+		called = true
+		if _, err := os.Stat(helper); err != nil {
+			t.Fatal("deleted the helper before clearing audit rules")
+		}
+		return errors.New("locked audit policy")
+	}
+	if _, err := u.Uninstall(context.Background()); err == nil || !called {
+		t.Fatal("uninstall ignored audit cleanup failure")
+	}
+	if _, err := os.Stat(u.BinaryPath); err != nil {
+		t.Fatal("removed binary needed to retry cleanup")
+	}
+	u.RemoveAudit = func(context.Context) error { return nil }
+	if _, err := u.Uninstall(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertRemoved(t, helper, u.BinaryPath)
+}

@@ -153,7 +153,7 @@ type Journal struct {
 func (j *Journal) Args() []string {
 	args := []string{"--follow", "--output=json", "--no-pager", "--quiet"}
 	if j.Audit {
-		args = append(args, "_TRANSPORT=audit")
+		args = append(args, "_TRANSPORT=audit", "--output-fields=__CURSOR,__REALTIME_TIMESTAMP,_SOURCE_REALTIME_TIMESTAMP,_TRANSPORT,_BOOT_ID,_AUDIT_ID,_UID,MESSAGE")
 	}
 	for _, id := range j.Identifiers {
 		args = append(args, "--identifier="+id)

@@ -13,5 +13,16 @@ case "$1" in
 			fi
 			systemctl disable --now oka-cyber-agent.service >/dev/null 2>&1 || true
 		fi
+		if [ -d /run/systemd/system ]; then
+		 systemctl disable --now oka-cyber-audit.path >/dev/null 2>&1 || true
+		 systemctl stop oka-cyber-audit.service >/dev/null 2>&1 || true
+		fi
+		rm -f /run/oka-cyber-agent/commands.enabled
+		/usr/bin/oka-cyber-agent audit-rules
+		if [ -f /run/oka-cyber-audit/status ] && [ "$(cat /run/oka-cyber-audit/status)" != off ] && [ "$(cat /run/oka-cyber-audit/status)" != audit_control_unavailable ]; then
+		 echo "Command audit rule removal could not be confirmed; check the host audit policy."
+		 exit 1
+		fi
+		rm -rf /run/oka-cyber-audit /run/oka-cyber-agent
 		;;
 esac

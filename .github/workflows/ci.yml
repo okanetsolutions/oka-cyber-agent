@@ -94,6 +94,12 @@ jobs:
       - name: Install, rerun and uninstall in ${{ matrix.target }}
         if: matrix.target != 'systemd-host' && matrix.target != 'systemd-el8'
         run: docker run --rm --network host -v "$PWD:/src:ro" "${{ matrix.target }}" sh /src/test/install/run.sh
+      - name: Audit helper sandbox and lifecycle with stubbed auditctl (systemd 252)
+        if: matrix.target == 'systemd-host'
+        run: sh test/install/systemd-container.sh registry.access.redhat.com/ubi9/ubi-init audit-helper.sh
+      - name: Audit helper sandbox and lifecycle with stubbed auditctl (systemd 239)
+        if: matrix.target == 'systemd-el8'
+        run: sh test/install/systemd-container.sh registry.access.redhat.com/ubi8/ubi-init audit-helper.sh
       - name: Fake tenant log
         if: failure()
         run: cat /tmp/oka-install-test/faketenant.log

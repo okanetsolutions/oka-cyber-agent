@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +24,7 @@ type AuditSession struct {
 }
 
 type auditCommand struct {
+	order                uint64
 	at                   time.Time
 	before               string
 	fields               map[string]string
@@ -32,6 +32,8 @@ type auditCommand struct {
 }
 
 type auditParser struct {
+	order            uint64
+	boot             string
 	sessions         map[string]AuditSession
 	pending          map[string]*auditCommand
 	own              map[string]bool
@@ -121,6 +123,7 @@ func auditNumber(value string) bool {
 func auditSessionKey(e JournalEntry, ses string) string { return e.BootID + ":" + ses }
 
 func (p *auditParser) add(e JournalEntry) (Event, bool) {
+	p.order++
 	previous := p.cursor
 	p.cursor = e.Cursor
 	for id, pending := range p.pending {
@@ -131,12 +134,22 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 	if e.Transport != "audit" || e.AuditID == "" || e.BootID == "" {
 		return Event{}, false
 	}
+	if p.boot != e.BootID {
+		for key := range p.sessions {
+			if !strings.HasPrefix(key, e.BootID+":") {
+				delete(p.sessions, key)
+			}
+		}
+		clear(p.pending)
+		clear(p.own)
+		p.boot = e.BootID
+	}
 	kind, text, ok := strings.Cut(e.Message, " ")
 	if !ok {
 		return Event{}, false
 	}
 	switch kind {
-	case "USER_LOGIN", "USER_END", "SYSCALL", "EXECVE", "CWD", "EOE":
+	case "USER_LOGIN", "USER_START", "USER_END", "SYSCALL", "EXECVE", "CWD", "EOE":
 	default:
 		return Event{}, false
 	}
@@ -149,18 +162,23 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 	if !ok {
 		return Event{}, false
 	}
-	if kind == "USER_LOGIN" || kind == "USER_END" {
+	if kind == "USER_LOGIN" || kind == "USER_START" || kind == "USER_END" {
 		if !auditNumber(f["ses"]) || !auditNumber(f["auid"]) {
 			return Event{}, false
 		}
 		key := auditSessionKey(e, f["ses"])
 		if kind == "USER_END" {
-			if f["exe"] == "/usr/sbin/sshd" || f["exe"] == "/usr/bin/sshd" || path.Base(f["exe"]) == "sshd-session" {
+			if TrustedAuthEntry(JournalEntry{Identifier: "sshd", UID: "0", Exe: f["exe"]}) {
 				delete(p.sessions, key)
 			}
 			return Event{}, false
 		}
-		exe := JournalEntry{Identifier: "sshd", UID: "0", Exe: f["exe"]}
+		// Userspace audit records require CAP_AUDIT_WRITE, which some non-root programs have;
+		// the kernel-supplied UID must also prove a root SSH logger before trusting its claimed exe.
+		if e.UID != "0" {
+			return Event{}, false
+		}
+		exe := JournalEntry{Identifier: "sshd", UID: e.UID, Exe: f["exe"]}
 		if f["res"] != "success" || !TrustedAuthEntry(exe) || f["terminal"] == "" || f["terminal"] == "cron" {
 			return Event{}, false
 		}
@@ -177,8 +195,11 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 		user := f["acct"]
 		if user == "" {
 			user = f["auid"]
+			if known, ok := p.sessions[key]; ok && known.AUID == f["auid"] {
+				user = known.User
+			}
 		}
-		p.sessions[key] = AuditSession{AUID: f["auid"], User: user}
+		p.sessions[key] = AuditSession{AUID: f["auid"], User: cut(redactEverywhere(user), maxNameLength)}
 		return Event{}, false
 	}
 	id := e.BootID + ":" + e.AuditID
@@ -187,7 +208,7 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 		if len(p.pending) >= maxAuditPending {
 			return Event{}, false
 		}
-		pending = &auditCommand{at: e.At, before: previous, fields: map[string]string{}}
+		pending = &auditCommand{order: p.order, at: e.At, before: previous, fields: map[string]string{}}
 		p.pending[id] = pending
 	}
 	switch kind {
@@ -258,10 +279,10 @@ func (p *auditParser) checkpoint() string {
 	// Never acknowledge beyond an incomplete event. Replaying after a crash may duplicate an event,
 	// but cannot skip the SYSCALL/EXECVE records needed to reconstruct one.
 	cursor := p.cursor
-	var earliest time.Time
+	var earliest uint64
 	for _, pending := range p.pending {
-		if earliest.IsZero() || pending.at.Before(earliest) {
-			earliest, cursor = pending.at, pending.before
+		if earliest == 0 || pending.order < earliest {
+			earliest, cursor = pending.order, pending.before
 		}
 	}
 	return cursor

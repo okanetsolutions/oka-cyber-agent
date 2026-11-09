@@ -12,11 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/okanetsolutions/oka-cyber-agent/internal/config"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
 const (
-	FlagPath   = "/var/lib/oka-cyber-agent/commands.enabled"
+	FlagPath   = "/run/oka-cyber-agent/commands.enabled"
 	RulePath   = "/etc/audit/rules.d/oka-cyber-commands.rules"
 	StatusPath = "/run/oka-cyber-audit/status"
 	Service    = "oka-cyber-audit.service"
@@ -46,44 +47,48 @@ func (h Helper) Apply(ctx context.Context) error {
 	on := false
 	if info, err := os.Lstat(h.path(FlagPath)); err == nil {
 		on = info.Mode().IsRegular() && info.Size() == 0
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return h.status("flag_unreadable")
 	}
+	previous, _ := os.ReadFile(h.path(StatusPath))
+	_, ruleErr := os.Lstat(h.path(RulePath))
+	mayHaveRule := ruleErr == nil || string(previous) == "on\n" || string(previous) == "applying\n" || string(previous) == "rule_apply_failed\n" || string(previous) == "rule_remove_failed\n" || string(previous) == "rule_write_failed\n"
 	if err := h.status("applying"); err != nil {
 		return err
 	}
+	if !on {
+		if err := os.Remove(h.path(RulePath)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return h.status("rule_remove_failed")
+		}
+		if _, err := run(ctx, "auditctl", "-D", "-k", "oka_cyber_commands"); err != nil {
+			if mayHaveRule {
+				return h.status("rule_remove_failed")
+			}
+			return h.status("audit_control_unavailable")
+		}
+		return h.status("off")
+	}
 	status, err := run(ctx, "auditctl", "-s")
 	if err != nil {
-		if !on {
-			_ = os.Remove(h.path(RulePath))
+		if errors.Is(err, exec.ErrNotFound) {
+			return h.status("auditd_missing")
 		}
 		return h.status("audit_control_unavailable")
+	}
+	if strings.Contains("\n"+string(status)+"\n", "\nenabled 0\n") {
+		return h.status("audit_disabled")
 	}
 	if on && !auditdRunning(string(status)) {
 		return h.status("auditd_missing")
 	}
-	data := []byte("-D -k oka_cyber_commands\n")
-	if on {
-		data = rules
+	// Keep deletion out of the persistent template: augenrules treats the last -D line specially,
+	// which could otherwise replace the administrator's global deletion directive at boot.
+	if err := config.WriteFileAtomic(h.path(RulePath), rules, 0o600, nil); err != nil {
+		return h.status("rule_write_failed")
 	}
-	// The parent is root-owned, outside the agent's writable namespace. Refuse a final symlink.
-	f, err := os.OpenFile(h.path(RulePath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
-		// Remove the directory entry, never follow an existing symlink or overwrite its target.
-		if err = os.Remove(h.path(RulePath)); err == nil {
-			f, err = os.OpenFile(h.path(RulePath), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		}
+	_, err = run(ctx, "auditctl", "-D", "-k", "oka_cyber_commands")
+	if err == nil {
+		_, err = run(ctx, "auditctl", "-R", RulePath)
 	}
 	if err != nil {
-		return h.status("rule_write_failed")
-	}
-	_, err = f.Write(data)
-	closeErr := f.Close()
-	if err != nil || closeErr != nil {
-		return h.status("rule_write_failed")
-	}
-	_, err = run(ctx, "auditctl", "-R", RulePath)
-	if !on || err != nil {
 		if removeErr := os.Remove(h.path(RulePath)); removeErr != nil {
 			return h.status("rule_remove_failed")
 		}
@@ -91,10 +96,7 @@ func (h Helper) Apply(ctx context.Context) error {
 	if err != nil {
 		return h.status("rule_apply_failed")
 	}
-	if on {
-		return h.status("on")
-	}
-	return h.status("off")
+	return h.status("on")
 }
 
 func auditdRunning(status string) bool {
@@ -108,6 +110,9 @@ func auditdRunning(status string) bool {
 }
 
 func (h Helper) status(status string) error {
+	if err := os.MkdirAll(filepath.Dir(h.path(StatusPath)), 0o755); err != nil {
+		return err
+	}
 	// RuntimeDirectory is root-owned; neither the agent nor the panel can forge this acknowledgement.
 	tmp := h.path(StatusPath + ".new")
 	if err := os.WriteFile(tmp, []byte(status+"\n"), 0o644); err != nil {
@@ -125,4 +130,24 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 	cmd.Env = trustedcmd.Env()
 	// Do not forward command output to the journal or include it in errors.
 	return cmd.Output()
+}
+
+// Cleanup is used only during uninstall, after the agent and path unit have stopped. A locked audit policy
+// needs operator intervention (usually a reboot); do not claim the running kernel rule was removed.
+func (h Helper) Cleanup(ctx context.Context) error {
+	_, ruleErr := os.Lstat(h.path(RulePath))
+	if err := os.Remove(h.path(FlagPath)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := h.Apply(ctx); err != nil {
+		return err
+	}
+	status, err := os.ReadFile(h.path(StatusPath))
+	if err != nil {
+		return err
+	}
+	if string(status) == "off\n" || errors.Is(ruleErr, fs.ErrNotExist) && string(status) == "audit_control_unavailable\n" {
+		return nil
+	}
+	return errors.New("command audit rule removal could not be confirmed; check audit policy before uninstalling")
 }

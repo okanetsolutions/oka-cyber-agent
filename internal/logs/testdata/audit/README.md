@@ -15,6 +15,11 @@ this workspace. Only selected whole lines were retained for the small files.
   auparse/testdata/audit-ubuntu16.log, successful and failed SSH audit logins.
   https://github.com/elastic/go-libaudit/blob/main/auparse/testdata/audit-ubuntu16.log
 
+- `centos7-session.log`: the SSH PAM USER_START line from elastic/beats,
+  auditbeat/module/auditd/testdata/centos7.log (Apache-2.0), retaining the
+  authenticated user name before USER_LOGIN repeats only its numeric ID.
+  https://github.com/elastic/beats/blob/main/auditbeat/module/auditd/testdata/centos7.log
+
 The Elastic go-libaudit samples are distributed under Apache-2.0.
 The linux-audit auparse tests are distributed under LGPL-2.1-or-later.
 The original fixture's metadata is preserved, including its unrelated audit

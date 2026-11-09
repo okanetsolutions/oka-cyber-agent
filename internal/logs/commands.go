@@ -22,16 +22,18 @@ func (c *Collector) planCommands(ctx context.Context, p *Plan) {
 	skip := func(reason string) {
 		p.Skipped = append(p.Skipped, SkippedSource{SourceCommands, auditcontrol.RulePath, reason})
 	}
-	found := false
-	for _, dir := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"} {
-		if info, err := os.Stat(c.options.path(filepath.Join(dir, auditcontrol.Service))); err == nil && info.Mode().IsRegular() {
-			found = true
-			break
+	for _, unit := range []string{auditcontrol.Service, auditcontrol.PathUnit} {
+		found := false
+		for _, dir := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"} {
+			if info, err := os.Stat(c.options.path(filepath.Join(dir, unit))); err == nil && info.Mode().IsRegular() {
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		skip("helper_missing")
-		return
+		if !found {
+			skip("helper_missing")
+			return
+		}
 	}
 	reason, _ := c.options.journalAccess()
 	if reason != "" {
@@ -43,20 +45,6 @@ func (c *Collector) planCommands(ctx context.Context, p *Plan) {
 		return
 	}
 	c.commandFlag = true
-	status, err := os.ReadFile(c.options.path(auditcontrol.StatusPath))
-	if err != nil {
-		skip("helper_pending")
-		return
-	}
-	if status := strings.TrimSpace(string(status)); status != "on" {
-		switch status {
-		case "auditd_missing", "audit_control_unavailable", "flag_unreadable", "rule_write_failed", "rule_remove_failed", "rule_apply_failed":
-			skip(status)
-		default:
-			skip("helper_pending")
-		}
-		return
-	}
 	if c.auditCh == nil {
 		c.auditCh = make(chan JournalEntry, journalBuffer)
 		cursor := ""
@@ -87,12 +75,36 @@ func (c *Collector) planCommands(ctx context.Context, p *Plan) {
 	}
 }
 
+func (c *Collector) commandStatus() string {
+	status, err := os.ReadFile(c.options.path(auditcontrol.StatusPath))
+	if err != nil {
+		return "helper_pending"
+	}
+	switch status := strings.TrimSpace(string(status)); status {
+	case "on":
+		return ""
+	case "auditd_missing", "audit_disabled", "audit_control_unavailable", "rule_write_failed", "rule_remove_failed", "rule_apply_failed":
+		return status
+	default:
+		return "helper_pending"
+	}
+}
+
 func (c *Collector) pollCommands() []Event {
+	if c.auditCh == nil {
+		return nil
+	}
+	reason := c.commandStatus()
+	c.skipped = slices.DeleteFunc(c.skipped, func(s SkippedSource) bool { return s.Source == SourceCommands })
+	if reason != "" {
+		c.skipped = append(c.skipped, SkippedSource{SourceCommands, auditcontrol.RulePath, reason})
+	}
 	var events []Event
 	for {
 		select {
 		case entry := <-c.auditCh:
-			if e, ok := c.audit.add(entry); ok {
+			// Track SSH logins immediately after opt-in, even while the helper is applying the rule.
+			if e, ok := c.audit.add(entry); ok && reason == "" {
 				events = append(events, e)
 			}
 		default:

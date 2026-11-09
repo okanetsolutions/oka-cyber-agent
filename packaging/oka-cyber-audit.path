@@ -2,7 +2,7 @@
 Description=Watch Oka Cyber command collection opt-in
 
 [Path]
-PathChanged=/var/lib/oka-cyber-agent/commands.enabled
+PathChanged=/run/oka-cyber-agent/commands.enabled
 Unit=oka-cyber-audit.service
 
 [Install]

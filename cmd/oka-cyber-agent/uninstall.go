@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/auditcontrol"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/config"
 )
 
@@ -43,6 +44,20 @@ var newUninstaller = func(self string) agent.Uninstaller {
 		Systemctl:  systemctl(),
 		UserExists: userExists,
 		DeleteUser: deleteUser,
+	}
+	u.ExtraPaths = []string{"/etc/systemd/system/" + auditcontrol.Service, "/etc/systemd/system/" + auditcontrol.PathUnit, "/usr/share/oka-cyber-agent", "/run/oka-cyber-audit", "/run/oka-cyber-agent"}
+	u.RemoveAudit = func(ctx context.Context) error {
+		if u.Systemctl != nil {
+			if _, err := os.Stat(u.ExtraPaths[1]); err == nil {
+				if err := u.Systemctl(ctx, "disable", "--now", auditcontrol.PathUnit); err != nil {
+					return err
+				}
+				if err := u.Systemctl(ctx, "stop", auditcontrol.Service); err != nil {
+					return err
+				}
+			}
+		}
+		return (auditcontrol.Helper{}).Cleanup(ctx)
 	}
 	if self == installedBinaryPath {
 		u.BinaryPath = installedBinaryPath

@@ -33,8 +33,24 @@ nfpms:
     formats: [deb, rpm]
     bindir: /usr/bin
     contents:
+      - dst: /usr/share/oka-cyber-agent
+        type: dir
+        file_info:
+          mode: 0755
       - src: packaging/oka-cyber-agent.service
         dst: /usr/lib/systemd/system/oka-cyber-agent.service
+        file_info:
+          mode: 0644
+      - src: packaging/oka-cyber-audit.service
+        dst: /usr/lib/systemd/system/oka-cyber-audit.service
+        file_info:
+          mode: 0644
+      - src: packaging/oka-cyber-audit.path
+        dst: /usr/lib/systemd/system/oka-cyber-audit.path
+        file_info:
+          mode: 0644
+      - src: internal/auditcontrol/commands.rules
+        dst: /usr/share/oka-cyber-agent/commands.rules
         file_info:
           mode: 0644
     scripts:

@@ -84,6 +84,7 @@ ensure_curl
 
 echo "== first install on a host that is not enrolled"
 install_package
+check_audit_assets /usr/lib/systemd/system
 [ -x /usr/bin/oka-cyber-agent ] || fail "binary missing"
 [ -f /usr/lib/systemd/system/oka-cyber-agent.service ] || fail "unit missing"
 getent passwd oka-cyber >/dev/null || fail "the oka-cyber user was not created"
@@ -109,6 +110,7 @@ echo "== upgrade restarts an enabled service and grants the log groups again"
 gpasswd -d oka-cyber adm >/dev/null
 before=$(stat_of_systemd heartbeats)
 upgrade_package
+check_audit_assets /usr/lib/systemd/system
 check_log_groups "after an upgrade"
 check_enrollment_files
 check_enabled_and_reporting "$before" "after an upgrade"
@@ -116,6 +118,7 @@ check_enabled_and_reporting "$before" "after an upgrade"
 echo "== upgrade keeps a service the admin disabled disabled"
 admin_disable
 upgrade_package
+check_audit_assets /usr/lib/systemd/system
 check_disabled "after an upgrade of a disabled service"
 admin_enable
 
@@ -152,7 +155,7 @@ check_enrollment_files
 check_enabled_and_reporting "$before" "after a first install on an enrolled host"
 
 check_erased() {
-	for path in /usr/bin/oka-cyber-agent /usr/lib/systemd/system/oka-cyber-agent.service /etc/oka-cyber-agent /var/lib/oka-cyber-agent /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service; do
+	for path in /usr/bin/oka-cyber-agent /usr/lib/systemd/system/oka-cyber-agent.service /etc/oka-cyber-agent /var/lib/oka-cyber-agent /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service /usr/lib/systemd/system/oka-cyber-audit.service /usr/lib/systemd/system/oka-cyber-audit.path /etc/systemd/system/oka-cyber-audit.service /etc/systemd/system/oka-cyber-audit.path /usr/share/oka-cyber-agent /run/oka-cyber-audit /etc/audit/rules.d/oka-cyber-commands.rules; do
 		[ ! -e "$path" ] || fail "$path still exists after erasing the package"
 	done
 	! getent passwd oka-cyber >/dev/null || fail "the oka-cyber user still exists after erasing the package"
@@ -175,7 +178,7 @@ fi
 
 echo "== the package replaces a script install whose binary and unit were removed, keeping the enrollment"
 admin_disable
-rm -f /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service
+rm -f /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service /etc/systemd/system/oka-cyber-audit.service /etc/systemd/system/oka-cyber-audit.path
 before=$(stat_of_systemd heartbeats)
 install_package
 check_enrollment_files

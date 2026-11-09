@@ -1,5 +1,4 @@
-# Owned by Oka Cyber Agent. Delete only our key before loading these fixed rules.
--D -k oka_cyber_commands
+# Owned by Oka Cyber Agent. The helper replaces only the rules with this key.
 -a always,exit -F arch=b64 -S execve,execveat -F auid>=1000 -F auid!=unset -k oka_cyber_commands
 -a always,exit -F arch=b64 -S execve,execveat -F auid=0 -k oka_cyber_commands
 -a always,exit -F arch=b32 -S execve,execveat -F auid>=1000 -F auid!=unset -k oka_cyber_commands

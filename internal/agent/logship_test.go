@@ -958,3 +958,95 @@ func TestShipperStartsAtTheEndWhenASourceIsSwitchedOnAgain(t *testing.T) {
 		})
 	}
 }
+
+func TestShipperCommandsSettingAndArgumentFreeSpool(t *testing.T) {
+	h := newShipperHost(t)
+	for _, p := range []string{"/usr/lib/systemd/system/oka-cyber-audit.service", "/usr/lib/systemd/system/oka-cyber-audit.path", "/var/log/journal/boot/system.journal", "/run/oka-cyber-audit/status", "/run/oka-cyber-agent/commands.enabled"} {
+		full := filepath.Join(h.root, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(p, "commands.enabled") {
+			continue
+		}
+		value := ""
+		if strings.HasSuffix(p, "/status") {
+			value = "on\n"
+		}
+		if err := os.WriteFile(full, []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := h.shipper()
+	s.Options.HasJournalctl = func() bool { return true }
+	defer s.stopCollector()
+	r, w := io.Pipe()
+	s.Start = func(ctx context.Context, name string, args ...string) (io.ReadCloser, func() error, error) {
+		if name != "journalctl" {
+			t.Errorf("unexpected reader %s", name)
+		}
+		if !strings.Contains(strings.Join(args, " "), "_TRANSPORT=audit") {
+			otherR, otherW := io.Pipe()
+			go func() { <-ctx.Done(); otherW.Close() }()
+			return otherR, func() error { return nil }, nil
+		}
+		go func() { <-ctx.Done(); w.Close() }()
+		return r, func() error { return nil }, nil
+	}
+	flag := filepath.Join(h.root, "/run/oka-cyber-agent/commands.enabled")
+	h.step(s)
+	if _, err := os.Stat(flag); !os.IsNotExist(err) {
+		t.Fatal("commands enabled before server setting")
+	}
+	s.Configure(api.LogCollection{Sources: []string{"commands"}, FlushIntervalSeconds: 5})
+	h.step(s)
+	records := []string{
+		`USER_LOGIN auid=1000 ses=4 msg='acct="alice" exe="/usr/sbin/sshd" terminal=ssh res=success'`,
+		`SYSCALL arch=c000003e syscall=59 success=yes pid=90001 ppid=90000 auid=1000 ses=4 tty=pts1 exe="/usr/bin/curl" key="oka_cyber_commands"`,
+		`EXECVE argc=3 a0="curl" a1="--password" a2=5375706572536563726574`,
+		`CWD cwd="/home/alice"`,
+	}
+	for i, msg := range records {
+		id := "2"
+		if i == 0 {
+			id = "1"
+		}
+		b, _ := json.Marshal(map[string]string{"_UID": "0", "_TRANSPORT": "audit", "_BOOT_ID": "boot1", "_AUDIT_ID": id, "__CURSOR": fmt.Sprint(i), "__REALTIME_TIMESTAMP": fmt.Sprint(h.clock.now.UnixMicro()), "MESSAGE": msg})
+		if _, err := w.Write(append(b, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for s.aggregator.Pending() == 0 && time.Now().Before(deadline) {
+		h.step(s)
+		time.Sleep(time.Millisecond)
+	}
+	if s.aggregator.Pending() != 1 {
+		t.Fatal("command not collected")
+	}
+	h.client.failWith = []error{errors.New("offline")}
+	h.advance(5 * time.Second)
+	h.step(s)
+	b, _, ok, err := s.Spool.Oldest()
+	if err != nil || !ok || len(b.Events) != 1 {
+		t.Fatalf("spool = %+v %v %v", b, ok, err)
+	}
+	payload, _ := json.Marshal(b)
+	for _, secret := range []string{"SuperSecret", "5375706572536563726574", "--password", "a0="} {
+		if strings.Contains(string(payload), secret) {
+			t.Fatalf("argument reached spool: %s", secret)
+		}
+	}
+	e := b.Events[0]
+	if e.Source != "commands" || e.Kind != "command" || e.Fields["arg_count"] != float64(2) {
+		t.Fatalf("event=%+v", e)
+	}
+	s.Configure(api.LogCollection{Sources: []string{"auth"}})
+	h.step(s)
+	if _, err := os.Stat(flag); !os.IsNotExist(err) {
+		t.Fatal("disabled setting kept audit rule request")
+	}
+	if s.collector.Checkpoint().AuditCursor != "" || len(s.collector.Checkpoint().AuditSessions) != 0 {
+		t.Fatal("disabled source retained command checkpoint")
+	}
+}

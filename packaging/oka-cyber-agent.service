@@ -1,8 +1,8 @@
 [Unit]
 Description=Oka Cyber Agent
 Documentation=https://github.com/okanetsolutions/oka-cyber-agent
-After=network-online.target
-Wants=network-online.target
+After=network-online.target oka-cyber-audit.path
+Wants=network-online.target oka-cyber-audit.path
 
 [Service]
 Type=simple
@@ -10,6 +10,8 @@ User=oka-cyber
 Group=oka-cyber
 ExecStart=/usr/bin/oka-cyber-agent run
 LoadCredential=token:/etc/oka-cyber-agent/token
+RuntimeDirectory=oka-cyber-agent
+RuntimeDirectoryMode=0755
 StateDirectory=oka-cyber-agent
 StateDirectoryMode=0700
 Restart=on-failure

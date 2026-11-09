@@ -60,3 +60,19 @@ check_service_reports() {
 	[ "$(ps -o user= -C oka-cyber-agent | head -n 1)" = "oka-cyber" ] || fail "service does not run as oka-cyber"
 	[ "$(stat_of heartbeats)" -gt "$1" ] || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "no heartbeat from the service"; }
 }
+
+check_audit_assets() {
+ unit_dir=$1
+ for name in oka-cyber-audit.service oka-cyber-audit.path; do
+  [ -f "$unit_dir/$name" ] || fail "$name was not installed"
+  [ "$(stat -c '%a %U' "$unit_dir/$name")" = '644 root' ] || fail "$name is not root-owned and readable"
+ done
+ [ -f /usr/share/oka-cyber-agent/commands.rules ] || fail "fixed audit rule template missing"
+ grep -qx 'CapabilityBoundingSet=CAP_AUDIT_CONTROL' "$unit_dir/oka-cyber-audit.service" || fail "helper has unexpected capabilities"
+ grep -qx 'CapabilityBoundingSet=' "$unit_dir/oka-cyber-agent.service" || fail "main agent gained capabilities"
+ grep -qx 'NoNewPrivileges=yes' "$unit_dir/oka-cyber-agent.service" || fail "main agent lost NoNewPrivileges"
+ [ ! -e /etc/audit/rules.d/oka-cyber-commands.rules ] || fail "commands were enabled without the panel opt-in"
+ if has_systemd && systemctl is-active --quiet oka-cyber-agent.service; then
+  systemctl is-active --quiet oka-cyber-audit.path || fail "audit flag watcher is not running"
+ fi
+}

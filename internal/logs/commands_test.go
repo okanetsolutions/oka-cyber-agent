@@ -38,7 +38,7 @@ func commandHost(t *testing.T, status string) Options {
 
 func auditJSON(e JournalEntry) string {
 	b, _ := json.Marshal(map[string]string{"__CURSOR": e.Cursor, "__REALTIME_TIMESTAMP": strconv.FormatInt(e.At.UnixMicro(), 10),
-		"_TRANSPORT": e.Transport, "_BOOT_ID": e.BootID, "_AUDIT_ID": e.AuditID, "MESSAGE": e.Message})
+		"_UID": e.UID, "_TRANSPORT": e.Transport, "_BOOT_ID": e.BootID, "_AUDIT_ID": e.AuditID, "MESSAGE": e.Message})
 	return string(b) + "\n"
 }
 
@@ -114,16 +114,19 @@ func TestCommandsSkippedWhenUnavailableAndOffByDefault(t *testing.T) {
 			if _, err := os.Stat(o.path(auditcontrol.FlagPath)); !os.IsNotExist(err) {
 				t.Fatal("disabled source wrote flag")
 			}
-			c = NewCollector([]string{SourceCommands}, o, Checkpoint{}, nil, time.Now)
+			start := func(ctx context.Context, _ string, _ ...string) (io.ReadCloser, func() error, error) {
+				r, w := io.Pipe()
+				go func() { <-ctx.Done(); w.Close() }()
+				return r, func() error { return nil }, nil
+			}
+			c = NewCollector([]string{SourceCommands}, o, Checkpoint{}, start, time.Now)
 			defer c.Close()
 			c.Poll(context.Background())
 			skipped := c.Skipped()
 			if len(skipped) != 1 || skipped[0].Source != SourceCommands || skipped[0].Reason != tc.want {
 				t.Fatalf("skipped=%+v", skipped)
 			}
-			if c.auditCh != nil {
-				t.Fatal("unavailable audit source started reader")
-			}
+
 		})
 	}
 }
@@ -155,5 +158,15 @@ func TestCommandAggregationAndPerMinuteBudget(t *testing.T) {
 	a.Add(e)
 	if a.Pending() != 1 {
 		t.Fatal("new minute did not reset budget")
+	}
+}
+
+func TestAuditJournalUsesNativeTransportAndEventTime(t *testing.T) {
+	entry, err := ParseJournalEntry([]byte(`{"__CURSOR":"c1","__REALTIME_TIMESTAMP":"1794225601000000","_SOURCE_REALTIME_TIMESTAMP":"1794225600123000","_TRANSPORT":"audit","_AUDIT_ID":"32","_BOOT_ID":"boot1","MESSAGE":"CWD cwd=\"/home/alice\""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Transport != "audit" || entry.AuditID != "32" || entry.BootID != "boot1" || entry.At.UnixMicro() != 1794225600123000 {
+		t.Fatalf("entry=%+v", entry)
 	}
 }

@@ -16,11 +16,13 @@ const ServiceName = "oka-cyber-agent.service"
 var ErrServiceNotStopped = errors.New("the agent service could not be stopped, so nothing was removed")
 
 type Uninstaller struct {
-	ConfigDir  string
-	StateDir   string
-	UnitPath   string
-	BinaryPath string
-	User       string
+	ConfigDir   string
+	StateDir    string
+	UnitPath    string
+	BinaryPath  string
+	User        string
+	ExtraPaths  []string
+	RemoveAudit func(context.Context) error
 	// Systemctl runs systemctl with args and returns an error for a non zero exit. It is nil when systemd is not
 	// running, in which case no service can be running either.
 	Systemctl  func(ctx context.Context, args ...string) error
@@ -31,13 +33,18 @@ type Uninstaller struct {
 // Uninstall stops the service and removes everything the installer and the agent created. Missing pieces are
 // skipped, so it can be rerun after a partial uninstall.
 func (u Uninstaller) Uninstall(ctx context.Context) ([]string, error) {
-	for _, path := range []string{u.ConfigDir, u.StateDir, u.UnitPath, u.BinaryPath} {
+	for _, path := range append([]string{u.ConfigDir, u.StateDir, u.UnitPath, u.BinaryPath}, u.ExtraPaths...) {
 		if path != "" && (!filepath.IsAbs(path) || filepath.Clean(path) == "/") {
 			return nil, fmt.Errorf("refusing to remove %q", path)
 		}
 	}
 	if err := u.stopService(ctx); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrServiceNotStopped, err)
+	}
+	if u.RemoveAudit != nil {
+		if err := u.RemoveAudit(ctx); err != nil {
+			return nil, err
+		}
 	}
 	var removed []string
 	var errs []error
@@ -53,7 +60,7 @@ func (u Uninstaller) Uninstall(ctx context.Context) ([]string, error) {
 			}
 		}
 	}
-	for _, path := range []string{u.ConfigDir, u.StateDir, u.BinaryPath} {
+	for _, path := range append([]string{u.ConfigDir, u.StateDir, u.BinaryPath}, u.ExtraPaths...) {
 		if path == "" || !exists(path) {
 			continue
 		}
@@ -62,6 +69,11 @@ func (u Uninstaller) Uninstall(ctx context.Context) ([]string, error) {
 			continue
 		}
 		removed = append(removed, path)
+	}
+	if len(u.ExtraPaths) > 0 && u.Systemctl != nil {
+		if err := u.Systemctl(ctx, "daemon-reload"); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if u.User != "" && u.UserExists != nil && u.DeleteUser != nil && u.UserExists(u.User) {
 		if err := u.DeleteUser(ctx, u.User); err != nil {

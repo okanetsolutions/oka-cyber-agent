@@ -14,7 +14,7 @@ import (
 )
 
 func auditEntry(id, kind, fields string) JournalEntry {
-	return JournalEntry{Transport: "audit", BootID: "boot1", AuditID: id, Cursor: "cursor-" + id + "-" + kind,
+	return JournalEntry{UID: "0", Transport: "audit", BootID: "boot1", AuditID: id, Cursor: "cursor-" + id + "-" + kind,
 		At: time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC), Message: kind + " " + fields}
 }
 
@@ -200,5 +200,57 @@ func TestAuditCheckpointWaitsForCompleteRecord(t *testing.T) {
 	resumed := newAuditParser(p.sessions, p.checkpoint())
 	if len(commandAudit(resumed, "4", commandSyscall)) != 1 {
 		t.Fatal("active SSH session lost on restart")
+	}
+}
+
+func TestAuditInterleavedAndSplitRecords(t *testing.T) {
+	p := newAuditParser(nil, "")
+	loginAudit(p)
+	before := p.cursor
+	p.add(auditEntry("2", "SYSCALL", commandSyscall))
+	p.add(auditEntry("3", "SYSCALL", commandSyscall))
+	p.add(auditEntry("2", "EXECVE", `argc=2 a0="curl" a1_len=10 a1[0]="Super"`))
+	p.add(auditEntry("2", "EXECVE", `a1[1]="Secret"`))
+	p.add(auditEntry("3", "EXECVE", `argc=1 a0="curl"`))
+	if p.checkpoint() != before {
+		t.Fatal("checkpoint did not stay before first incomplete event")
+	}
+	e, ok := p.add(auditEntry("3", "CWD", `cwd="/"`))
+	if !ok || e.Fields["arg_count"] != 0 {
+		t.Fatal("interleaved exec lost")
+	}
+	if p.checkpoint() != before {
+		t.Fatal("second event let checkpoint pass first")
+	}
+	e, ok = p.add(auditEntry("2", "CWD", `cwd="/"`))
+	if !ok || e.Fields["arg_count"] != 1 || strings.Contains(e.Message, "Secret") {
+		t.Fatal("split arguments retained or count lost")
+	}
+}
+
+func TestAuditSSHSessionRetainsPAMUsername(t *testing.T) {
+	b, err := os.ReadFile("testdata/audit/centos7-session.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, text, _ := strings.Cut(strings.TrimSpace(string(b)), "): ")
+	p := newAuditParser(nil, "")
+	p.add(auditEntry("1", "USER_START", text))
+	if p.sessions["boot1:3"].User != "vagrant" {
+		t.Fatalf("PAM session=%+v", p.sessions)
+	}
+	p.add(auditEntry("2", "USER_LOGIN", `auid=1000 ses=3 msg='id=1000 exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`))
+	if p.sessions["boot1:3"].User != "vagrant" {
+		t.Fatal("USER_LOGIN discarded the PAM user name")
+	}
+}
+
+func TestAuditLoginRejectsNonRootAuditWriter(t *testing.T) {
+	p := newAuditParser(nil, "")
+	forged := auditEntry("1", "USER_LOGIN", `auid=1000 ses=7 msg='acct="alice" exe="/usr/sbin/sshd" terminal=ssh res=success'`)
+	forged.UID = "1000"
+	p.add(forged)
+	if len(p.sessions) != 0 || len(commandAudit(p, "2", commandSyscall)) != 0 {
+		t.Fatal("non-root audit writer forged an SSH login")
 	}
 }
