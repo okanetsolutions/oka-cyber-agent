@@ -19,8 +19,11 @@ that absence.
 ../journal/debian-12.sessions.jsonl was captured on 2026-11-09 in a disposable
 jrei/systemd-debian:12 container with systemd-logind, openssh-server and sudo,
 using the same SSH sequence. Only the journal cursor, timestamp, identifier,
-message and trusted sender fields used by the parser were retained. The
-Accepted/open/close PID is 824. The logind ID is 54, and reading
+message, trusted sender fields, MESSAGE_ID, SESSION_ID, LEADER and _BOOT_ID
+used by the parser were retained; the structured fields were restored from
+the original raw capture during review. The Accepted/open/close PID is 824. The trusted logind New session entry has
+SESSION_ID=54 and LEADER=824, directly linking it to the SSH open event;
+no logind line emits an event of its own. The logind ID is 54, and reading
 /proc/self/sessionid inside that SSH session returned 54. That equality was
 verified on this container only, not on all supported distributions.
 
@@ -34,3 +37,15 @@ audit session ID, rather than guaranteeing equality:
 https://www.freedesktop.org/software/systemd/man/252/pam_systemd.html
 Alpine's PAM server is a separate package:
 https://pkgs.alpinelinux.org/package/v3.22/main/x86/openssh-server-pam
+
+The suggested quoted New session message format in the review is absent from
+the systemd v256 and v257 source; both still emit New session %s of user %s.
+Enrichment uses MESSAGE_ID, SESSION_ID and LEADER, independent of message text:
+https://github.com/systemd/systemd/blob/v256/src/login/logind-session.c
+https://github.com/systemd/systemd/blob/v257/src/login/logind-session.c
+
+The exported session key deliberately remains the raw sshd PID required by
+issue #21 and the stacked command capture work. PID reuse within or across
+boots is a known correlation limit; adding a new key format needs a coordinated
+consumer contract change. Internally, logind enrichment checks the boot and
+nearby timestamps so unrelated or stale metadata is not attached.
