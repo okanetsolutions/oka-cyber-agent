@@ -85,8 +85,8 @@ func TestAuditCommandRequiresSSHInteractiveLogin(t *testing.T) {
 		{name: "no login", syscall: commandSyscall},
 		{name: "cron", login: `auid=1000 ses=7 msg='exe="/usr/sbin/crond" terminal=cron res=success'`, syscall: commandSyscall},
 		{name: "service", login: `auid=1000 ses=7 msg='exe="/usr/lib/systemd/systemd" terminal=? res=success'`, syscall: commandSyscall},
-		{name: "unset auid", login: `auid=4294967295 ses=7 msg='exe="/usr/sbin/sshd" terminal=ssh res=success'`, syscall: strings.Replace(commandSyscall, "auid=1000", "auid=4294967295", 1)},
-		{name: "system uid", login: `auid=999 ses=7 msg='exe="/usr/sbin/sshd" terminal=ssh res=success'`, syscall: strings.Replace(commandSyscall, "auid=1000", "auid=999", 1)},
+		{name: "unset auid", login: `auid=4294967295 ses=7 msg='exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`, syscall: strings.Replace(commandSyscall, "auid=1000", "auid=4294967295", 1)},
+		{name: "system uid", login: `auid=999 ses=7 msg='exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`, syscall: strings.Replace(commandSyscall, "auid=1000", "auid=999", 1)},
 		{name: "no tty", syscall: strings.Replace(commandSyscall, "tty=pts1", "tty=(none)", 1), own: true},
 		{name: "wrong session", syscall: strings.Replace(commandSyscall, "ses=7", "ses=8", 1), own: true},
 		{name: "failed exec", syscall: strings.Replace(commandSyscall, "success=yes", "success=no", 1), own: true},
@@ -109,20 +109,20 @@ func TestAuditCommandRequiresSSHInteractiveLogin(t *testing.T) {
 	}
 	p := newAuditParser(nil, "")
 	loginAudit(p)
-	p.add(auditEntry("3", "USER_END", `auid=1000 ses=7 msg='exe="/usr/sbin/sshd" terminal=ssh res=success'`))
+	p.add(auditEntry("3", "USER_END", `auid=1000 ses=7 msg='exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`))
 	if len(commandAudit(p, "4", commandSyscall)) != 0 {
 		t.Fatal("command after logout")
 	}
 	p = newAuditParser(nil, "")
 	loginAudit(p)
-	forged := auditEntry("1", "USER_LOGIN", `auid=0 ses=8 msg='exe="/usr/sbin/sshd" terminal=ssh res=success'`)
+	forged := auditEntry("1", "USER_LOGIN", `auid=0 ses=8 msg='exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`)
 	forged.Transport = "syslog"
 	p.add(forged)
 	if len(p.sessions) != 1 {
 		t.Fatal("forged audit transport trusted")
 	}
 	root := newAuditParser(nil, "")
-	root.add(auditEntry("1", "USER_LOGIN", `auid=0 ses=7 msg='exe="/usr/sbin/sshd" terminal=ssh res=success'`))
+	root.add(auditEntry("1", "USER_LOGIN", `auid=0 ses=7 msg='exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`))
 	if len(commandAudit(root, "2", strings.Replace(commandSyscall, "auid=1000", "auid=0", 1))) != 1 {
 		t.Fatal("root SSH login excluded")
 	}
@@ -247,10 +247,24 @@ func TestAuditSSHSessionRetainsPAMUsername(t *testing.T) {
 
 func TestAuditLoginRejectsNonRootAuditWriter(t *testing.T) {
 	p := newAuditParser(nil, "")
-	forged := auditEntry("1", "USER_LOGIN", `auid=1000 ses=7 msg='acct="alice" exe="/usr/sbin/sshd" terminal=ssh res=success'`)
+	forged := auditEntry("1", "USER_LOGIN", `auid=1000 ses=7 msg='acct="alice" exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`)
 	forged.UID = "1000"
 	p.add(forged)
 	if len(p.sessions) != 0 || len(commandAudit(p, "2", commandSyscall)) != 0 {
 		t.Fatal("non-root audit writer forged an SSH login")
+	}
+}
+
+func TestNonInteractiveSSHCannotBecomeInteractiveByAllocatingAPTY(t *testing.T) {
+	p := newAuditParser(nil, "")
+	p.add(auditEntry("1", "USER_START", `auid=1000 ses=7 msg='acct="alice" exe="/usr/sbin/sshd" terminal=ssh res=success'`))
+	p.add(auditEntry("2", "USER_LOGIN", `auid=1000 ses=7 msg='id=1000 exe="/usr/sbin/sshd" terminal=ssh res=success'`))
+	// A non-interactive SSH script can later allocate a pts, but that is not an interactive SSH login.
+	if events := commandAudit(p, "3", commandSyscall); len(events) != 0 {
+		t.Fatalf("non-interactive SSH emitted=%+v", events)
+	}
+	p.add(auditEntry("4", "USER_LOGIN", `auid=1000 ses=8 msg='id=1000 exe="/usr/sbin/sshd" terminal=/dev/pts/2 res=success'`))
+	if events := commandAudit(p, "5", strings.Replace(commandSyscall, "ses=7", "ses=8", 1)); len(events) != 1 {
+		t.Fatal("proven interactive SSH login was dropped")
 	}
 }

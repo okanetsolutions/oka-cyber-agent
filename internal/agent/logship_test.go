@@ -1001,7 +1001,7 @@ func TestShipperCommandsSettingAndArgumentFreeSpool(t *testing.T) {
 	s.Configure(api.LogCollection{Sources: []string{"commands"}, FlushIntervalSeconds: 5})
 	h.step(s)
 	records := []string{
-		`USER_LOGIN auid=1000 ses=4 msg='acct="alice" exe="/usr/sbin/sshd" terminal=ssh res=success'`,
+		`USER_LOGIN auid=1000 ses=4 msg='acct="alice" exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`,
 		`SYSCALL arch=c000003e syscall=59 success=yes pid=90001 ppid=90000 auid=1000 ses=4 tty=pts1 exe="/usr/bin/curl" key="oka_cyber_commands"`,
 		`EXECVE argc=3 a0="curl" a1="--password" a2=5375706572536563726574`,
 		`CWD cwd="/home/alice"`,

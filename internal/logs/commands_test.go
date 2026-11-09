@@ -60,7 +60,7 @@ func TestCommandCollectorOptInAndJournalTrust(t *testing.T) {
 	if _, err := os.Stat(o.path(auditcontrol.FlagPath)); err != nil {
 		t.Fatal("commands did not request the fixed rule")
 	}
-	login := auditEntry("1", "USER_LOGIN", `auid=1000 ses=7 msg='acct="alice" exe="/usr/sbin/sshd" terminal=ssh res=success'`)
+	login := auditEntry("1", "USER_LOGIN", `auid=1000 ses=7 msg='acct="alice" exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`)
 	records := []JournalEntry{login, auditEntry("2", "SYSCALL", commandSyscall), auditEntry("2", "EXECVE", `argc=2 a0="curl" a1=536563726574`), auditEntry("2", "CWD", `cwd="/home/alice"`)}
 	// A fake identifier is not a kernel audit transport and cannot create a login.
 	fake := login

@@ -19,8 +19,9 @@ const (
 // AuditSession is a proven SSH login, keyed by boot ID and kernel audit session ID. No command arguments
 // or raw records are retained in a checkpoint, including while a multi-record event is incomplete.
 type AuditSession struct {
-	AUID string `json:"auid"`
-	User string `json:"user"`
+	Interactive bool   `json:"interactive"`
+	AUID        string `json:"auid"`
+	User        string `json:"user"`
 }
 
 type auditCommand struct {
@@ -199,7 +200,11 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 				user = known.User
 			}
 		}
-		p.sessions[key] = AuditSession{AUID: f["auid"], User: cut(redactEverywhere(user), maxNameLength)}
+		interactive := interactiveTTY(f["terminal"])
+		if known, ok := p.sessions[key]; ok && known.AUID == f["auid"] {
+			interactive = interactive || known.Interactive
+		}
+		p.sessions[key] = AuditSession{Interactive: interactive, AUID: f["auid"], User: cut(redactEverywhere(user), maxNameLength)}
 		return Event{}, false
 	}
 	id := e.BootID + ":" + e.AuditID
@@ -249,7 +254,7 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 		return Event{}, false
 	}
 	session, exists := p.sessions[auditSessionKey(e, f["ses"])]
-	if !exists || session.AUID != f["auid"] || f["success"] != "yes" || f["key"] != auditKey ||
+	if !exists || !session.Interactive || session.AUID != f["auid"] || f["success"] != "yes" || f["key"] != auditKey ||
 		!interactiveTTY(f["tty"]) || !strings.HasPrefix(f["exe"], "/") || !strings.HasPrefix(f["cwd"], "/") {
 		return Event{}, false
 	}
