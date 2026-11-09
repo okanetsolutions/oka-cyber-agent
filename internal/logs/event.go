@@ -9,7 +9,8 @@ const (
 )
 
 // Event kinds and the fields they carry, as defined by the Oka Core log ingestion API
-// (okanetsolutions/oka-core#3779).
+// (okanetsolutions/oka-core#3779 and #4073). SSH session kinds and correlation fields
+// require the #4073 ingestion changes to be deployed before the agent is released.
 const (
 	KindSSHLoginFailed    = "ssh_login_failed"
 	KindSSHLoginSucceeded = "ssh_login_succeeded"
