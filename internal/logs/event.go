@@ -13,6 +13,8 @@ const (
 const (
 	KindSSHLoginFailed    = "ssh_login_failed"
 	KindSSHLoginSucceeded = "ssh_login_succeeded"
+	KindSSHSessionOpened  = "ssh_session_opened"
+	KindSSHSessionClosed  = "ssh_session_closed"
 	KindSudoCommand       = "sudo_command"
 	KindSudoFailed        = "sudo_failed"
 	KindSuSession         = "su_session"

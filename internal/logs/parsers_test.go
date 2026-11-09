@@ -42,7 +42,7 @@ func authEvents(t *testing.T, fixture string) []Event {
 			}
 			continue
 		}
-		if e, ok := ParseAuth(l.Program, l.Message, l.At); ok {
+		if e, ok := ParseAuth(l.Program, l.Message, l.At, l.PID); ok {
 			events = append(events, e)
 		}
 	}
@@ -64,14 +64,17 @@ func kindCounts(events []Event) map[string]int {
 func TestAuthLogsPerDistribution(t *testing.T) {
 	tests := map[string]map[string]int{
 		"debian-12.auth.log": {
+			KindSSHSessionOpened: 1, KindSSHSessionClosed: 1,
 			KindSSHLoginFailed: 2, KindSSHLoginSucceeded: 1, KindSudoCommand: 1, KindSudoFailed + ":incorrect_password": 1,
 			KindSudoFailed + ":not_in_sudoers": 1, KindSuSession: 5, KindUserCreated: 3, KindUserGroupChanged: 4, KindPasswordChanged: 4,
 		},
 		"ubuntu-24.04.auth.log": {
+			KindSSHSessionOpened: 1, KindSSHSessionClosed: 1,
 			KindSSHLoginFailed: 2, KindSSHLoginSucceeded: 1, KindSudoCommand: 1, KindSudoFailed + ":incorrect_password": 1,
 			KindSudoFailed + ":not_in_sudoers": 1, KindSuSession: 5, KindUserCreated: 3, KindUserGroupChanged: 4, KindPasswordChanged: 4,
 		},
 		"rocky-9.secure": {
+			KindSSHSessionOpened: 1, KindSSHSessionClosed: 1,
 			KindSSHLoginFailed: 2, KindSSHLoginSucceeded: 1, KindSudoCommand: 1, KindSudoFailed + ":incorrect_password": 1,
 			KindSudoFailed + ":not_in_sudoers": 1, KindSuSession: 5, KindUserCreated: 3, KindUserGroupChanged: 4,
 		},
@@ -233,7 +236,7 @@ func TestSudoKeyOrder(t *testing.T) {
 		{"alice : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/x ; USER=bob ; COMMAND=/y ; USER=root ; COMMAND=/bin/sh", "", "[unparsed]"},
 		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=", "root", "[unparsed]"},
 	} {
-		e, ok := ParseAuth("sudo", tc.message, testNow)
+		e, ok := ParseAuth("sudo", tc.message, testNow, "")
 		if !ok {
 			t.Errorf("%q: no event", tc.message)
 			continue
@@ -244,7 +247,7 @@ func TestSudoKeyOrder(t *testing.T) {
 			t.Errorf("%q: target_user=%q command=%q, want %q and %q", tc.message, user, command, tc.targetUser, tc.command)
 		}
 	}
-	if _, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/x ; COMMAND=/bin/ls", testNow); ok {
+	if _, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/x ; COMMAND=/bin/ls", testNow, ""); ok {
 		t.Error("a line without USER is not a sudo command")
 	}
 }
@@ -271,7 +274,7 @@ func TestSudoKeepsNoArguments(t *testing.T) {
 			prefix + "ENV=A=1 ; B=S3cretPw ; COMMAND=" + tc.command,
 			"alice : 3 incorrect password attempts ; " + prefix[len("alice : "):] + "COMMAND=" + tc.command,
 		} {
-			e, ok := ParseAuth("sudo", line, testNow)
+			e, ok := ParseAuth("sudo", line, testNow, "")
 			if !ok {
 				t.Fatalf("not a sudo line: %q", line)
 			}
@@ -303,7 +306,7 @@ func TestSudoCraftedFieldsHideNoArgument(t *testing.T) {
 		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; ENV=A=x ; COMMAND=/bin/true ; COMMAND=/usr/bin/redis-cli AUTH hunter2pw", "[unparsed]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; ENV=[redacted] ; COMMAND=[unparsed]"},
 		{"alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/htpasswd -b f bob hunter2pw ; COMMAND=/bin/true", "/usr/bin/htpasswd [6 args]", "alice : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/htpasswd [6 args]"},
 	} {
-		e, ok := ParseAuth("sudo", tc.line, testNow)
+		e, ok := ParseAuth("sudo", tc.line, testNow, "")
 		if !ok {
 			t.Fatalf("not a sudo line: %q", tc.line)
 		}
@@ -369,7 +372,7 @@ func TestSudoShipsNoUnparsedText(t *testing.T) {
 			KindSudoFailed, "other", "bob : user NOT authorized on host ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/ls [0 args]",
 		},
 	} {
-		e, ok := ParseAuth("sudo", tc.line, testNow)
+		e, ok := ParseAuth("sudo", tc.line, testNow, "")
 		if tc.kind == "" {
 			if ok {
 				t.Errorf("%q must give no event, got %+v", tc.line, e)
@@ -408,7 +411,7 @@ func FuzzSudoKeepsNoArguments(f *testing.F) {
 			line += "ENV=" + env + " Zq9env ; "
 		}
 		line += "COMMAND=" + command
-		e, ok := ParseAuth("sudo", line, testNow)
+		e, ok := ParseAuth("sudo", line, testNow, "")
 		if !ok {
 			return
 		}
@@ -435,7 +438,7 @@ func TestCrontabEditIsOneChange(t *testing.T) {
 				if !ok {
 					t.Fatalf("%s: unparsed line %q", fixture, line)
 				}
-				if e, ok := ParseAuth(l.Program, l.Message, l.At); ok && e.Kind == KindCronModified {
+				if e, ok := ParseAuth(l.Program, l.Message, l.At, l.PID); ok && e.Kind == KindCronModified {
 					n++
 				}
 			}
@@ -452,27 +455,27 @@ func TestCrontabEditIsOneChange(t *testing.T) {
 
 func TestAuthFailuresFromPAM(t *testing.T) {
 	at := testNow
-	e, ok := ParseAuth("su", "pam_unix(su:auth): authentication failure; logname=alice uid=1000 euid=0 tty=pts/0 ruser=alice rhost=  user=root", at)
+	e, ok := ParseAuth("su", "pam_unix(su:auth): authentication failure; logname=alice uid=1000 euid=0 tty=pts/0 ruser=alice rhost=  user=root", at, "")
 	if !ok || e.Kind != KindSuSession || e.Username != "alice" || e.Fields["target_user"] != "root" || e.Fields["reason"] != "authentication_failure" {
 		t.Fatalf("su failure = %+v", e)
 	}
-	e, ok = ParseAuth("su", "- pts/0 alice:root", at)
+	e, ok = ParseAuth("su", "- pts/0 alice:root", at, "")
 	if !ok || e.Fields["reason"] != "authentication_failure" {
 		t.Fatalf("busybox su failure = %+v", e)
 	}
-	e, ok = ParseAuth("passwd", "pam_unix(passwd:chauthtok): password changed for deploy", at)
+	e, ok = ParseAuth("passwd", "pam_unix(passwd:chauthtok): password changed for deploy", at, "")
 	if !ok || e.Kind != KindPasswordChanged || e.Username != "deploy" {
 		t.Fatalf("passwd = %+v", e)
 	}
-	e, ok = ParseAuth("sudo", "   alice : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/bin/sh -c echo a ; echo b", at)
+	e, ok = ParseAuth("sudo", "   alice : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/bin/sh -c echo a ; echo b", at, "")
 	if !ok || e.Fields["command"] != "/bin/sh [6 args]" || e.Fields["reason"] != "incorrect_password" {
 		t.Fatalf("sudo with ; in the command = %+v", e)
 	}
-	e, ok = ParseAuth("sshd", "Failed publickey for git from 2001:db8::7 port 50022 ssh2: ED25519 SHA256:abc", at)
+	e, ok = ParseAuth("sshd", "Failed publickey for git from 2001:db8::7 port 50022 ssh2: ED25519 SHA256:abc", at, "")
 	if !ok || e.SrcIP != "2001:db8::7" || e.Fields["method"] != "publickey" {
 		t.Fatalf("publickey failure = %+v", e)
 	}
-	e, ok = ParseAuth("sshd", "Failed password for invalid user my password from 203.0.113.7 port 51234 ssh2", at)
+	e, ok = ParseAuth("sshd", "Failed password for invalid user my password from 203.0.113.7 port 51234 ssh2", at, "")
 	if !ok || e.Username != "my password" {
 		t.Fatalf("user name with a space = %+v", e)
 	}
@@ -490,7 +493,7 @@ func TestAuthFailuresFromPAM(t *testing.T) {
 		{"crontab", "(root) END EDIT (alice)"},
 		{"cron", "(root) CMD (true)"},
 	} {
-		if e, ok := ParseAuth(ignored[0], ignored[1], at); ok {
+		if e, ok := ParseAuth(ignored[0], ignored[1], at, ""); ok {
 			t.Errorf("%s %q must not produce an event, got %+v", ignored[0], ignored[1], e)
 		}
 	}
@@ -509,7 +512,7 @@ func TestJournalEntries(t *testing.T) {
 		if !TrustedAuthEntry(entry) {
 			t.Fatalf("genuine entry rejected: %+v", entry)
 		}
-		if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At); ok {
+		if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
 			events = append(events, e)
 		}
 	}
@@ -534,7 +537,7 @@ func TestJournalRejectsForgedAuthEntries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At)
+		e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID)
 		if !TrustedAuthEntry(entry) {
 			if entry.UID != "1000" || !ok {
 				t.Fatalf("rejected entry = %+v", entry)
@@ -557,6 +560,14 @@ func TestTrustedAuthEntry(t *testing.T) {
 		want                       bool
 	}{
 		{"sshd", "0", "/usr/sbin/sshd", "sshd", true},
+		{"sshd-session.pam", "0", "/usr/lib/ssh/sshd-session.pam", "sshd-session.pam", true},
+		{"sshd.pam", "0", "/usr/sbin/sshd.pam", "sshd.pam", true},
+		{"systemd-logind", "0", "/usr/lib/systemd/systemd-logind", "systemd-logind", true},
+		{"systemd-logind", "0", "/lib/systemd/systemd-logind", "systemd-logind", true},
+		{"systemd-logind", "1000", "/usr/lib/systemd/systemd-logind", "systemd-logind", false},
+		{"systemd-logind", "0", "/usr/bin/logger", "systemd-logind", false},
+		{"systemd-logind", "0", "", "systemd-logind", true},
+		{"systemd-logind", "1000", "", "systemd-logind", false},
 		{"sshd", "0", "/usr/sbin/sshd (deleted)", "sshd", true},
 		{"sshd-session", "0", "/usr/lib/openssh/sshd-session", "sshd-session", true},
 		{"sshd", "0", "/usr/libexec/openssh/sshd-session", "sshd-session", true},

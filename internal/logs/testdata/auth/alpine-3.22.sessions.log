@@ -1,0 +1,9 @@
+Nov  9 13:14:55 bc56f67f1b37 syslog.info syslogd started: BusyBox v1.37.0
+Nov  9 13:14:55 bc56f67f1b37 auth.info sshd.pam[19]: Server listening on 0.0.0.0 port 2222.
+Nov  9 13:14:55 bc56f67f1b37 auth.info sshd.pam[19]: Server listening on :: port 2222.
+Nov  9 13:14:55 bc56f67f1b37 auth.info sshd-session.pam[21]: Accepted publickey for root from 127.0.0.1 port 47180 ssh2: ED25519 SHA256:Kuddh+21bZ3c8vfXMZqvCPQpjT67/JJtrylCG1ztbG8
+Nov  9 13:14:55 bc56f67f1b37 authpriv.info sshd-session.pam[21]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+Nov  9 13:14:55 bc56f67f1b37 authpriv.notice sudo:     root : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/id
+Nov  9 13:14:55 bc56f67f1b37 auth.info sshd-session.pam[24]: Received disconnect from 127.0.0.1 port 47180:11: disconnected by user
+Nov  9 13:14:55 bc56f67f1b37 auth.info sshd-session.pam[24]: Disconnected from user root 127.0.0.1 port 47180
+Nov  9 13:14:55 bc56f67f1b37 authpriv.info sshd-session.pam[21]: pam_unix(sshd:session): session closed for user root
