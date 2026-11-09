@@ -125,7 +125,7 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 		case entry := <-c.journalCh:
 			if !TrustedAuthEntry(entry) {
 				c.untrustedEntries++
-			} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At); ok {
+			} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
 				events = append(events, e)
 			}
 			c.journalCursor = entry.Cursor
@@ -145,7 +145,7 @@ func (c *Collector) parseLine(plan FilePlan, line string) (Event, bool) {
 		if !ok || !slices.Contains(AuthIdentifiers, l.Program) {
 			return Event{}, false
 		}
-		return ParseAuth(l.Program, l.Message, l.At.UTC())
+		return ParseAuth(l.Program, l.Message, l.At.UTC(), l.PID)
 	case SourceWeb:
 		e, ok := ParseAccessLog(line, plan.Vhost)
 		e.FirstAt, e.LastAt = e.FirstAt.UTC(), e.LastAt.UTC()
