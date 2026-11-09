@@ -18,6 +18,7 @@ const (
 	replanEvery    = time.Minute
 	journalBackoff = 10 * time.Second
 	journalBuffer  = 10000
+	logindWait     = 5 * time.Second
 )
 
 // Checkpoint is how far every reader got: file positions by path and the journal cursor. The agent saves it
@@ -28,6 +29,11 @@ type Checkpoint struct {
 	JournalCursor string                  `json:"journal_cursor,omitempty"`
 	AuditCursor   string                  `json:"audit_cursor,omitempty"`
 	AuditSessions map[string]AuditSession `json:"audit_sessions,omitempty"`
+}
+
+type pendingJournalEntry struct {
+	entry    JournalEntry
+	received time.Time
 }
 
 type watch struct {
@@ -60,10 +66,11 @@ type Collector struct {
 	auditCh     chan JournalEntry
 	audit       *auditParser
 
-	journalCancel context.CancelFunc
-	journalDone   chan struct{}
-	journalCh     chan JournalEntry
-	journalCursor string
+	journalCancel  context.CancelFunc
+	journalDone    chan struct{}
+	journalCh      chan JournalEntry
+	journalCursor  string
+	journalPending []pendingJournalEntry
 	// untrustedEntries counts journal entries dropped because they claimed an auth identifier without
 	// coming from that program (see TrustedAuthEntry).
 	untrustedEntries int
@@ -128,21 +135,59 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 	if planned {
 		c.files.polled()
 	}
-	for {
+	events = append(events, c.pollJournal()...)
+	return append(events, c.pollCommands()...)
+}
+
+// Hold an unmatched SSH open briefly so logind can enrich it across polls. The cursor
+// stays before held entries, so a checkpoint cannot skip an event awaiting enrichment.
+func (c *Collector) pollJournal() []Event {
+	now := c.now()
+read:
+	for len(c.journalPending) < journalBuffer {
 		select {
 		case entry := <-c.journalCh:
-			if !TrustedAuthEntry(entry) {
-				c.untrustedEntries++
-			} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
-				events = append(events, e)
-			}
-			c.journalCursor = entry.Cursor
-			continue
+			c.journalPending = append(c.journalPending, pendingJournalEntry{entry, now})
 		default:
+			break read
 		}
-		break
 	}
-	events = append(events, c.pollCommands()...)
+	type leaderKey struct{ boot, pid string }
+	starts := map[leaderKey][]JournalEntry{}
+	for _, pending := range c.journalPending {
+		e := pending.entry
+		if e.Identifier == "systemd-logind" && e.MessageID == logindSessionStart &&
+			e.SessionID != "" && e.Leader != "" && TrustedAuthEntry(e) {
+			key := leaderKey{e.BootID, e.Leader}
+			starts[key] = append(starts[key], e)
+		}
+	}
+	var events []Event
+	consumed := 0
+	for _, pending := range c.journalPending {
+		entry := pending.entry
+		if !TrustedAuthEntry(entry) {
+			c.untrustedEntries++
+		} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
+			if e.Kind == KindSSHSessionOpened && entry.PID != "" {
+				key := leaderKey{entry.BootID, entry.PID}
+				candidates := starts[key]
+				for len(candidates) > 0 && candidates[0].At.Before(entry.At) {
+					candidates = candidates[1:]
+				}
+				if len(candidates) > 0 && candidates[0].At.Sub(entry.At) <= logindWait {
+					e.set("logind_session", candidates[0].SessionID)
+					starts[key] = candidates[1:]
+				} else if now.Sub(pending.received) < logindWait && len(c.journalPending) < journalBuffer {
+					break
+				}
+			}
+			events = append(events, e)
+		}
+		c.journalCursor = entry.Cursor
+		consumed++
+	}
+	c.journalPending = slices.Delete(c.journalPending, 0, consumed)
 	return events
 }
 

@@ -17,13 +17,15 @@ import (
 	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
-// JournalEntry is one journald entry. UID, Exe and Comm are the trusted fields journald fills in from the
-// sender's kernel credentials and /proc, which a client cannot set; Identifier is chosen by the client.
+// SD_MESSAGE_SESSION_START from systemd's sd-messages.h.
+const logindSessionStart = "8d45620c1a4348dbb17410da57c60c66"
+
+// JournalEntry is one journald entry. UID, Exe, Comm, PID and BootID are trusted fields
+// journald fills in; Identifier, MessageID, SessionID and Leader are chosen by the sender.
 type JournalEntry struct {
 	Cursor     string
 	Transport  string
 	AuditID    string
-	BootID     string
 	Identifier string
 	Message    string
 	At         time.Time
@@ -31,6 +33,10 @@ type JournalEntry struct {
 	Exe        string
 	Comm       string
 	PID        string
+	MessageID  string
+	SessionID  string
+	Leader     string
+	BootID     string
 }
 
 // ParseJournalEntry reads one line of journalctl --output=json. MESSAGE is a string, or an array of bytes
@@ -40,7 +46,6 @@ func ParseJournalEntry(line []byte) (JournalEntry, error) {
 		Cursor         string          `json:"__CURSOR"`
 		Transport      string          `json:"_TRANSPORT"`
 		AuditID        string          `json:"_AUDIT_ID"`
-		BootID         string          `json:"_BOOT_ID"`
 		SourceRealtime string          `json:"_SOURCE_REALTIME_TIMESTAMP"`
 		Realtime       string          `json:"__REALTIME_TIMESTAMP"`
 		Identifier     string          `json:"SYSLOG_IDENTIFIER"`
@@ -49,11 +54,16 @@ func ParseJournalEntry(line []byte) (JournalEntry, error) {
 		Exe            string          `json:"_EXE"`
 		Comm           string          `json:"_COMM"`
 		PID            string          `json:"_PID"`
+		MessageID      string          `json:"MESSAGE_ID"`
+		SessionID      string          `json:"SESSION_ID"`
+		Leader         string          `json:"LEADER"`
+		BootID         string          `json:"_BOOT_ID"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return JournalEntry{}, err
 	}
-	e := JournalEntry{Transport: raw.Transport, AuditID: raw.AuditID, BootID: raw.BootID, Cursor: raw.Cursor, Identifier: raw.Identifier, UID: raw.UID, Exe: raw.Exe, Comm: raw.Comm, PID: raw.PID}
+	e := JournalEntry{Transport: raw.Transport, AuditID: raw.AuditID, Cursor: raw.Cursor, Identifier: raw.Identifier, UID: raw.UID, Exe: raw.Exe, Comm: raw.Comm, PID: raw.PID,
+		MessageID: raw.MessageID, SessionID: raw.SessionID, Leader: raw.Leader, BootID: raw.BootID}
 	if raw.Transport == "audit" && raw.SourceRealtime != "" {
 		raw.Realtime = raw.SourceRealtime
 	}
