@@ -1,0 +1,33 @@
+[Unit]
+Description=Oka Cyber fixed command audit rule
+After=auditd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/oka-cyber-agent audit-rules
+User=root
+Group=root
+RuntimeDirectory=oka-cyber-audit
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=0022
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_AUDIT_CONTROL
+AmbientCapabilities=CAP_AUDIT_CONTROL
+ProtectSystem=strict
+ReadWritePaths=-/etc/audit/rules.d /run/oka-cyber-audit
+ProtectHome=yes
+InaccessiblePaths=-/etc/oka-cyber-agent
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+TimeoutStartSec=30

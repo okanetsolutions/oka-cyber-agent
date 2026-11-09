@@ -23,9 +23,11 @@ const (
 // Checkpoint is how far every reader got: file positions by path and the journal cursor. The agent saves it
 // only after the server acknowledged the events read up to it (at least once delivery).
 type Checkpoint struct {
-	Sources       []string            `json:"sources"`
-	Files         map[string]Position `json:"files"`
-	JournalCursor string              `json:"journal_cursor,omitempty"`
+	Sources       []string                `json:"sources"`
+	Files         map[string]Position     `json:"files"`
+	JournalCursor string                  `json:"journal_cursor,omitempty"`
+	AuditCursor   string                  `json:"audit_cursor,omitempty"`
+	AuditSessions map[string]AuditSession `json:"audit_sessions,omitempty"`
 }
 
 type watch struct {
@@ -51,6 +53,12 @@ type Collector struct {
 	lastPlan    time.Time
 	// listed holds the file names in the directories of the watched files, read just before the latest plan.
 	listed map[string]map[string]bool
+
+	commandFlag bool
+	auditCancel context.CancelFunc
+	auditDone   chan struct{}
+	auditCh     chan JournalEntry
+	audit       *auditParser
 
 	journalCancel context.CancelFunc
 	journalDone   chan struct{}
@@ -134,6 +142,7 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 		}
 		break
 	}
+	events = append(events, c.pollCommands()...)
 	return events
 }
 
@@ -179,6 +188,7 @@ func (c *Collector) plan(ctx context.Context) {
 	c.lastPlan = c.now()
 	c.files.planned()
 	p := PlanSources(c.sources, c.options)
+	c.planCommands(ctx, &p)
 	c.skipped = p.Skipped
 	planned := map[string]FilePlan{}
 	for _, f := range p.Files {
@@ -343,11 +353,13 @@ func (c *Collector) Checkpoint() Checkpoint {
 			cp.Files[path] = pos
 		}
 	}
+	c.commandCheckpoint(&cp)
 	cp.JournalCursor = c.journalCursor
 	return cp
 }
 
 func (c *Collector) Close() {
+	c.closeCommands()
 	if c.journalCancel != nil {
 		c.journalCancel()
 		<-c.journalDone

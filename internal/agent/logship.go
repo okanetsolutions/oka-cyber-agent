@@ -129,6 +129,9 @@ func (s *LogShipper) Run(ctx context.Context) error {
 	if s.Logger == nil {
 		s.Logger = slog.Default()
 	}
+	if err := logs.DisableCommands(s.Options); err != nil {
+		s.Logger.Error("reset command collection flag", "error", err)
+	}
 	defer s.stopCollector()
 	ticker := time.NewTicker(s.Tick)
 	defer ticker.Stop()
@@ -187,7 +190,7 @@ func (s *LogShipper) apply(ctx context.Context, lc api.LogCollection) {
 		s.flushInterval = min(max(time.Duration(lc.FlushIntervalSeconds)*time.Second, 5*time.Second), 5*time.Minute)
 	}
 	sources := slices.DeleteFunc(slices.Clone(lc.Sources), func(src string) bool {
-		return !slices.Contains([]string{logs.SourceAuth, logs.SourceWeb, logs.SourceApp}, src)
+		return !slices.Contains([]string{logs.SourceAuth, logs.SourceWeb, logs.SourceApp, logs.SourceCommands}, src)
 	})
 	slices.Sort(sources)
 	sources = slices.Compact(sources)
@@ -200,6 +203,11 @@ func (s *LogShipper) apply(ctx context.Context, lc api.LogCollection) {
 		s.stopCollector()
 	}
 	s.sources = sources
+	if !slices.Contains(sources, logs.SourceCommands) {
+		if err := logs.DisableCommands(s.Options); err != nil {
+			s.Logger.Error("disable command collection", "error", err)
+		}
+	}
 	if len(sources) == 0 {
 		if err := s.Spool.Clear(); err != nil {
 			s.Logger.Error("clear log spool", "error", err)
@@ -245,6 +253,9 @@ func (s *LogShipper) resumeAt(sources []string) logs.Checkpoint {
 	if !slices.Contains(resume.Sources, logs.SourceAuth) {
 		resume.JournalCursor = ""
 	}
+	if !slices.Contains(resume.Sources, logs.SourceCommands) {
+		resume.AuditCursor, resume.AuditSessions = "", nil
+	}
 	if changed && s.spoolBatch(nil, resume) {
 		clear(s.switchedOff)
 	}
@@ -279,6 +290,7 @@ func (s *LogShipper) collect(ctx context.Context) {
 		}
 		s.aggregator.Add(logs.Redact(e))
 	}
+	dropped += s.aggregator.TakeDropped()
 	if err := s.Spool.AddDropped(dropped); err != nil {
 		s.Logger.Error("count dropped log events", "error", err)
 	}

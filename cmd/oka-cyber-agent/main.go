@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/auditcontrol"
 )
 
 const (
@@ -40,6 +41,15 @@ func run(ctx context.Context, args []string, io streams) int {
 		return exitUsage
 	}
 	switch args[0] {
+	case "audit-rules":
+		if len(args) != 1 {
+			return exitUsage
+		}
+		if err := (auditcontrol.Helper{}).Apply(ctx); err != nil {
+			fmt.Fprintln(io.stderr, "audit rule status could not be written")
+			return exitFailure
+		}
+		return exitOK
 	case "enroll":
 		return enrollCommand(ctx, args[1:], io)
 	case "run":
