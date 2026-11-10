@@ -146,7 +146,7 @@ func TestCommandAggregationAndPerMinuteBudget(t *testing.T) {
 	// The budget survives flushes, bounding distinct commands as well as a repeated loop.
 	for i := range 100 {
 		v := e
-		v.Fields = map[string]any{"ses": "7", "auid": "1000", "executable": "/bin/cmd" + strconv.Itoa(i), "arg_count": 0}
+		v.Fields = map[string]any{"boot_id": testBootID, "ses": int64(7), "auid": "1000", "executable": "/bin/cmd" + strconv.Itoa(i), "arg_count": 0}
 		a.Add(v)
 	}
 	if a.Pending() != 59 || a.TakeDropped() != 41 {

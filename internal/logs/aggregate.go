@@ -64,14 +64,14 @@ func Suspicious(e Event) bool {
 }
 
 type sshKey struct {
-	ip, user string
-	minute   time.Time
+	boot, ip, user string
+	minute         time.Time
 }
 
 type commandKey struct {
-	session, auid, cwd, executable, tty string
-	argc                                int
-	minute                              time.Time
+	boot, session, auid, cwd, executable, tty string
+	argc                                      int
+	minute                                    time.Time
 }
 
 type commandBudget struct {
@@ -109,7 +109,7 @@ func (a *Aggregator) Add(e Event) {
 	case e.Kind == KindCommand:
 		field := func(k string) string { s, _ := e.Fields[k].(string); return s }
 		argc, _ := e.Fields["arg_count"].(int)
-		key := commandKey{field("ses"), field("auid"), field("cwd"), field("executable"), field("tty"), argc, e.FirstAt.Truncate(time.Minute)}
+		key := commandKey{field("boot_id"), fmt.Sprint(e.Fields["ses"]), field("auid"), field("cwd"), field("executable"), field("tty"), argc, e.FirstAt.Truncate(time.Minute)}
 		if existing := a.commands[key]; existing != nil {
 			merge(existing, e)
 			return
@@ -122,7 +122,7 @@ func (a *Aggregator) Add(e Event) {
 			}
 			a.budget = commandBudget{minute: key.minute, sessions: map[string]int{}}
 		}
-		session := key.session + ":" + key.auid
+		session := key.boot + ":" + key.session + ":" + key.auid
 		if a.budget.total >= 512 || a.budget.sessions[session] >= 60 {
 			a.dropped += max(e.Count, 1)
 			return
@@ -132,7 +132,8 @@ func (a *Aggregator) Add(e Event) {
 		a.commands[key] = &e
 		a.commandOrder = append(a.commandOrder, key)
 	case e.Kind == KindSSHLoginFailed:
-		key := sshKey{e.SrcIP, e.Username, e.FirstAt.Truncate(time.Minute)}
+		boot, _ := e.Fields["boot_id"].(string)
+		key := sshKey{boot, e.SrcIP, e.Username, e.FirstAt.Truncate(time.Minute)}
 		if existing, ok := a.ssh[key]; ok {
 			merge(existing, e)
 			return

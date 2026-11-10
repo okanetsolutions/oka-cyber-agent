@@ -124,6 +124,7 @@ func auditNumber(value string) bool {
 func auditSessionKey(e JournalEntry, ses string) string { return e.BootID + ":" + ses }
 
 func (p *auditParser) add(e JournalEntry) (Event, bool) {
+	e.BootID = normalizeBootID(e.BootID)
 	p.order++
 	previous := p.cursor
 	p.cursor = e.Cursor
@@ -264,7 +265,9 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 	}
 	event := newEvent(SourceCommands, KindCommand, pending.at, fmt.Sprintf("%s [%d args]", f["exe"], argc-1))
 	event.Username = session.User
-	event.Fields = map[string]any{"ses": f["ses"], "auid": f["auid"], "cwd": f["cwd"], "executable": f["exe"], "arg_count": argc - 1, "tty": f["tty"]}
+	ses, _ := strconv.ParseInt(f["ses"], 10, 64)
+	event.Fields = map[string]any{"ses": ses, "auid": f["auid"], "cwd": f["cwd"], "executable": f["exe"], "arg_count": argc - 1, "tty": f["tty"]}
+	event.setBootID(e.BootID)
 	return event, true
 }
 

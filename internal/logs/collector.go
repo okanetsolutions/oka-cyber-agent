@@ -57,6 +57,7 @@ type Collector struct {
 	files       *readFiles
 	skipped     []SkippedSource
 	lastPlan    time.Time
+	boot        bootIdentity
 	// listed holds the file names in the directories of the watched files, read just before the latest plan.
 	listed map[string]map[string]bool
 
@@ -119,8 +120,14 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 	for _, path := range sortedWatchPaths(c.watches) {
 		w := c.watches[path]
 		result := w.tailer.Poll()
-		for _, line := range result.Lines {
+		for i, line := range result.Lines {
 			if e, ok := c.parseLine(w.plan, line); ok {
+				// Existing bytes may belong to an earlier boot, even if a yearless syslog
+				// timestamp looks recent. Only newly appended lines can use the host ID.
+				if w.plan.Source == SourceAuth && result.live[i] &&
+					e.FirstAt.After(c.boot.started) && !e.FirstAt.After(c.now()) {
+					e.setBootID(c.boot.id)
+				}
 				events = append(events, e)
 			}
 		}
@@ -169,6 +176,7 @@ read:
 		if !TrustedAuthEntry(entry) {
 			c.untrustedEntries++
 		} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
+			e.setBootID(entry.BootID)
 			if e.Kind == KindSSHSessionOpened && entry.PID != "" {
 				key := leaderKey{entry.BootID, entry.PID}
 				candidates := starts[key]
@@ -227,6 +235,9 @@ func (c *Collector) parseLine(plan FilePlan, line string) (Event, bool) {
 // from where it stopped (see readFiles), so no line is read twice.
 func (c *Collector) plan(ctx context.Context) {
 	startup := c.lastPlan.IsZero()
+	if startup && slices.Contains(c.sources, SourceAuth) {
+		c.boot = c.options.bootIdentity()
+	}
 	previous := c.listed
 	c.listed = map[string]map[string]bool{}
 	c.listWatchedDirs()
@@ -258,6 +269,9 @@ func (c *Collector) plan(ctx context.Context) {
 		}
 		startAtEnd := resume == nil && !createdSince(previous, path)
 		t := NewTailer(c.options.path(path), resume, startAtEnd)
+		if f.Source == SourceAuth {
+			t.bootID = c.boot.id
+		}
 		t.Pattern = c.options.patternPath(f.Pattern)
 		t.Now = c.now
 		t.files = c.files

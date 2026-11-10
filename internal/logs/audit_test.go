@@ -13,8 +13,10 @@ import (
 	"time"
 )
 
+const testBootID = "7ee3ab1c213d4aa7b550dfdce6e11c4c"
+
 func auditEntry(id, kind, fields string) JournalEntry {
-	return JournalEntry{UID: "0", Transport: "audit", BootID: "boot1", AuditID: id, Cursor: "cursor-" + id + "-" + kind,
+	return JournalEntry{UID: "0", Transport: "audit", BootID: testBootID, AuditID: id, Cursor: "cursor-" + id + "-" + kind,
 		At: time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC), Message: kind + " " + fields}
 }
 
@@ -56,7 +58,7 @@ func TestAuditCommandDropsAllArgumentFormsBeforeSpool(t *testing.T) {
 			t.Fatalf("events = %+v for %s", events, args)
 		}
 		e := Redact(events[0])
-		want := map[string]any{"ses": "7", "auid": "1000", "cwd": "/home/alice", "executable": "/usr/bin/curl", "arg_count": 2, "tty": "pts1"}
+		want := map[string]any{"boot_id": testBootID, "ses": int64(7), "auid": "1000", "cwd": "/home/alice", "executable": "/usr/bin/curl", "arg_count": 2, "tty": "pts1"}
 		if e.Source != SourceCommands || e.Kind != KindCommand || e.Username != "alice" || !reflect.DeepEqual(e.Fields, want) {
 			t.Fatalf("event = %+v", e)
 		}
@@ -171,7 +173,7 @@ func TestRealAuditRecords(t *testing.T) {
 		_, text, _ := strings.Cut(line, "): ")
 		p.add(auditEntry(fmt.Sprint(i), "USER_LOGIN", text))
 	}
-	if len(p.sessions) != 1 || p.sessions["boot1:36"].AUID != "1001" {
+	if len(p.sessions) != 1 || p.sessions[testBootID+":36"].AUID != "1001" {
 		t.Fatalf("real SSH session = %+v", p.sessions)
 	}
 	// Hex decoding is reserved for safe metadata, never argument fields.
@@ -236,11 +238,11 @@ func TestAuditSSHSessionRetainsPAMUsername(t *testing.T) {
 	_, text, _ := strings.Cut(strings.TrimSpace(string(b)), "): ")
 	p := newAuditParser(nil, "")
 	p.add(auditEntry("1", "USER_START", text))
-	if p.sessions["boot1:3"].User != "vagrant" {
+	if p.sessions[testBootID+":3"].User != "vagrant" {
 		t.Fatalf("PAM session=%+v", p.sessions)
 	}
 	p.add(auditEntry("2", "USER_LOGIN", `auid=1000 ses=3 msg='id=1000 exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`))
-	if p.sessions["boot1:3"].User != "vagrant" {
+	if p.sessions[testBootID+":3"].User != "vagrant" {
 		t.Fatal("USER_LOGIN discarded the PAM user name")
 	}
 }
@@ -266,5 +268,62 @@ func TestNonInteractiveSSHCannotBecomeInteractiveByAllocatingAPTY(t *testing.T) 
 	p.add(auditEntry("4", "USER_LOGIN", `auid=1000 ses=8 msg='id=1000 exe="/usr/sbin/sshd" terminal=/dev/pts/2 res=success'`))
 	if events := commandAudit(p, "5", strings.Replace(commandSyscall, "ses=7", "ses=8", 1)); len(events) != 1 {
 		t.Fatal("proven interactive SSH login was dropped")
+	}
+}
+
+func TestAuditBootIdentityAcrossCheckpointAndReboot(t *testing.T) {
+	p := newAuditParser(nil, "")
+	loginAudit(p)
+	data, err := json.Marshal(Checkpoint{AuditCursor: p.checkpoint(), AuditSessions: p.sessions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cp Checkpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		t.Fatal(err)
+	}
+	p = newAuditParser(cp.AuditSessions, cp.AuditCursor)
+	if events := commandAudit(p, "2", commandSyscall); len(events) != 1 || events[0].Fields["boot_id"] != testBootID || events[0].Fields["ses"] != int64(7) {
+		t.Fatalf("checkpoint lost boot/session identity: %+v", events)
+	}
+	// Reusing a numeric session after reboot cannot reuse the old login proof.
+	for _, boot := range []string{otherBootID, testBootID} {
+		p = newAuditParser(cp.AuditSessions, cp.AuditCursor)
+		records := []JournalEntry{
+			auditEntry("3", "SYSCALL", commandSyscall),
+			auditEntry("3", "EXECVE", `argc=1 a0="curl"`),
+			auditEntry("3", "CWD", `cwd="/home/alice"`),
+		}
+		if boot == otherBootID {
+			// An interleaved old-boot partial record must not complete using new-boot metadata.
+			p.add(records[0])
+		}
+		for _, record := range records {
+			record.BootID = boot
+			if e, ok := p.add(record); ok && (boot != testBootID || e.Fields["boot_id"] != boot) {
+				t.Fatalf("old login proof crossed boots: %+v", e)
+			}
+		}
+		login := auditEntry("4", "USER_LOGIN", `auid=1000 ses=7 msg='acct="alice" exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`)
+		login.BootID = boot
+		p.add(login)
+		var events []Event
+		for _, record := range records {
+			record.BootID = boot
+			if e, ok := p.add(record); ok {
+				events = append(events, e)
+			}
+		}
+		if len(events) != 1 || events[0].Fields["boot_id"] != boot {
+			t.Fatalf("new login boot lost: %+v", events)
+		}
+	}
+	for _, boot := range []string{"", "invalid"} {
+		p = newAuditParser(cp.AuditSessions, cp.AuditCursor)
+		entry := auditEntry("5", "USER_LOGIN", `auid=1000 ses=7 msg='exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`)
+		entry.BootID = boot
+		if e, ok := p.add(entry); ok || p.boot != "" {
+			t.Fatalf("unknown boot was trusted: %+v", e)
+		}
 	}
 }

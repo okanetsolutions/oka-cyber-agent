@@ -1011,7 +1011,7 @@ func TestShipperCommandsSettingAndArgumentFreeSpool(t *testing.T) {
 		if i == 0 {
 			id = "1"
 		}
-		b, _ := json.Marshal(map[string]string{"_UID": "0", "_TRANSPORT": "audit", "_BOOT_ID": "boot1", "_AUDIT_ID": id, "__CURSOR": fmt.Sprint(i), "__REALTIME_TIMESTAMP": fmt.Sprint(h.clock.now.UnixMicro()), "MESSAGE": msg})
+		b, _ := json.Marshal(map[string]string{"_UID": "0", "_TRANSPORT": "audit", "_BOOT_ID": "7ee3ab1c213d4aa7b550dfdce6e11c4c", "_AUDIT_ID": id, "__CURSOR": fmt.Sprint(i), "__REALTIME_TIMESTAMP": fmt.Sprint(h.clock.now.UnixMicro()), "MESSAGE": msg})
 		if _, err := w.Write(append(b, '\n')); err != nil {
 			t.Fatal(err)
 		}
@@ -1038,8 +1038,13 @@ func TestShipperCommandsSettingAndArgumentFreeSpool(t *testing.T) {
 		}
 	}
 	e := b.Events[0]
-	if e.Source != "commands" || e.Kind != "command" || e.Fields["arg_count"] != float64(2) {
+	if e.Source != "commands" || e.Kind != "command" || e.Fields["arg_count"] != float64(2) || e.Fields["boot_id"] != "7ee3ab1c213d4aa7b550dfdce6e11c4c" || e.Fields["ses"] != float64(4) {
 		t.Fatalf("event=%+v", e)
+	}
+	h.advance(maxUploadBackoff)
+	h.step(s)
+	if len(h.client.accepted) != 1 || h.client.accepted[0].BatchID != b.ID || h.client.accepted[0].Events[0].Fields["boot_id"] != e.Fields["boot_id"] || h.client.accepted[0].Events[0].Fields["ses"] != float64(4) {
+		t.Fatalf("command identity changed on retry: %+v", h.client.accepted)
 	}
 	s.Configure(api.LogCollection{Sources: []string{"auth"}})
 	h.step(s)
@@ -1048,5 +1053,63 @@ func TestShipperCommandsSettingAndArgumentFreeSpool(t *testing.T) {
 	}
 	if s.collector.Checkpoint().AuditCursor != "" || len(s.collector.Checkpoint().AuditSessions) != 0 {
 		t.Fatal("disabled source retained command checkpoint")
+	}
+}
+
+func TestShipperPreservesBootIdentityAcrossOfflineRebootAndRetry(t *testing.T) {
+	h := newShipperHost(t)
+	const oldBoot = "7ee3ab1c213d4aa7b550dfdce6e11c4c"
+	const newBoot = "0123456789abcdef0123456789abcdef"
+	setBoot := func(id string) {
+		t.Helper()
+		for path, value := range map[string]string{
+			"/proc/sys/kernel/random/boot_id": id + "\n",
+			"/proc/stat":                      fmt.Sprintf("btime %d\n", h.clock.now.Add(-time.Minute).Unix()),
+		} {
+			full := filepath.Join(h.root, path)
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(value), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	setBoot(oldBoot)
+	s := h.shipper()
+	setting := api.LogCollection{Sources: []string{"auth"}, FlushIntervalSeconds: 5}
+	s.Configure(setting)
+	h.step(s)
+	h.appendLog(syslogAt(h.clock.now, "sshd[42]: Failed password for alice from 127.0.0.1 port 22 ssh2"))
+	h.client.failWith = []error{errors.New("offline")}
+	h.advance(6 * time.Second)
+	h.step(s)
+	b, _, ok, err := s.Spool.Oldest()
+	if err != nil || !ok || len(b.Events) != 1 || b.Events[0].Fields["boot_id"] != oldBoot {
+		t.Fatalf("boot lost before spooling: %+v %v", b, err)
+	}
+	s.stopCollector()
+	setBoot(newBoot)
+	resumed := h.shipper()
+	defer resumed.stopCollector()
+	resumed.Configure(setting)
+	h.step(resumed)
+	if len(h.client.accepted) != 1 || h.client.accepted[0].BatchID != b.ID || h.client.accepted[0].Events[0].Fields["boot_id"] != oldBoot {
+		t.Fatalf("old batch relabelled after reboot: %+v", h.client.accepted)
+	}
+	// Known and unknown new output must remain separate from the replayed old boot.
+	h.appendLog(syslogAt(h.clock.now, "sshd[42]: Failed password for alice from 127.0.0.1 port 22 ssh2"))
+	h.appendLog(syslogAt(h.clock.now.Add(-time.Hour), "sshd[42]: Failed password for alice from 127.0.0.1 port 22 ssh2"))
+	h.advance(6 * time.Second)
+	h.step(resumed)
+	if len(h.client.accepted) != 2 || len(h.client.accepted[1].Events) != 2 {
+		t.Fatalf("events=%+v", h.client.accepted)
+	}
+	known, unknown := h.client.accepted[1].Events[0], h.client.accepted[1].Events[1]
+	if known.Fields["boot_id"] != newBoot {
+		t.Fatalf("new output has wrong boot: %+v", known)
+	}
+	if _, present := unknown.Fields["boot_id"]; present {
+		t.Fatalf("uncertain output invented boot identity: %+v", unknown)
 	}
 }
