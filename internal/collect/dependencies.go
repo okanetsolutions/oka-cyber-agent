@@ -178,21 +178,26 @@ func (s *scan) isExcludedEntry(d fs.DirEntry) bool {
 func (s *scan) walk(ctx context.Context, dir *os.File, rel string) error {
 	entries, _ := dir.ReadDir(-1)
 	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
-	releases, release := s.liveRelease(dir, rel, entries)
+	releases, release := s.liveRelease(ctx, dir, rel, entries)
+	if releases != nil {
+		defer releases.Close()
+	}
 	for _, d := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		entryRel := path.Join(rel, d.Name())
 		hostPath := path.Join(s.hostRoot, entryRel)
-		if releases != nil && d.Name() == "releases" {
-			continue
-		}
-		if releases != nil && d.Name() == "current" {
-			if err := s.currentRelease(ctx, dir, releases, release, entryRel, hostPath); err != nil {
-				return err
+		if releases != nil {
+			switch d.Name() {
+			case "releases":
+				continue
+			case "current":
+				if err := s.directory(ctx, releases, entryRel, hostPath, release); err != nil {
+					return err
+				}
+				continue
 			}
-			continue
 		}
 		if d.IsDir() {
 			if err := s.directory(ctx, dir, entryRel, hostPath, d); err != nil {
@@ -206,6 +211,17 @@ func (s *scan) walk(ctx context.Context, dir *os.File, rel string) error {
 }
 
 func (s *scan) directory(ctx context.Context, parent *os.File, rel, hostPath string, d fs.DirEntry) error {
+	dir := s.openDirectory(parent, rel, hostPath, d)
+	if dir == nil {
+		return nil
+	}
+	defer dir.Close()
+	return s.walk(ctx, dir, rel)
+}
+
+// openDirectory opens the directory entry d of parent, reached at rel, unless the walk leaves it out. It returns
+// nil for a directory that is skipped, too deep, excluded or cannot be opened.
+func (s *scan) openDirectory(parent *os.File, rel, hostPath string, d fs.DirEntry) *os.File {
 	if skippedDirectory(rel, d.Name()) || strings.Count(rel, "/")+1 >= s.options.MaxDepth || isExcluded(hostPath, s.options.ExcludePaths) || isExcluded(hostPath, pseudoFilesystems) || s.isExcludedEntry(d) {
 		return nil
 	}
@@ -213,80 +229,81 @@ func (s *scan) directory(ctx context.Context, parent *os.File, rel, hostPath str
 	if err != nil {
 		return nil
 	}
-	defer dir.Close()
 	if info, err := dir.Stat(); err != nil || s.isExcludedFile(info) {
+		dir.Close()
 		return nil
 	}
-	return s.walk(ctx, dir, rel)
+	return dir
 }
 
 // liveRelease recognises the deployment layout of Forge, Envoyer, Deployer and Capistrano: a releases directory
-// with one directory per deploy, next to a current symlink to the live one. It returns the releases entry and
-// the live release when current names a direct subdirectory of that releases directory, written as
-// releases/<name> or as the absolute path of the directory the walk reached, so that only the live release is
-// walked and reported under the stable current path instead of every kept release. The link text only chooses
-// which subdirectory of releases to open, and currentRelease opens both without following a symlink, so a
-// current that points anywhere else (or changes after this read) cannot lead the walk out of the directory. For
-// such a current it returns nil, and the directory is walked as any other: every release under its own path,
-// current skipped as a symlink.
-func (s *scan) liveRelease(dir *os.File, rel string, entries []fs.DirEntry) (fs.DirEntry, fs.FileInfo) {
-	var releases fs.DirEntry
-	var hasCurrent bool
-	for _, d := range entries {
-		switch {
-		case d.Name() == "releases" && d.IsDir():
-			releases = d
-		case d.Name() == "current" && d.Type()&fs.ModeSymlink != 0:
-			hasCurrent = true
-		}
-	}
-	if releases == nil || !hasCurrent {
+// with one directory per deploy, next to a current symlink to the live one. When current names a direct
+// subdirectory of that releases directory, it returns the open releases directory and the entry of the live
+// release, which the walk then walks under the stable current path instead of every kept release. current is
+// accepted written as releases/<name>, or as an absolute path whose parent is this releases directory itself
+// (the same file, so a layout reached through a symlinked or bind mounted scan path is recognised too).
+//
+// current itself is never opened: its text, read relative to dir, only chooses which entry of the releases
+// directory to walk, and both are opened relative to their parent without following a symlink, with the checks
+// of any other directory. For any other current it returns nil, and the directory is walked as any other: every
+// release under its own path, current skipped as a symlink.
+func (s *scan) liveRelease(ctx context.Context, dir *os.File, rel string, entries []fs.DirEntry) (*os.File, fs.DirEntry) {
+	releasesEntry, hasReleases := entryNamed(entries, "releases")
+	current, hasCurrent := entryNamed(entries, "current")
+	if !hasReleases || !releasesEntry.IsDir() || !hasCurrent || current.Type()&fs.ModeSymlink == 0 || ctx.Err() != nil {
 		return nil, nil
 	}
-	target, err := os.Readlink(filepath.Join(dir.Name(), "current"))
+	target, err := safeopen.ReadlinkAt(dir, "current")
 	if err != nil {
 		return nil, nil
 	}
-	target = strings.TrimSuffix(target, "/")
-	if strings.HasPrefix(target, "/") {
-		var ok bool
-		if target, ok = strings.CutPrefix(target, strings.TrimSuffix(path.Join(s.hostRoot, rel), "/")+"/"); !ok {
-			return nil, nil
-		}
-	}
-	name, ok := strings.CutPrefix(strings.TrimPrefix(target, "./"), "releases/")
-	if !ok || name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+	parent, name := path.Split(strings.TrimSuffix(target, "/"))
+	parent = strings.TrimSuffix(parent, "/")
+	if name == "" || name == "." || name == ".." || !path.IsAbs(parent) && parent != "releases" && parent != "./releases" {
 		return nil, nil
 	}
-	release, err := os.Lstat(filepath.Join(dir.Name(), "releases", name))
-	if err != nil || !release.IsDir() {
+	releasesRel := path.Join(rel, "releases")
+	releases := s.openDirectory(dir, releasesRel, path.Join(s.hostRoot, releasesRel), releasesEntry)
+	if releases == nil {
 		return nil, nil
 	}
-	return releases, release
+	if path.IsAbs(parent) && !s.isSameFile(releases, parent) {
+		releases.Close()
+		return nil, nil
+	}
+	list, _ := releases.ReadDir(-1)
+	if release := slices.IndexFunc(list, func(d fs.DirEntry) bool { return d.Name() == name && d.IsDir() }); release >= 0 {
+		return releases, list[release]
+	}
+	releases.Close()
+	return nil, nil
 }
 
-// currentRelease walks the live release found by liveRelease as the directory current, with the checks of any
-// other directory: the releases directory and the release are opened without following a symlink, and nothing
-// is opened under an excluded path, whether it names current, releases or the release.
-func (s *scan) currentRelease(ctx context.Context, dir *os.File, releasesEntry fs.DirEntry, release fs.FileInfo, rel, hostPath string) error {
-	if isExcluded(path.Join(path.Dir(hostPath), "releases", release.Name()), s.options.ExcludePaths) || s.isExcludedEntry(releasesEntry) {
-		return nil
-	}
-	releases, err := safeopen.OpenAt(dir, "releases", os.O_RDONLY|syscall.O_DIRECTORY)
+// isSameFile tells whether the host path p names the open directory dir. It only looks up file metadata.
+func (s *scan) isSameFile(dir *os.File, p string) bool {
+	opened, err := dir.Stat()
 	if err != nil {
-		return nil
+		return false
 	}
-	defer releases.Close()
-	if info, err := releases.Stat(); err != nil || s.isExcludedFile(info) {
-		return nil
+	named, err := os.Stat(filepath.Join(s.collector.Root, p))
+	return err == nil && os.SameFile(opened, named)
+}
+
+// entryNamed finds an entry in a directory listing sorted by name.
+func entryNamed(entries []fs.DirEntry, name string) (fs.DirEntry, bool) {
+	i, found := slices.BinarySearchFunc(entries, name, func(d fs.DirEntry, name string) int { return strings.Compare(d.Name(), name) })
+	if !found {
+		return nil, false
 	}
-	return s.directory(ctx, releases, rel, hostPath, fs.FileInfoToDirEntry(release))
+	return entries[i], true
 }
 
 func (s *scan) file(dir *os.File, rel, hostPath string, d fs.DirEntry) {
 	format, isLockFile := lockfile.ForFile(d.Name())
 	_, isManifest := lockfile.Manifests[d.Name()]
-	excluded := isExcluded(hostPath, s.options.ExcludePaths)
+	// An exclude path may name the file under another path, such as releases/<name>/package.json for a file the
+	// walk reaches as current/package.json.
+	excluded := isExcluded(hostPath, s.options.ExcludePaths) || (isLockFile || isManifest) && s.isExcludedEntry(d)
 	// An excluded lock file is never opened, but it still resolves the manifests next to it.
 	if isLockFile || isManifest && !excluded {
 		s.dirs[path.Dir(rel)] = append(s.dirs[path.Dir(rel)], d.Name())

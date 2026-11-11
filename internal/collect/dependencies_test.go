@@ -263,19 +263,26 @@ func TestDependencyDiscoveryScansOnlyTheLiveRelease(t *testing.T) {
 	}
 }
 
-// exclude_paths applies to the live release whether it names current, releases or the release itself.
+// exclude_paths applies to the live release and what it holds, written with the current path or the release path.
 func TestDependencyDiscoveryExcludesTheLiveRelease(t *testing.T) {
-	for _, excluded := range []string{"/srv/app/current", "/srv/app/releases", "/srv/app/releases/2", "/srv/app/current/storage"} {
+	for _, excluded := range [][]string{
+		{"/srv/app/current"},
+		{"/srv/app/releases"},
+		{"/srv/app/releases/2"},
+		{"/srv/app/current/storage", "/srv/app/current/package.json"},
+		{"/srv/app/releases/2/storage", "/srv/app/releases/2/package.json"},
+	} {
 		tr := tree{t, t.TempDir()}
 		tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/app/releases/1/Cargo.lock")
 		tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/app/releases/2/storage/Cargo.lock")
+		tr.write("/srv/app/releases/2/package.json", "{}")
 		tr.symlink("releases/2", "/srv/app/current")
-		inv, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/srv"}, ExcludePaths: []string{excluded}}})
+		inv, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/srv"}, ExcludePaths: excluded}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(inv.Packages) != 0 {
-			t.Errorf("exclude %s: manifests = %v, want none", excluded, manifests(inv))
+		if len(inv.Packages) != 0 || len(inv.SkippedFiles) != 0 {
+			t.Errorf("exclude %v: manifests = %v, skipped = %v, want none", excluded, manifests(inv), inv.SkippedFiles)
 		}
 	}
 }

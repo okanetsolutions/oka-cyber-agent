@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"unsafe"
 )
 
 // OpenAt opens name, a single path component, in the directory dir. O_NOFOLLOW makes the kernel refuse a symlink
@@ -19,6 +20,37 @@ func OpenAt(dir *os.File, name string, flag int) (*os.File, error) {
 // administrator chose, never for one found by listing a directory.
 func FollowAt(dir *os.File, name string, flag int) (*os.File, error) {
 	return openat(dir, name, flag)
+}
+
+// ReadlinkAt reads the target of the symlink name, a single path component, in the directory dir. Like OpenAt it
+// looks name up relative to dir itself, so a symlink swapped into a parent path after dir was opened is not
+// followed.
+func ReadlinkAt(dir *os.File, name string) (string, error) {
+	conn, err := dir.SyscallConn()
+	if err != nil {
+		return "", err
+	}
+	p, err := syscall.BytePtrFromString(name)
+	if err != nil {
+		return "", err
+	}
+	for size := 256; ; size *= 2 {
+		buf := make([]byte, size)
+		var n uintptr
+		var errno syscall.Errno
+		err = conn.Control(func(dirfd uintptr) {
+			n, _, errno = syscall.Syscall6(syscall.SYS_READLINKAT, dirfd, uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&buf[0])), uintptr(size), 0, 0)
+		})
+		if err != nil {
+			return "", err
+		}
+		if errno != 0 {
+			return "", &fs.PathError{Op: "readlinkat", Path: name, Err: errno}
+		}
+		if int(n) < size {
+			return string(buf[:n]), nil
+		}
+	}
 }
 
 func openat(dir *os.File, name string, flag int) (*os.File, error) {
