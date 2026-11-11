@@ -1113,3 +1113,130 @@ func TestShipperPreservesBootIdentityAcrossOfflineRebootAndRetry(t *testing.T) {
 		t.Fatalf("uncertain output invented boot identity: %+v", unknown)
 	}
 }
+
+func spoolTestBatch(t *testing.T, s *LogShipper, source, cursor string, at time.Time) logs.Batch {
+	t.Helper()
+	b := logs.Batch{ID: logs.NewBatchID(), Checkpoint: logs.Checkpoint{Sources: []string{source}, JournalCursor: cursor}, CreatedAt: at}
+	b.Events = []logs.Event{{Source: source, Kind: logs.KindCommand, FirstAt: at, LastAt: at, Count: 1, Message: "/usr/bin/id [0 args]"}}
+	if source != logs.SourceCommands {
+		b.Events[0].Kind = logs.KindSudoCommand
+	}
+	if err := s.Spool.Append(b); err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func onlyCommands(b api.LogBatchRequest) bool {
+	for _, e := range b.Events {
+		if e.Source != logs.SourceCommands {
+			return false
+		}
+	}
+	return true
+}
+
+func sentIDs(batches []api.LogBatchRequest) []string {
+	var ids []string
+	for _, b := range batches {
+		ids = append(ids, b.BatchID)
+	}
+	return ids
+}
+
+// TestShipperSendsCommandBatchesWhileLogBatchesAreThrottled follows Oka Core once the daily allowance is used:
+// 429 until midnight for batches with other events, while command batches are still accepted.
+func TestShipperSendsCommandBatchesWhileLogBatchesAreThrottled(t *testing.T) {
+	h := newShipperHost(t)
+	s := h.shipper()
+	quotaLeft := false
+	h.client.validate = func(b api.LogBatchRequest) error {
+		if !quotaLeft && !onlyCommands(b) {
+			return &api.HTTPError{StatusCode: http.StatusTooManyRequests, RetryAfter: 5 * time.Hour}
+		}
+		return nil
+	}
+	throttled := spoolTestBatch(t, s, logs.SourceAuth, "l1", h.clock.now)
+	first := spoolTestBatch(t, s, logs.SourceCommands, "c1", h.clock.now)
+	h.step(s)
+	if got := sentIDs(h.client.accepted); len(got) != 1 || got[0] != first.ID {
+		t.Fatalf("accepted = %v, want the command batch behind the throttled one", got)
+	}
+	if cp := s.committed(); cp.JournalCursor != "" {
+		t.Fatalf("committed = %+v, want nothing before the throttled batch is acknowledged", cp)
+	}
+
+	h.advance(time.Minute)
+	second := spoolTestBatch(t, s, logs.SourceCommands, "c2", h.clock.now)
+	h.step(s)
+	if got := sentIDs(h.client.accepted); len(got) != 2 || got[1] != second.ID || len(h.client.batches) != 3 {
+		t.Fatalf("sent = %v, accepted = %v, want only the new command batch while logs wait", sentIDs(h.client.batches), got)
+	}
+
+	quotaLeft = true
+	h.advance(5 * time.Hour)
+	h.step(s)
+	if got := sentIDs(h.client.accepted); len(got) != 3 || got[2] != throttled.ID || !s.Spool.Empty() {
+		t.Fatalf("accepted = %v, empty = %v, want the throttled batch sent after Retry-After", got, s.Spool.Empty())
+	}
+	if cp := s.committed(); cp.JournalCursor != "c2" {
+		t.Fatalf("committed = %+v, want the newest checkpoint once every batch is acknowledged", cp)
+	}
+}
+
+func TestShipperRetriesCommandBatchesOnTheirOwn(t *testing.T) {
+	h := newShipperHost(t)
+	s := h.shipper()
+	commandsDown := true
+	h.client.validate = func(b api.LogBatchRequest) error {
+		if commandsDown && onlyCommands(b) && len(b.Events) > 0 {
+			return &api.HTTPError{StatusCode: http.StatusServiceUnavailable, RetryAfter: 10 * time.Minute}
+		}
+		return nil
+	}
+	command := spoolTestBatch(t, s, logs.SourceCommands, "c1", h.clock.now)
+	first := spoolTestBatch(t, s, logs.SourceAuth, "l1", h.clock.now)
+	h.step(s)
+	if got := sentIDs(h.client.accepted); len(got) != 1 || got[0] != first.ID {
+		t.Fatalf("accepted = %v, want the log batch behind the failed command batch", got)
+	}
+	h.advance(time.Minute)
+	second := spoolTestBatch(t, s, logs.SourceAuth, "l2", h.clock.now)
+	h.step(s)
+	if got := sentIDs(h.client.batches); len(got) != 3 || got[2] != second.ID {
+		t.Fatalf("sent = %v, want the new log batch and no command retry before its Retry-After", got)
+	}
+	if cp := s.committed(); cp.JournalCursor != "" {
+		t.Fatalf("committed = %+v, want nothing past the unsent command batch", cp)
+	}
+
+	commandsDown = false
+	h.advance(9 * time.Minute)
+	h.step(s)
+	if got := sentIDs(h.client.accepted); len(got) != 3 || got[2] != command.ID || !s.Spool.Empty() {
+		t.Fatalf("accepted = %v, want the command batch retried after its own Retry-After", got)
+	}
+	if cp := s.committed(); cp.JournalCursor != "l2" {
+		t.Fatalf("committed = %+v, want the newest checkpoint", cp)
+	}
+}
+
+func TestShipperFlushesCommandEventsInTheirOwnBatches(t *testing.T) {
+	h := newShipperHost(t)
+	s := h.shipper()
+	defer s.stopCollector()
+	h.client.failWith = []error{errors.New("offline"), errors.New("offline")}
+	s.Configure(api.LogCollection{Sources: []string{"auth", "commands"}, FlushIntervalSeconds: 5})
+	h.step(s)
+	h.appendLog(syslogAt(h.clock.now, "sudo:    alice : PWD=/ ; USER=root ; COMMAND=/usr/bin/id"))
+	s.aggregator.Add(logs.Event{Source: logs.SourceCommands, Kind: logs.KindCommand, FirstAt: h.clock.now, LastAt: h.clock.now, Count: 1, Message: "/usr/bin/id [0 args]", Fields: map[string]any{"executable": "/usr/bin/id", "ses": 4}})
+	h.advance(6 * time.Second)
+	h.step(s)
+	if len(h.client.batches) != 2 {
+		t.Fatalf("sent = %d, want a log batch and a command batch", len(h.client.batches))
+	}
+	logBatch, commandBatch := h.client.batches[0], h.client.batches[1]
+	if len(logBatch.Events) != 1 || logBatch.Events[0].Source != logs.SourceAuth || len(commandBatch.Events) != 1 || !onlyCommands(commandBatch) {
+		t.Fatalf("batches = %+v", h.client.batches)
+	}
+}
