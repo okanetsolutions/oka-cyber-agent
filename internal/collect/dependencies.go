@@ -178,12 +178,22 @@ func (s *scan) isExcludedEntry(d fs.DirEntry) bool {
 func (s *scan) walk(ctx context.Context, dir *os.File, rel string) error {
 	entries, _ := dir.ReadDir(-1)
 	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	releases, release := s.liveRelease(dir, rel, entries)
 	for _, d := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		entryRel := path.Join(rel, d.Name())
 		hostPath := path.Join(s.hostRoot, entryRel)
+		if releases != nil && d.Name() == "releases" {
+			continue
+		}
+		if releases != nil && d.Name() == "current" {
+			if err := s.currentRelease(ctx, dir, releases, release, entryRel, hostPath); err != nil {
+				return err
+			}
+			continue
+		}
 		if d.IsDir() {
 			if err := s.directory(ctx, dir, entryRel, hostPath, d); err != nil {
 				return err
@@ -208,6 +218,69 @@ func (s *scan) directory(ctx context.Context, parent *os.File, rel, hostPath str
 		return nil
 	}
 	return s.walk(ctx, dir, rel)
+}
+
+// liveRelease recognises the deployment layout of Forge, Envoyer, Deployer and Capistrano: a releases directory
+// with one directory per deploy, next to a current symlink to the live one. It returns the releases entry and
+// the live release when current names a direct subdirectory of that releases directory, written as
+// releases/<name> or as the absolute path of the directory the walk reached, so that only the live release is
+// walked and reported under the stable current path instead of every kept release. The link text only chooses
+// which subdirectory of releases to open, and currentRelease opens both without following a symlink, so a
+// current that points anywhere else (or changes after this read) cannot lead the walk out of the directory. For
+// such a current it returns nil, and the directory is walked as any other: every release under its own path,
+// current skipped as a symlink.
+func (s *scan) liveRelease(dir *os.File, rel string, entries []fs.DirEntry) (fs.DirEntry, fs.FileInfo) {
+	var releases fs.DirEntry
+	var hasCurrent bool
+	for _, d := range entries {
+		switch {
+		case d.Name() == "releases" && d.IsDir():
+			releases = d
+		case d.Name() == "current" && d.Type()&fs.ModeSymlink != 0:
+			hasCurrent = true
+		}
+	}
+	if releases == nil || !hasCurrent {
+		return nil, nil
+	}
+	target, err := os.Readlink(filepath.Join(dir.Name(), "current"))
+	if err != nil {
+		return nil, nil
+	}
+	target = strings.TrimSuffix(target, "/")
+	if strings.HasPrefix(target, "/") {
+		var ok bool
+		if target, ok = strings.CutPrefix(target, strings.TrimSuffix(path.Join(s.hostRoot, rel), "/")+"/"); !ok {
+			return nil, nil
+		}
+	}
+	name, ok := strings.CutPrefix(strings.TrimPrefix(target, "./"), "releases/")
+	if !ok || name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+		return nil, nil
+	}
+	release, err := os.Lstat(filepath.Join(dir.Name(), "releases", name))
+	if err != nil || !release.IsDir() {
+		return nil, nil
+	}
+	return releases, release
+}
+
+// currentRelease walks the live release found by liveRelease as the directory current, with the checks of any
+// other directory: the releases directory and the release are opened without following a symlink, and nothing
+// is opened under an excluded path, whether it names current, releases or the release.
+func (s *scan) currentRelease(ctx context.Context, dir *os.File, releasesEntry fs.DirEntry, release fs.FileInfo, rel, hostPath string) error {
+	if isExcluded(path.Join(path.Dir(hostPath), "releases", release.Name()), s.options.ExcludePaths) || s.isExcludedEntry(releasesEntry) {
+		return nil
+	}
+	releases, err := safeopen.OpenAt(dir, "releases", os.O_RDONLY|syscall.O_DIRECTORY)
+	if err != nil {
+		return nil
+	}
+	defer releases.Close()
+	if info, err := releases.Stat(); err != nil || s.isExcludedFile(info) {
+		return nil
+	}
+	return s.directory(ctx, releases, rel, hostPath, fs.FileInfoToDirEntry(release))
 }
 
 func (s *scan) file(dir *os.File, rel, hostPath string, d fs.DirEntry) {
