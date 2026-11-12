@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -150,5 +151,54 @@ func TestEntriesSwappedForSymlinksAfterTheWalkAreNotFollowed(t *testing.T) {
 	}
 	if want := []SkippedFile{{"/srv/app/Cargo.lock", ReasonSymlink}}; !slices.Equal(s.inv.SkippedFiles, want) {
 		t.Fatalf("skipped = %v, want %v", s.inv.SkippedFiles, want)
+	}
+}
+
+// A current that names anything but a direct subdirectory of the releases directory next to it is refused. An
+// absolute target is matched by identity, so one written through another path to the same directory is accepted.
+func TestLiveReleaseRefusesTargetsOutsideReleases(t *testing.T) {
+	for target, wantRelease := range map[string]string{
+		"/srv/app/releases/3":             "3",
+		"/www/app/releases/3":             "3",
+		"/srv/app/releases/../releases/3": "3",
+		"releases/3":                      "3",
+		"./releases/3/":                   "3",
+		"/srv/other/releases/3":           "",
+		"/srv/app/releases/3/sub":         "",
+		"releases/3/..":                   "",
+		"releases/../releases/3":          "",
+		"../app/releases/3":               "",
+		"../other/releases/3":             "",
+		"releases":                        "",
+		"releases/link":                   "",
+		"releases/file":                   "",
+		"releases/missing":                "",
+		"/srv/elsewhere":                  "",
+		"/etc":                            "",
+	} {
+		tr := tree{t, t.TempDir()}
+		tr.write("/srv/app/releases/3/composer.lock", "")
+		tr.write("/srv/app/releases/3/sub/composer.lock", "")
+		tr.write("/srv/app/releases/file", "")
+		tr.write("/srv/other/releases/3/composer.lock", "")
+		tr.symlink("/srv/elsewhere", "/srv/app/releases/link")
+		tr.symlink("srv", "/www")
+		tr.symlink(target, "/srv/app/current")
+		dir := openDirectory(t, filepath.Join(tr.root, "srv", "app"))
+		entries, err := dir.ReadDir(-1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+		s := &scan{collector: DependencyCollector{Root: tr.root}, options: DependencyOptions{MaxDepth: 6}, hostRoot: "/srv"}
+		releases, release := s.liveRelease(context.Background(), dir, "app", entries)
+		got := ""
+		if release != nil {
+			got = release.Name()
+			releases.Close()
+		}
+		if got != wantRelease {
+			t.Errorf("current -> %s gives release %q, want %q", target, got, wantRelease)
+		}
 	}
 }
