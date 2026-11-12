@@ -9,11 +9,13 @@ import (
 )
 
 // AuthIdentifiers are the programs whose messages the auth source reads, as journald SYSLOG_IDENTIFIER
-// values and syslog program names. OpenSSH 9.8 moved per connection logging to sshd-session.
-var AuthIdentifiers = []string{"sshd", "sshd-session", "sudo", "su", "useradd", "usermod", "groupadd", "gpasswd", "passwd", "chpasswd", "crontab"}
+// values and syslog program names. OpenSSH 9.8 moved per connection logging to sshd-session;
+// Alpine names the PAM-enabled executables sshd.pam and sshd-session.pam.
+var AuthIdentifiers = []string{"sshd", "sshd-session", "sshd.pam", "sshd-session.pam", "systemd-logind", "sudo", "su", "useradd", "usermod", "groupadd", "gpasswd", "passwd", "chpasswd", "crontab"}
 
 var (
 	sshFailed   = regexp.MustCompile(`^Failed (\S+) for (invalid user )?(.*) from (\S+) port (\d+)`)
+	sshSession  = regexp.MustCompile(`^pam_unix\(sshd:session\): session (opened|closed) for user ([^\s(]+)(?:\(uid=\d+\))?(?: by .*|$)`)
 	sshAccepted = regexp.MustCompile(`^Accepted (\S+) for (\S+) from (\S+) port (\d+)`)
 
 	// sudo-rs (Ubuntu 26.04) leaves its TTY field empty without a terminal, so its "alice :  PWD=/" has two blanks.
@@ -38,10 +40,15 @@ var (
 // "Invalid user" lines are not counted again), sudo's own lines for sudo, and PAM's lines for su and
 // password changes. crontab -e logs BEGIN EDIT and END EDIT around every edit, also one that changes
 // nothing, and REPLACE only when the crontab was saved changed, so only REPLACE and DELETE are changes.
-func ParseAuth(program, message string, at time.Time) (Event, bool) {
+// pid comes from the syslog header or journald _PID; an absent PID leaves the session key unset.
+func ParseAuth(program, message string, at time.Time, pid string) (Event, bool) {
 	switch program {
-	case "sshd", "sshd-session", "sshd-auth":
-		return parseSSH(program, message, at)
+	case "sshd", "sshd-session", "sshd-auth", "sshd.pam", "sshd-session.pam":
+		e, ok := parseSSH(program, message, at)
+		if ok && pid != "" && e.Kind != KindSSHLoginFailed {
+			e.set("session", pid)
+		}
+		return e, ok
 	case "sudo":
 		return parseSudo(message, at)
 	case "su":
@@ -83,6 +90,15 @@ func authEvent(kind, program, message string, at time.Time) Event {
 }
 
 func parseSSH(program, message string, at time.Time) (Event, bool) {
+	if m := sshSession.FindStringSubmatch(message); m != nil {
+		kind := KindSSHSessionOpened
+		if m[1] == "closed" {
+			kind = KindSSHSessionClosed
+		}
+		e := authEvent(kind, program, message, at)
+		e.Username = m[2]
+		return e, true
+	}
 	if m := sshFailed.FindStringSubmatch(message); m != nil {
 		e := authEvent(KindSSHLoginFailed, program, message, at)
 		e.Username = m[3]
@@ -145,6 +161,12 @@ func parseSudo(message string, at time.Time) (Event, bool) {
 	}
 	if slices.ContainsFunc(parts, isCommandPart) {
 		e.set("command", command)
+	}
+	if tsid, ok := agreed(splits, func(s sudoSplit) string { return s.tsid }); ok && tsid != "" {
+		e.set("tsid", tsid)
+	}
+	if tty, ok := agreed(splits, func(s sudoSplit) string { return s.tty }); ok && tty != "" {
+		e.set("tty", tty)
 	}
 	if reason != "" {
 		e.set("reason", reason)
@@ -237,7 +259,7 @@ func isSudoField(part string) bool {
 
 var sudoKeys = map[string]bool{"HOST": true, "TTY": true, "CHROOT": true, "PWD": true, "USER": true, "GROUP": true, "TSID": true, "ENV": true, "COMMAND": true}
 
-type sudoSplit struct{ user, command string }
+type sudoSplit struct{ user, command, tsid, tty string }
 
 // sudoSplits returns every way the " ; " separated parts of a sudo line can be read as sudo's log format,
 // which writes its keys in a fixed order: ... PWD=cwd ; USER=runas ; [GROUP=group ; ] [TSID=id ; ]
@@ -245,6 +267,17 @@ type sudoSplit struct{ user, command string }
 // the ENV values or the arguments, which a user chooses, so a crafted line can be read in more than one way.
 // The user and group names and the session ID are taken as single parts.
 func sudoSplits(parts []string) []sudoSplit {
+	// TTY precedes the unescaped working directory, variables and command arguments.
+	prefix := parts
+	if len(prefix) > 0 && strings.HasPrefix(prefix[0], "HOST=") {
+		prefix = prefix[1:]
+	}
+	tty := ""
+	if len(prefix) > 0 {
+		if value, ok := strings.CutPrefix(prefix[0], "TTY="); ok && value != "unknown" {
+			tty = value
+		}
+	}
 	var splits []sudoSplit
 	for i, part := range parts {
 		user, ok := strings.CutPrefix(part, "USER=")
@@ -255,12 +288,14 @@ func sudoSplits(parts []string) []sudoSplit {
 		if k < len(parts) && strings.HasPrefix(parts[k], "GROUP=") {
 			k++
 		}
+		tsid := ""
 		if k < len(parts) && strings.HasPrefix(parts[k], "TSID=") {
+			tsid = strings.TrimPrefix(parts[k], "TSID=")
 			k++
 		}
 		commandAt := func(j int) {
 			if isCommandPart(parts[j]) {
-				splits = append(splits, sudoSplit{user: user, command: strings.TrimPrefix(strings.Join(parts[j:], " ; "), "COMMAND=")})
+				splits = append(splits, sudoSplit{user: user, tsid: tsid, tty: tty, command: strings.TrimPrefix(strings.Join(parts[j:], " ; "), "COMMAND=")})
 			}
 		}
 		switch {

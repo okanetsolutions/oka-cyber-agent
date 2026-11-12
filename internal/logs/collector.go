@@ -18,6 +18,7 @@ const (
 	replanEvery    = time.Minute
 	journalBackoff = 10 * time.Second
 	journalBuffer  = 10000
+	logindWait     = 5 * time.Second
 )
 
 // Checkpoint is how far every reader got: file positions by path and the journal cursor. The agent saves it
@@ -27,6 +28,14 @@ type Checkpoint struct {
 	Files         map[string]Position `json:"files"`
 	JournalCursor string              `json:"journal_cursor,omitempty"`
 }
+
+type pendingJournalEntry struct {
+	entry    JournalEntry
+	received time.Time
+}
+
+// logindLeader identifies the sshd process a logind session start names as its leader.
+type logindLeader struct{ boot, pid string }
 
 type watch struct {
 	plan   FilePlan
@@ -52,10 +61,14 @@ type Collector struct {
 	// listed holds the file names in the directories of the watched files, read just before the latest plan.
 	listed map[string]map[string]bool
 
-	journalCancel context.CancelFunc
-	journalDone   chan struct{}
-	journalCh     chan JournalEntry
-	journalCursor string
+	journalCancel  context.CancelFunc
+	journalDone    chan struct{}
+	journalCh      chan JournalEntry
+	journalCursor  string
+	journalPending []pendingJournalEntry
+	// logindStarts holds trusted logind session starts by leader, kept after their own cursor is consumed
+	// because on Red Hat systems logind logs the start before pam_unix logs the SSH open.
+	logindStarts map[logindLeader][]JournalEntry
 	// untrustedEntries counts journal entries dropped because they claimed an auth identifier without
 	// coming from that program (see TrustedAuthEntry).
 	untrustedEntries int
@@ -120,19 +133,68 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 	if planned {
 		c.files.polled()
 	}
-	for {
+	return append(events, c.pollJournal()...)
+}
+
+// Hold an unmatched SSH open briefly so logind can enrich it across polls. The cursor
+// stays before held entries, so a checkpoint cannot skip an event awaiting enrichment.
+// logind may log the session start on either side of the open: after it on Debian, before it on Red Hat,
+// where pam_systemd comes before pam_unix in the session stack.
+func (c *Collector) pollJournal() []Event {
+	now := c.now()
+	if c.logindStarts == nil {
+		c.logindStarts = map[logindLeader][]JournalEntry{}
+	}
+read:
+	for len(c.journalPending) < journalBuffer {
 		select {
-		case entry := <-c.journalCh:
-			if !TrustedAuthEntry(entry) {
-				c.untrustedEntries++
-			} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At); ok {
-				events = append(events, e)
+		case e := <-c.journalCh:
+			c.journalPending = append(c.journalPending, pendingJournalEntry{e, now})
+			if e.Identifier == "systemd-logind" && e.MessageID == logindSessionStart &&
+				e.SessionID != "" && e.Leader != "" && TrustedAuthEntry(e) {
+				key := logindLeader{e.BootID, e.Leader}
+				c.logindStarts[key] = append(c.logindStarts[key], e)
 			}
-			c.journalCursor = entry.Cursor
-			continue
 		default:
+			break read
 		}
-		break
+	}
+	var events []Event
+	var consumedAt time.Time
+	consumed := 0
+	for _, pending := range c.journalPending {
+		entry := pending.entry
+		if !TrustedAuthEntry(entry) {
+			c.untrustedEntries++
+		} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
+			if e.Kind == KindSSHSessionOpened && entry.PID != "" {
+				key := logindLeader{entry.BootID, entry.PID}
+				candidates := c.logindStarts[key]
+				for len(candidates) > 0 && entry.At.Sub(candidates[0].At) > logindWait {
+					candidates = candidates[1:]
+				}
+				if len(candidates) > 0 && candidates[0].At.Sub(entry.At) <= logindWait {
+					e.set("logind_session", candidates[0].SessionID)
+					c.logindStarts[key] = candidates[1:]
+				} else if now.Sub(pending.received) < logindWait && len(c.journalPending) < journalBuffer {
+					break
+				}
+			}
+			events = append(events, e)
+		}
+		c.journalCursor = entry.Cursor
+		consumedAt = entry.At
+		consumed++
+	}
+	c.journalPending = slices.Delete(c.journalPending, 0, consumed)
+	// A start more than logindWait older than the journal already consumed can no longer match an open.
+	for key, starts := range c.logindStarts {
+		starts = slices.DeleteFunc(starts, func(e JournalEntry) bool { return consumedAt.Sub(e.At) > logindWait })
+		if len(starts) == 0 {
+			delete(c.logindStarts, key)
+		} else {
+			c.logindStarts[key] = starts
+		}
 	}
 	return events
 }
@@ -145,7 +207,7 @@ func (c *Collector) parseLine(plan FilePlan, line string) (Event, bool) {
 		if !ok || !slices.Contains(AuthIdentifiers, l.Program) {
 			return Event{}, false
 		}
-		return ParseAuth(l.Program, l.Message, l.At.UTC())
+		return ParseAuth(l.Program, l.Message, l.At.UTC(), l.PID)
 	case SourceWeb:
 		e, ok := ParseAccessLog(line, plan.Vhost)
 		e.FirstAt, e.LastAt = e.FirstAt.UTC(), e.LastAt.UTC()

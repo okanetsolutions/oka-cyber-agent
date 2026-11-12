@@ -1,0 +1,15 @@
+Nov  9 13:15:12 9a39f5f41959 sshd[3739]: Server listening on 0.0.0.0 port 2222.
+Nov  9 13:15:12 9a39f5f41959 sshd[3739]: Server listening on :: port 2222.
+Nov  9 13:15:12 9a39f5f41959 sshd[3742]: Accepted publickey for root from 127.0.0.1 port 50214 ssh2: ED25519 SHA256:X2TwaG1Cg+TPwf3x3jIl0PCVRFKDWdWdzoc4nG4dmBc
+Nov  9 13:15:12 9a39f5f41959 sshd[3742]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+Nov  9 13:15:12 9a39f5f41959 sshd[3742]: pam_systemd(sshd:session): Failed to connect to system bus: No such file or directory
+Nov  9 13:15:12 9a39f5f41959 sshd[3742]: pam_env(sshd:session): Unable to open env file: /etc/default/locale: No such file or directory
+Nov  9 13:15:12 9a39f5f41959 sudo:     root : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/id
+Nov  9 13:15:12 9a39f5f41959 sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=-1, hard=-1: Operation not permitted; uid=0,euid=0
+Nov  9 13:15:12 9a39f5f41959 sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale: No such file or directory
+Nov  9 13:15:12 9a39f5f41959 sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=0)
+Nov  9 13:15:12 9a39f5f41959 sudo: pam_unix(sudo:session): session closed for user root
+Nov  9 13:15:12 9a39f5f41959 sshd[3742]: syslogin_perform_logout: logout() returned an error
+Nov  9 13:15:12 9a39f5f41959 sshd[3742]: Received disconnect from 127.0.0.1 port 50214:11: disconnected by user
+Nov  9 13:15:12 9a39f5f41959 sshd[3742]: Disconnected from user root 127.0.0.1 port 50214
+Nov  9 13:15:12 9a39f5f41959 sshd[3742]: pam_unix(sshd:session): session closed for user root

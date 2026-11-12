@@ -17,8 +17,11 @@ import (
 	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
-// JournalEntry is one journald entry. UID, Exe and Comm are the trusted fields journald fills in from the
-// sender's kernel credentials and /proc, which a client cannot set; Identifier is chosen by the client.
+// SD_MESSAGE_SESSION_START from systemd's sd-messages.h.
+const logindSessionStart = "8d45620c1a4348dbb17410da57c60c66"
+
+// JournalEntry is one journald entry. UID, Exe, Comm, PID and BootID are trusted fields
+// journald fills in; Identifier, MessageID, SessionID and Leader are chosen by the sender.
 type JournalEntry struct {
 	Cursor     string
 	Identifier string
@@ -27,6 +30,11 @@ type JournalEntry struct {
 	UID        string
 	Exe        string
 	Comm       string
+	PID        string
+	MessageID  string
+	SessionID  string
+	Leader     string
+	BootID     string
 }
 
 // ParseJournalEntry reads one line of journalctl --output=json. MESSAGE is a string, or an array of bytes
@@ -40,11 +48,17 @@ func ParseJournalEntry(line []byte) (JournalEntry, error) {
 		UID        string          `json:"_UID"`
 		Exe        string          `json:"_EXE"`
 		Comm       string          `json:"_COMM"`
+		PID        string          `json:"_PID"`
+		MessageID  string          `json:"MESSAGE_ID"`
+		SessionID  string          `json:"SESSION_ID"`
+		Leader     string          `json:"LEADER"`
+		BootID     string          `json:"_BOOT_ID"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return JournalEntry{}, err
 	}
-	e := JournalEntry{Cursor: raw.Cursor, Identifier: raw.Identifier, UID: raw.UID, Exe: raw.Exe, Comm: raw.Comm}
+	e := JournalEntry{Cursor: raw.Cursor, Identifier: raw.Identifier, UID: raw.UID, Exe: raw.Exe, Comm: raw.Comm, PID: raw.PID,
+		MessageID: raw.MessageID, SessionID: raw.SessionID, Leader: raw.Leader, BootID: raw.BootID}
 	if micros, err := strconv.ParseInt(raw.Realtime, 10, 64); err == nil {
 		e.At = time.UnixMicro(micros).UTC()
 	}
@@ -68,17 +82,20 @@ var (
 	// authBinaries are the executables allowed to log under each auth identifier. OpenSSH 9.8 and later log
 	// per connection lines from sshd-session, under either identifier depending on the distribution.
 	authBinaries = map[string][]string{
-		"sshd":         {"sshd", "sshd-session"},
-		"sshd-session": {"sshd", "sshd-session"},
-		"sudo":         {"sudo"},
-		"su":           {"su"},
-		"useradd":      {"useradd"},
-		"usermod":      {"usermod"},
-		"groupadd":     {"groupadd"},
-		"gpasswd":      {"gpasswd"},
-		"passwd":       {"passwd"},
-		"chpasswd":     {"chpasswd"},
-		"crontab":      {"crontab"},
+		"systemd-logind":   {"systemd-logind"},
+		"sshd.pam":         {"sshd.pam", "sshd-session.pam"},
+		"sshd-session.pam": {"sshd.pam", "sshd-session.pam"},
+		"sshd":             {"sshd", "sshd-session"},
+		"sshd-session":     {"sshd", "sshd-session"},
+		"sudo":             {"sudo"},
+		"su":               {"su"},
+		"useradd":          {"useradd"},
+		"usermod":          {"usermod"},
+		"groupadd":         {"groupadd"},
+		"gpasswd":          {"gpasswd"},
+		"passwd":           {"passwd"},
+		"chpasswd":         {"chpasswd"},
+		"crontab":          {"crontab"},
 	}
 	// setIDPrograms run set-user-ID or set-group-ID, so journald records the invoking user's UID. The dynamic
 	// loader ignores LD_PRELOAD for them and an unprivileged user cannot ptrace them, so a process running
@@ -86,8 +103,9 @@ var (
 	setIDPrograms = []string{"sudo", "su", "passwd", "gpasswd", "crontab"}
 	// systemBinDirs are the root owned directories the auth binaries are installed in: OpenSSH's
 	// sshd-session lives in /usr/lib/openssh (Debian), /usr/libexec/openssh (RHEL), /usr/lib/ssh (Alpine)
-	// or /usr/libexec/ssh (openSUSE), and Ubuntu's sudo-rs in /usr/lib/cargo/bin.
-	systemBinDirs = []string{"/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/lib/openssh", "/usr/libexec/openssh", "/usr/lib/ssh", "/usr/libexec/ssh", "/usr/libexec", "/usr/lib/cargo/bin"}
+	// or /usr/libexec/ssh (openSUSE), Ubuntu's sudo-rs in /usr/lib/cargo/bin, and logind in
+	// /usr/lib/systemd or /lib/systemd.
+	systemBinDirs = []string{"/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/lib/openssh", "/usr/libexec/openssh", "/usr/lib/ssh", "/usr/libexec/ssh", "/usr/libexec", "/usr/lib/cargo/bin", "/usr/lib/systemd", "/lib/systemd"}
 )
 
 // TrustedAuthEntry reports whether an entry that claims an auth identifier was really logged by that

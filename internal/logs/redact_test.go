@@ -326,7 +326,7 @@ func TestRedactEvents(t *testing.T) {
 		t.Fatalf("a valid user name must stay: %+v", got)
 	}
 
-	sudo, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/mysql -pS3cret", testNow)
+	sudo, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/mysql -pS3cret", testNow, "")
 	if !ok {
 		t.Fatal("not a sudo line")
 	}
@@ -632,7 +632,7 @@ func TestRedactSecretShapes(t *testing.T) {
 		// A log line holds no line break: sudo escapes it, Monolog writes a blank or \n in JSON.
 		oneLine := strings.ReplaceAll(shape, "\n", " ")
 		sudo := "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/local/bin/tool " + oneLine
-		e, ok := ParseAuth("sudo", sudo, testNow)
+		e, ok := ParseAuth("sudo", sudo, testNow, "")
 		if !ok {
 			t.Fatalf("not a sudo line: %q", sudo)
 		}
@@ -648,7 +648,7 @@ func TestRedactSecretShapes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if e, ok := ParseAuth(je.Identifier, je.Message, je.At); !ok {
+		if e, ok := ParseAuth(je.Identifier, je.Message, je.At, je.PID); !ok {
 			t.Errorf("journal entry not parsed: %q", sudo)
 		} else if got := Redact(e); strings.Contains(got.Message+fmt.Sprint(got.Fields), "Zq9") {
 			t.Errorf("journal sudo %q = %q", shape, got.Message)
@@ -943,7 +943,7 @@ func TestRedactEverySecretNameSpelling(t *testing.T) {
 				}
 			}
 			// A sudo event keeps no argument at all.
-			if e, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/tool "+s, testNow); !ok {
+			if e, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/tool "+s, testNow, ""); !ok {
 				t.Errorf("not a sudo line: %q", s)
 			} else if got := Redact(e); strings.Contains(got.Message+fmt.Sprint(got.Fields), value) {
 				t.Errorf("sudo %q = %q %v", s, got.Message, got.Fields)
