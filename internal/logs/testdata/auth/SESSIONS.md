@@ -27,6 +27,14 @@ no logind line emits an event of its own. The logind ID is 54, and reading
 /proc/self/sessionid inside that SSH session returned 54. That equality was
 verified on this container only, not on all supported distributions.
 
+../journal/rocky-9.sessions.jsonl was captured on 2026-11-12 in a disposable
+rockylinux/rockylinux:9 container (systemd 252-67.el9_8.6, openssh-server
+9.9p1-13.el9_8, authselect sssd profile) with the same SSH sequence and the
+same retained fields. The password-auth stack runs pam_systemd before
+pam_unix, so logind's New session 4 (LEADER=75) is logged 28 ms before
+pam_unix(sshd:session) session opened from PID 75: the reverse of Debian.
+The pam_sss.so warnings come from the missing sssd package and are unchanged.
+
 Existing *.sudo.* fixtures contain real sudo I/O log TSIDs (01 or 000001).
 They are sudo log identifiers, not SSH PIDs or logind IDs. No fixture asserts
 that sudo has an SSH session key: the agent preserves TTY/TSID for the server's
