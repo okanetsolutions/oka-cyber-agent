@@ -16,7 +16,8 @@ var (
 	sshFailed   = regexp.MustCompile(`^Failed (\S+) for (invalid user )?(.*) from (\S+) port (\d+)`)
 	sshAccepted = regexp.MustCompile(`^Accepted (\S+) for (\S+) from (\S+) port (\d+)`)
 
-	sudoLine = regexp.MustCompile(`^\s*(\S+) : (.*)$`)
+	// sudo-rs (Ubuntu 26.04) leaves its TTY field empty without a terminal, so its "alice :  PWD=/" has two blanks.
+	sudoLine = regexp.MustCompile(`^\s*(\S+) : +(.*)$`)
 
 	suSessionOpened = regexp.MustCompile(`^pam_unix\(su(?:-l)?:session\): session opened for user ([^\s(]+)(?:\(uid=\d+\))? by ([^\s(]*)(?:\(uid=\d+\))?`)
 	suAuthFailure   = regexp.MustCompile(`^pam_unix\(su(?:-l)?:auth\): authentication failure;.*`)
