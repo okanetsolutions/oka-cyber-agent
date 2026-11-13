@@ -36,6 +36,9 @@ type pendingJournalEntry struct {
 	received time.Time
 }
 
+// logindLeader identifies the sshd process a logind session start names as its leader.
+type logindLeader struct{ boot, pid string }
+
 type watch struct {
 	plan   FilePlan
 	tailer *Tailer
@@ -72,6 +75,9 @@ type Collector struct {
 	journalCh      chan JournalEntry
 	journalCursor  string
 	journalPending []pendingJournalEntry
+	// logindStarts holds trusted logind session starts by leader, kept after their own cursor is consumed
+	// because on Red Hat systems logind logs the start before pam_unix logs the SSH open.
+	logindStarts map[logindLeader][]JournalEntry
 	// untrustedEntries counts journal entries dropped because they claimed an auth identifier without
 	// coming from that program (see TrustedAuthEntry).
 	untrustedEntries int
@@ -148,28 +154,29 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 
 // Hold an unmatched SSH open briefly so logind can enrich it across polls. The cursor
 // stays before held entries, so a checkpoint cannot skip an event awaiting enrichment.
+// logind may log the session start on either side of the open: after it on Debian, before it on Red Hat,
+// where pam_systemd comes before pam_unix in the session stack.
 func (c *Collector) pollJournal() []Event {
 	now := c.now()
+	if c.logindStarts == nil {
+		c.logindStarts = map[logindLeader][]JournalEntry{}
+	}
 read:
 	for len(c.journalPending) < journalBuffer {
 		select {
-		case entry := <-c.journalCh:
-			c.journalPending = append(c.journalPending, pendingJournalEntry{entry, now})
+		case e := <-c.journalCh:
+			c.journalPending = append(c.journalPending, pendingJournalEntry{e, now})
+			if e.Identifier == "systemd-logind" && e.MessageID == logindSessionStart &&
+				e.SessionID != "" && e.Leader != "" && TrustedAuthEntry(e) {
+				key := logindLeader{e.BootID, e.Leader}
+				c.logindStarts[key] = append(c.logindStarts[key], e)
+			}
 		default:
 			break read
 		}
 	}
-	type leaderKey struct{ boot, pid string }
-	starts := map[leaderKey][]JournalEntry{}
-	for _, pending := range c.journalPending {
-		e := pending.entry
-		if e.Identifier == "systemd-logind" && e.MessageID == logindSessionStart &&
-			e.SessionID != "" && e.Leader != "" && TrustedAuthEntry(e) {
-			key := leaderKey{e.BootID, e.Leader}
-			starts[key] = append(starts[key], e)
-		}
-	}
 	var events []Event
+	var consumedAt time.Time
 	consumed := 0
 	for _, pending := range c.journalPending {
 		entry := pending.entry
@@ -178,14 +185,14 @@ read:
 		} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
 			e.setBootID(entry.BootID)
 			if e.Kind == KindSSHSessionOpened && entry.PID != "" {
-				key := leaderKey{entry.BootID, entry.PID}
-				candidates := starts[key]
-				for len(candidates) > 0 && candidates[0].At.Before(entry.At) {
+				key := logindLeader{entry.BootID, entry.PID}
+				candidates := c.logindStarts[key]
+				for len(candidates) > 0 && entry.At.Sub(candidates[0].At) > logindWait {
 					candidates = candidates[1:]
 				}
 				if len(candidates) > 0 && candidates[0].At.Sub(entry.At) <= logindWait {
 					e.set("logind_session", candidates[0].SessionID)
-					starts[key] = candidates[1:]
+					c.logindStarts[key] = candidates[1:]
 				} else if now.Sub(pending.received) < logindWait && len(c.journalPending) < journalBuffer {
 					break
 				}
@@ -193,9 +200,19 @@ read:
 			events = append(events, e)
 		}
 		c.journalCursor = entry.Cursor
+		consumedAt = entry.At
 		consumed++
 	}
 	c.journalPending = slices.Delete(c.journalPending, 0, consumed)
+	// A start more than logindWait older than the journal already consumed can no longer match an open.
+	for key, starts := range c.logindStarts {
+		starts = slices.DeleteFunc(starts, func(e JournalEntry) bool { return consumedAt.Sub(e.At) > logindWait })
+		if len(starts) == 0 {
+			delete(c.logindStarts, key)
+		} else {
+			c.logindStarts[key] = starts
+		}
+	}
 	return events
 }
 

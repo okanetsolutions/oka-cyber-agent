@@ -87,6 +87,7 @@ func TestAuthLogsPerDistribution(t *testing.T) {
 		"rocky-9.groups.secure":        {KindUserCreated: 3, KindUserGroupChanged: 5},
 		"debian-12.sudo.log":           {KindSudoCommand: 8},
 		"ubuntu-24.04.sudo.log":        {KindSudoCommand: 8},
+		"ubuntu-26.04.sudo.log":        {KindSudoCommand: 9},
 		"rocky-9.sudo.secure":          {KindSudoCommand: 8},
 		"debian-12.sudo-continued.log": {KindSudoCommand: 2},
 		"debian-12.cron.log":           {KindCronModified: 3},
@@ -219,6 +220,33 @@ func TestSudoFieldsAreNotTakenFromCraftedValues(t *testing.T) {
 			if e.Kind != KindSudoCommand || e.Username != "alice" || got != want[i] || !strings.HasSuffix(e.Message, " ; COMMAND="+want[i].command.(string)) {
 				t.Errorf("%s line %d: %s by %q target_user=%v command=%v, want %v", fixture, i+1, e.Kind, e.Username, got.targetUser, got.command, want[i])
 			}
+		}
+	}
+}
+
+// ubuntu-26.04.sudo.log was captured on Ubuntu 26.04 (rsyslog), whose sudo is sudo-rs 0.2.13, with the commands of
+// the other sudo fixtures: sudo-rs logs no ENV, GROUP or TSID field, does not quote an argument with blanks, and
+// without a terminal leaves its TTY field empty ("alice :  PWD=/"). The last line ran in a terminal (script).
+func TestSudoRsLines(t *testing.T) {
+	want := []struct{ targetUser, command, message any }{
+		{"root", "/usr/bin/ls [1 arg]", "alice :  PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]"},
+		{nil, "[unparsed]", "alice :  PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]"},
+		{nil, "[unparsed]", "alice :  PWD=[redacted] ; USER=root ; COMMAND=[unparsed]"},
+		{nil, "[unparsed]", "alice :  PWD=[redacted] ; USER=root ; COMMAND=[unparsed]"},
+		{nil, "[unparsed]", "alice :  PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]"},
+		{"root", "/usr/bin/sh [2 args]", "alice :  PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/sh [2 args]"},
+		{"alice", "/usr/bin/sh [2 args]", "alice :  PWD=[redacted] ; USER=alice ; COMMAND=/usr/bin/sh [2 args]"},
+		{"root", "/usr/bin/id [0 args]", "alice :  PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/id [0 args]"},
+		{"root", "/usr/bin/ls [1 arg]", "alice : TTY=/dev/pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]"},
+	}
+	events := authEvents(t, "ubuntu-26.04.sudo.log")
+	if len(events) != len(want) {
+		t.Fatalf("%d events, want %d", len(events), len(want))
+	}
+	for i, e := range events {
+		got := Redact(e)
+		if got.Kind != KindSudoCommand || got.Username != "alice" || got.Fields["target_user"] != want[i].targetUser || got.Fields["command"] != want[i].command || got.Message != want[i].message {
+			t.Errorf("line %d: %s by %q %v %q, want %v", i+1, got.Kind, got.Username, got.Fields, got.Message, want[i])
 		}
 	}
 }

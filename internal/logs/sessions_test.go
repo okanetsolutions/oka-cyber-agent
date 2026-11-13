@@ -39,8 +39,13 @@ func TestSSHSessionsPerDistribution(t *testing.T) {
 
 func sessionJournalEntries(t *testing.T) []JournalEntry {
 	t.Helper()
+	return journalFixture(t, "debian-12.sessions.jsonl")
+}
+
+func journalFixture(t *testing.T, name string) []JournalEntry {
+	t.Helper()
 	var entries []JournalEntry
-	for _, line := range readLines(t, filepath.Join("testdata", "journal", "debian-12.sessions.jsonl")) {
+	for _, line := range readLines(t, filepath.Join("testdata", "journal", name)) {
 		entry, err := ParseJournalEntry([]byte(line))
 		if err != nil {
 			t.Fatal(err)
@@ -57,46 +62,64 @@ func sessionCollector(now *time.Time) *Collector {
 	return c
 }
 
+// Debian logs pam_unix's open before logind's New session, Rocky logs logind first (pam_systemd comes
+// before pam_unix in password-auth). The splits put the two entries in one poll and in two polls.
 func TestJournalSessionLifecycle(t *testing.T) {
-	entries := sessionJournalEntries(t)
-	for _, split := range []int{0, 5, 6, len(entries)} {
-		t.Run(fmt.Sprint(split), func(t *testing.T) {
-			now := testNow
-			c := sessionCollector(&now)
-			a := NewAggregator()
-			for _, chunk := range [][]JournalEntry{entries[:split], entries[split:]} {
-				for _, entry := range chunk {
-					c.journalCh <- entry
-				}
-				for _, e := range c.Poll(context.Background()) {
-					a.Add(Redact(e))
-				}
-			}
-			events := a.Flush()
-			want := []string{KindSSHLoginSucceeded, KindSSHSessionOpened, KindSudoCommand, KindSSHSessionClosed}
-			var kinds []string
-			for _, e := range events {
-				kinds = append(kinds, e.Kind)
-			}
-			if !slices.Equal(kinds, want) || c.UntrustedEntries() != 0 {
-				t.Fatalf("kinds=%v untrusted=%d", kinds, c.UntrustedEntries())
-			}
-			for _, i := range []int{0, 1, 3} {
-				if events[i].Fields["session"] != "824" {
-					t.Fatalf("SSH key: %+v", events[i])
-				}
-			}
-			if events[1].Fields["logind_session"] != "54" || events[0].Fields["logind_session"] != nil || events[3].Fields["logind_session"] != nil {
-				t.Fatalf("logind enrichment: %+v", events)
-			}
-			sudo := events[2]
-			if sudo.Username != events[0].Username || sudo.Fields["tty"] != "pts/0" || sudo.Fields["command"] != "/usr/bin/id [0 args]" || sudo.Fields["session"] != nil {
-				t.Fatalf("sudo: %+v", sudo)
-			}
-			if c.Checkpoint().JournalCursor != entries[len(entries)-1].Cursor || len(c.journalPending) != 0 {
-				t.Fatalf("unfinished journal: %+v", c.Checkpoint())
-			}
-		})
+	for _, tc := range []struct {
+		fixture, pid, logind string
+		splits               []int
+	}{
+		{"debian-12.sessions.jsonl", "824", "54", []int{0, 5, 6, 16}},
+		{"rocky-9.sessions.jsonl", "75", "4", []int{0, 6, 7, 18}},
+	} {
+		entries := journalFixture(t, tc.fixture)
+		for _, split := range tc.splits {
+			t.Run(fmt.Sprint(tc.fixture, split), func(t *testing.T) {
+				testJournalSessionLifecycle(t, entries, split, tc.pid, tc.logind)
+			})
+		}
+	}
+}
+
+func testJournalSessionLifecycle(t *testing.T, entries []JournalEntry, split int, pid, logind string) {
+	t.Helper()
+	now := testNow
+	c := sessionCollector(&now)
+	a := NewAggregator()
+	for _, chunk := range [][]JournalEntry{entries[:split], entries[split:]} {
+		for _, entry := range chunk {
+			c.journalCh <- entry
+		}
+		for _, e := range c.Poll(context.Background()) {
+			a.Add(Redact(e))
+		}
+	}
+	events := a.Flush()
+	want := []string{KindSSHLoginSucceeded, KindSSHSessionOpened, KindSudoCommand, KindSSHSessionClosed}
+	var kinds []string
+	for _, e := range events {
+		kinds = append(kinds, e.Kind)
+	}
+	if !slices.Equal(kinds, want) || c.UntrustedEntries() != 0 {
+		t.Fatalf("kinds=%v untrusted=%d", kinds, c.UntrustedEntries())
+	}
+	for _, i := range []int{0, 1, 3} {
+		if events[i].Fields["session"] != pid {
+			t.Fatalf("SSH key: %+v", events[i])
+		}
+	}
+	if events[1].Fields["logind_session"] != logind || events[0].Fields["logind_session"] != nil || events[3].Fields["logind_session"] != nil {
+		t.Fatalf("logind enrichment: %+v", events)
+	}
+	sudo := events[2]
+	if sudo.Username != events[0].Username || sudo.Fields["tty"] != "pts/0" || sudo.Fields["command"] != "/usr/bin/id [0 args]" || sudo.Fields["session"] != nil {
+		t.Fatalf("sudo: %+v", sudo)
+	}
+	if c.Checkpoint().JournalCursor != entries[len(entries)-1].Cursor || len(c.journalPending) != 0 {
+		t.Fatalf("unfinished journal: %+v", c.Checkpoint())
+	}
+	if len(c.logindStarts) != 0 {
+		t.Fatalf("matched logind start kept: %+v", c.logindStarts)
 	}
 }
 
@@ -253,6 +276,13 @@ func TestJournalLogindRequiresMatchingTrustedLeader(t *testing.T) {
 	c.journalCh <- entries[len(entries)-1]
 	if events := c.Poll(context.Background()); len(events) != 0 {
 		t.Fatalf("non-SSH logind session: %+v", events)
+	}
+	later := entries[len(entries)-1]
+	later.At = start.At.Add(logindWait + time.Second)
+	c.journalCh <- later
+	c.Poll(context.Background())
+	if len(c.logindStarts) != 0 {
+		t.Fatalf("unmatched logind start kept: %+v", c.logindStarts)
 	}
 }
 

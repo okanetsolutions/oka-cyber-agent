@@ -17,3 +17,7 @@ func OpenAt(dir *os.File, name string, flag int) (*os.File, error) {
 func FollowAt(dir *os.File, name string, flag int) (*os.File, error) {
 	return os.OpenFile(filepath.Join(dir.Name(), name), flag|syscall.O_NONBLOCK, 0)
 }
+
+func ReadlinkAt(dir *os.File, name string) (string, error) {
+	return os.Readlink(filepath.Join(dir.Name(), name))
+}

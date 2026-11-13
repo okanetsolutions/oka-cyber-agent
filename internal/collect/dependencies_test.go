@@ -165,8 +165,8 @@ func TestDependencyDiscoveryExcludesFiles(t *testing.T) {
 // symlinkedIntoExcluded builds a tree where /srv/secret is excluded and every way of reaching a file under it
 // goes through a symlink: file symlinks with relative and absolute targets, directory symlinks with relative and
 // absolute targets, a file symlink through a directory symlink, a symlinked executable and a scan path that is a
-// symlink into the excluded directory. /srv/current/storage is excluded too, though the walk only meets it as
-// /srv/releases/5/storage because /srv/current is a symlink.
+// symlink into the excluded directory. /srv/live/storage is excluded too, though the walk only meets it as
+// /srv/releases/5/storage because /srv/live is a symlink (not named current, so not a deployment layout).
 func symlinkedIntoExcluded(t *testing.T) (tree, DependencyOptions) {
 	self, err := os.Executable()
 	if err != nil {
@@ -191,10 +191,10 @@ func symlinkedIntoExcluded(t *testing.T) (tree, DependencyOptions) {
 	tr.symlink("srv/secret/app", "/data")
 	tr.copy(lockFixture("composer/composer.lock"), "/srv/releases/5/storage/composer.lock")
 	tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/releases/5/Cargo.lock")
-	tr.symlink("releases/5", "/srv/current")
+	tr.symlink("releases/5", "/srv/live")
 	return tr, DependencyOptions{
 		ScanPaths:    []string{"/srv", "/data"},
-		ExcludePaths: []string{"/srv/secret", "/srv/current/storage"},
+		ExcludePaths: []string{"/srv/secret", "/srv/live/storage"},
 		GoBinaries:   true,
 	}
 }
@@ -217,6 +217,73 @@ func TestDependencyDiscoveryNeverFollowsSymlinksIntoExcludedPaths(t *testing.T) 
 	}
 	if !slices.Equal(inv.SkippedFiles, wantSkipped) {
 		t.Fatalf("skipped = %v\nwant %v", inv.SkippedFiles, wantSkipped)
+	}
+}
+
+// In a Forge, Envoyer, Deployer or Capistrano layout only the release current points to is walked, and its files
+// are reported under the current path, so a deploy does not change the manifest paths. A current that is not a
+// direct subdirectory of the releases directory next to it is not followed, and that directory is walked as any
+// other, like a project with a releases directory and no current.
+func TestDependencyDiscoveryScansOnlyTheLiveRelease(t *testing.T) {
+	tr := tree{t, t.TempDir()}
+	for _, release := range []string{"20261106", "20261107", "20261108"} {
+		tr.copy(lockFixture("composer/composer.lock"), "/home/forge/okastore.app/releases/"+release+"/composer.lock")
+		tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/deployer/releases/"+release+"/Cargo.lock")
+		tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/outside/releases/"+release+"/Cargo.lock")
+		tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/plain/releases/"+release+"/Cargo.lock")
+	}
+	tr.copy(lockFixture("pnpm-v9/pnpm-lock.yaml"), "/home/forge/okastore.app/releases/20261107/pnpm-lock.yaml")
+	tr.copy(lockFixture("bundler/Gemfile.lock"), "/home/forge/okastore.app/releases/20261108/Gemfile.lock")
+	tr.symlink("/home/forge/okastore.app/releases/20261107", "/home/forge/okastore.app/current")
+	tr.symlink("releases/20261108/", "/srv/deployer/current")
+	tr.copy(lockFixture("composer/composer.lock"), "/srv/elsewhere/composer.lock")
+	tr.symlink("../elsewhere", "/srv/outside/current")
+
+	inv, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/home", "/srv"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{
+		"/home/forge/okastore.app/current/composer.lock":  7,
+		"/home/forge/okastore.app/current/pnpm-lock.yaml": 73,
+		"/srv/deployer/current/Cargo.lock":                9,
+		"/srv/elsewhere/composer.lock":                    7,
+		"/srv/outside/releases/20261106/Cargo.lock":       9,
+		"/srv/outside/releases/20261107/Cargo.lock":       9,
+		"/srv/outside/releases/20261108/Cargo.lock":       9,
+		"/srv/plain/releases/20261106/Cargo.lock":         9,
+		"/srv/plain/releases/20261107/Cargo.lock":         9,
+		"/srv/plain/releases/20261108/Cargo.lock":         9,
+	}
+	if got := manifests(inv); !mapsEqual(got, want) {
+		t.Fatalf("manifests = %v\nwant %v", got, want)
+	}
+	if len(inv.SkippedFiles) != 0 {
+		t.Fatalf("skipped = %v, want none", inv.SkippedFiles)
+	}
+}
+
+// exclude_paths applies to the live release and what it holds, written with the current path or the release path.
+func TestDependencyDiscoveryExcludesTheLiveRelease(t *testing.T) {
+	for _, excluded := range [][]string{
+		{"/srv/app/current"},
+		{"/srv/app/releases"},
+		{"/srv/app/releases/2"},
+		{"/srv/app/current/storage", "/srv/app/current/package.json"},
+		{"/srv/app/releases/2/storage", "/srv/app/releases/2/package.json"},
+	} {
+		tr := tree{t, t.TempDir()}
+		tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/app/releases/1/Cargo.lock")
+		tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/app/releases/2/storage/Cargo.lock")
+		tr.write("/srv/app/releases/2/package.json", "{}")
+		tr.symlink("releases/2", "/srv/app/current")
+		inv, err := Run(context.Background(), DependencyCollector{Root: tr.root, Options: DependencyOptions{ScanPaths: []string{"/srv"}, ExcludePaths: excluded}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(inv.Packages) != 0 || len(inv.SkippedFiles) != 0 {
+			t.Errorf("exclude %v: manifests = %v, skipped = %v, want none", excluded, manifests(inv), inv.SkippedFiles)
+		}
 	}
 }
 

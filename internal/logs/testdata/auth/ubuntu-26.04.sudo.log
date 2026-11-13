@@ -1,0 +1,37 @@
+2026-11-12T10:40:49.463954+00:00 a0e1159644fb sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale
+2026-11-12T10:40:49.464061+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+2026-11-12T10:40:49.464147+00:00 a0e1159644fb sudo: alice :  PWD=/ ; USER=root ; COMMAND=/usr/bin/ls /root
+2026-11-12T10:40:49.467558+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session closed for user root
+2026-11-12T10:40:49.476966+00:00 a0e1159644fb sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale
+2026-11-12T10:40:49.477062+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+2026-11-12T10:40:49.477143+00:00 a0e1159644fb sudo: alice :  PWD=/tmp/x ; USER=bob ; COMMAND=/bin/true ; USER=root ; COMMAND=/usr/bin/sh -c true
+2026-11-12T10:40:49.478617+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session closed for user root
+2026-11-12T10:40:49.493560+00:00 a0e1159644fb sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale
+2026-11-12T10:40:49.493661+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+2026-11-12T10:40:49.493745+00:00 a0e1159644fb sudo: alice :  PWD=/ ; USER=root ; COMMAND=/usr/bin/echo  ; USER=bob ; COMMAND=/bin/true
+2026-11-12T10:40:49.497317+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session closed for user root
+2026-11-12T10:40:49.512052+00:00 a0e1159644fb sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale
+2026-11-12T10:40:49.512116+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+2026-11-12T10:40:49.512188+00:00 a0e1159644fb sudo: alice :  PWD=/ ; USER=root ; COMMAND=/usr/bin/echo x  ; USER=bob ; COMMAND=/bin/true
+2026-11-12T10:40:49.515864+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session closed for user root
+2026-11-12T10:40:49.528027+00:00 a0e1159644fb sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale
+2026-11-12T10:40:49.528123+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+2026-11-12T10:40:49.528200+00:00 a0e1159644fb sudo: alice :  PWD=/tmp/x ; USER=bob ; COMMAND=/bin/true ; USER=root ; COMMAND=/usr/bin/echo  ; USER=root ; COMMAND=/bin/sh -c id
+2026-11-12T10:40:49.531060+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session closed for user root
+2026-11-12T10:40:49.543116+00:00 a0e1159644fb sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale
+2026-11-12T10:40:49.543218+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+2026-11-12T10:40:49.543305+00:00 a0e1159644fb sudo: alice :  PWD=/ ; USER=root ; COMMAND=/usr/bin/sh -c true
+2026-11-12T10:40:49.544529+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session closed for user root
+2026-11-12T10:40:49.558862+00:00 a0e1159644fb sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale
+2026-11-12T10:40:49.558955+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session opened for user alice(uid=1001) by (uid=1001)
+2026-11-12T10:40:49.559034+00:00 a0e1159644fb sudo: alice :  PWD=/ ; USER=alice ; COMMAND=/usr/bin/sh -c true
+2026-11-12T10:40:49.560305+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session closed for user alice
+2026-11-12T10:40:49.573488+00:00 a0e1159644fb sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale
+2026-11-12T10:40:49.573602+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+2026-11-12T10:40:49.573687+00:00 a0e1159644fb sudo: alice :  PWD=/ ; USER=root ; COMMAND=/usr/bin/id 
+2026-11-12T10:40:49.578202+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session closed for user root
+2026-11-12T10:40:49.594986+00:00 a0e1159644fb sudo: pam_env(sudo:session): Unable to open env file: /etc/default/locale
+2026-11-12T10:40:49.595109+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+2026-11-12T10:40:49.595187+00:00 a0e1159644fb sudo: alice : TTY=/dev/pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ls /root
+2026-11-12T10:40:49.598488+00:00 a0e1159644fb sudo: pam_unix(sudo:session): session closed for user root
+2026-11-12T10:40:49.683132+00:00 a0e1159644fb sudo: pam_unix(sudo:auth): authentication failure; logname= uid=1003 euid=0 tty= ruser=carol rhost=  user=carol
