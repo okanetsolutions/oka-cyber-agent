@@ -42,9 +42,46 @@ type Batch struct {
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
+// Stream is the upload queue a batch waits in. Oka Core accepts batches of command events alone even when the
+// daily allowance of the other events is used up, and answers 429 until midnight to any other batch, so command
+// batches are uploaded with their own retry state and never wait behind another batch.
+type Stream int
+
+const (
+	StreamLogs Stream = iota
+	StreamCommands
+)
+
+func batchStream(b Batch) Stream {
+	if len(b.Events) == 0 {
+		return StreamLogs
+	}
+	for _, e := range b.Events {
+		if e.Source != SourceCommands {
+			return StreamLogs
+		}
+	}
+	return StreamCommands
+}
+
+// The tag after the event count in a spool file name: none for StreamLogs, the stream of a command batch, or
+// an acknowledged batch kept only for its checkpoint (see MarkAcked).
+const (
+	tagCommands = "commands"
+	tagAcked    = "acked"
+)
+
+func streamTag(b Batch) string {
+	if batchStream(b) == StreamCommands {
+		return tagCommands
+	}
+	return ""
+}
+
 // Spool keeps batches on disk until the server acknowledges them, so nothing is lost when the server is
 // unreachable or the agent restarts. Each batch is one gzip file named "<sequence>-<events>.json.gz", where the
-// parts that replace a batch add ".<part>" to its sequence. When the spool grows over MaxBytes the oldest
+// parts that replace a batch add ".<part>" to its sequence, and a command batch or an acknowledged one adds
+// "-commands" or "-acked" to the event count. When the spool grows over MaxBytes the oldest
 // batches are dropped and their events counted in Dropped.
 //
 // Dir is a directory inside the agent's state directory, which the service user can write to. Every file is
@@ -72,7 +109,7 @@ func (s Spool) Append(b Batch) error {
 	if len(entries) > 0 {
 		sequence = entries[len(entries)-1].sequence[0] + 1
 	}
-	if err := s.writeBatch(dir, fmt.Sprintf("%020d", sequence), b); err != nil {
+	if err := s.writeBatch(dir, fmt.Sprintf("%020d", sequence), b, streamTag(b)); err != nil {
 		return err
 	}
 	return s.enforceLimit(dir)
@@ -93,14 +130,66 @@ func (s Spool) Replace(name string, parts []Batch) error {
 		return fmt.Errorf("log spool: not a batch name: %q", name)
 	}
 	for i, part := range parts {
-		if err := s.writeBatch(dir, fmt.Sprintf("%s.%d", sequence, i), part); err != nil {
+		if err := s.writeBatch(dir, fmt.Sprintf("%s.%d", sequence, i), part, streamTag(part)); err != nil {
 			return err
 		}
 	}
 	return removeEntry(dir, name)
 }
 
-func (s Spool) writeBatch(dir *os.Root, sequence string, b Batch) error {
+// MarkAcked puts an empty batch with the checkpoint of b in place of the batch Oldest returned under name,
+// once the server acknowledged it while an older batch of another stream still waits. Positions are committed
+// in spool order only (see AckedHead), so a checkpoint never moves back and never skips a batch not yet sent.
+func (s Spool) MarkAcked(name string, b Batch) error {
+	dir, err := s.open(true)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	sequence, _, ok := strings.Cut(name, "-")
+	if !ok {
+		return fmt.Errorf("log spool: not a batch name: %q", name)
+	}
+	b.Events = []Event{}
+	if err := s.writeBatch(dir, sequence+".0", b, tagAcked); err != nil {
+		return err
+	}
+	return removeEntry(dir, name)
+}
+
+// AckedHead returns the first batch of the spool when it is an acknowledged one, whose checkpoint is due.
+func (s Spool) AckedHead() (Batch, string, bool) {
+	dir, err := s.open(false)
+	if err != nil || dir == nil {
+		return Batch{}, "", false
+	}
+	defer dir.Close()
+	for {
+		entries, err := spoolEntries(dir)
+		if err != nil || len(entries) == 0 || entries[0].tag != tagAcked {
+			return Batch{}, "", false
+		}
+		if b, err := readBatch(dir, entries[0].name); err == nil {
+			return b, entries[0].name, true
+		}
+		if err := removeEntry(dir, entries[0].name); err != nil {
+			return Batch{}, "", false
+		}
+	}
+}
+
+// IsOldest tells whether name is the first batch of the spool.
+func (s Spool) IsOldest(name string) bool {
+	dir, err := s.open(false)
+	if err != nil || dir == nil {
+		return false
+	}
+	defer dir.Close()
+	entries, err := spoolEntries(dir)
+	return err == nil && len(entries) > 0 && entries[0].name == name
+}
+
+func (s Spool) writeBatch(dir *os.Root, sequence string, b Batch, tag string) error {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	if err := json.NewEncoder(zw).Encode(b); err != nil {
@@ -109,12 +198,20 @@ func (s Spool) writeBatch(dir *os.Root, sequence string, b Batch) error {
 	if err := zw.Close(); err != nil {
 		return err
 	}
-	return s.writeAtomic(dir, fmt.Sprintf("%s-%d.json.gz", sequence, len(b.Events)), buf.Bytes())
+	if tag != "" {
+		tag = "-" + tag
+	}
+	return s.writeAtomic(dir, fmt.Sprintf("%s-%d%s.json.gz", sequence, len(b.Events), tag), buf.Bytes())
 }
 
 // Oldest returns the next batch to send and its name for Remove. A batch that cannot be read is dropped and
 // counted.
 func (s Spool) Oldest() (Batch, string, bool, error) {
+	return s.OldestIn(nil)
+}
+
+// OldestIn is Oldest for the streams skip does not leave out.
+func (s Spool) OldestIn(skip func(Stream) bool) (Batch, string, bool, error) {
 	dir, err := s.open(false)
 	if err != nil || dir == nil {
 		return Batch{}, "", false, err
@@ -122,14 +219,18 @@ func (s Spool) Oldest() (Batch, string, bool, error) {
 	defer dir.Close()
 	for {
 		entries, err := spoolEntries(dir)
-		if err != nil || len(entries) == 0 {
+		if err != nil {
 			return Batch{}, "", false, err
 		}
-		b, err := readBatch(dir, entries[0].name)
-		if err == nil {
-			return b, entries[0].name, true, nil
+		i := slices.IndexFunc(entries, func(e spoolEntry) bool { return e.tag != tagAcked && (skip == nil || !skip(e.stream())) })
+		if i < 0 {
+			return Batch{}, "", false, nil
 		}
-		if err := s.drop(dir, entries[0]); err != nil {
+		b, err := readBatch(dir, entries[i].name)
+		if err == nil {
+			return b, entries[i].name, true, nil
+		}
+		if err := s.drop(dir, entries[i]); err != nil {
 			return Batch{}, "", false, err
 		}
 	}
@@ -263,7 +364,20 @@ type spoolEntry struct {
 	// sequence orders the batches: a part of a replaced batch comes after it and before the next batch.
 	sequence []int64
 	events   int
+	tag      string
 	size     int64
+}
+
+func (e spoolEntry) stream() Stream {
+	return StreamOf(e.name)
+}
+
+// StreamOf is the stream of the spooled batch name.
+func StreamOf(name string) Stream {
+	if strings.HasSuffix(name, "-"+tagCommands+".json.gz") {
+		return StreamCommands
+	}
+	return StreamLogs
 }
 
 func spoolEntries(dir *os.Root) ([]spoolEntry, error) {
@@ -283,13 +397,14 @@ func spoolEntries(dir *os.Root) ([]spoolEntry, error) {
 			continue
 		}
 		sequenceText, eventsText, ok := strings.Cut(base, "-")
+		eventsText, tag, _ := strings.Cut(eventsText, "-")
 		sequence, err1 := parseSequence(sequenceText)
 		events, err2 := strconv.Atoi(eventsText)
 		info, err3 := d.Info()
-		if !ok || err1 != nil || err2 != nil || err3 != nil {
+		if !ok || err1 != nil || err2 != nil || err3 != nil || tag != "" && tag != tagCommands && tag != tagAcked {
 			continue
 		}
-		entries = append(entries, spoolEntry{d.Name(), sequence, events, info.Size()})
+		entries = append(entries, spoolEntry{d.Name(), sequence, events, tag, info.Size()})
 	}
 	slices.SortFunc(entries, func(a, b spoolEntry) int { return slices.Compare(a.sequence, b.sequence) })
 	return entries, nil

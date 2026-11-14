@@ -366,3 +366,50 @@ func TestTailerRestartWhileReadingARotatedFileReadsTheNewOneFromItsStart(t *test
 		t.Fatalf("lines after restart = %.60q, want the new file from its start", got)
 	}
 }
+
+func TestTailerBootProvenanceBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.log")
+	appendTo(t, path, "old\npart")
+	tail, _ := newTestTailer(path, nil, false)
+	defer tail.Close()
+	check := func(wantLines []string, wantLive []bool) {
+		t.Helper()
+		r := tail.Poll()
+		if !slices.Equal(r.Lines, wantLines) || !slices.Equal(r.live, wantLive) {
+			t.Fatalf("lines=%q live=%v, want %q %v", r.Lines, r.live, wantLines, wantLive)
+		}
+	}
+	check([]string{"old"}, []bool{false})
+	appendTo(t, path, "ial\nlive\n")
+	check([]string{"partial", "live"}, []bool{false, true})
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	appendTo(t, path+".1", "old fd live\n")
+	appendTo(t, path, "rotated backlog\n")
+	check([]string{"old fd live", "rotated backlog"}, []bool{true, false})
+	appendTo(t, path, "new fd live\n")
+	check([]string{"new fd live"}, []bool{true})
+	if err := os.WriteFile(path, []byte("copied\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	check([]string{"copied"}, []bool{false})
+	appendTo(t, path, "after truncate\n")
+	check([]string{"after truncate"}, []bool{true})
+}
+
+func TestTailerBootProvenanceAcrossBacklogPolls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.log")
+	appendTo(t, path, strings.Repeat("old\n", maxReadBytes/4+1))
+	tail, _ := newTestTailer(path, nil, false)
+	defer tail.Close()
+	first := tail.Poll()
+	if len(first.Lines) != maxReadBytes/4 || slices.Contains(first.live, true) {
+		t.Fatal("first backlog poll has live lines")
+	}
+	appendTo(t, path, "new\n")
+	r := tail.Poll()
+	if !slices.Equal(r.Lines, []string{"old", "new"}) || !slices.Equal(r.live, []bool{false, true}) {
+		t.Fatalf("lines=%q live=%v", r.Lines, r.live)
+	}
+}

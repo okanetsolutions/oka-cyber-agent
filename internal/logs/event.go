@@ -3,9 +3,10 @@ package logs
 import "time"
 
 const (
-	SourceAuth = "auth"
-	SourceWeb  = "web"
-	SourceApp  = "app"
+	SourceCommands = "commands"
+	SourceAuth     = "auth"
+	SourceWeb      = "web"
+	SourceApp      = "app"
 )
 
 // Event kinds and the fields they carry, as defined by the Oka Core log ingestion API
@@ -16,6 +17,7 @@ const (
 	KindSSHLoginSucceeded = "ssh_login_succeeded"
 	KindSSHSessionOpened  = "ssh_session_opened"
 	KindSSHSessionClosed  = "ssh_session_closed"
+	KindCommand           = "command"
 	KindSudoCommand       = "sudo_command"
 	KindSudoFailed        = "sudo_failed"
 	KindSuSession         = "su_session"

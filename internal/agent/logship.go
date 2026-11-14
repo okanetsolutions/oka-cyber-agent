@@ -45,8 +45,9 @@ type LogClient interface {
 }
 
 // LogShipper collects log events from the sources the server enabled, redacts and aggregates them, keeps
-// them in the spool and uploads them in order, one batch at a time. Positions are committed only after the
-// server acknowledged a batch.
+// them in the spool and uploads them in order, one batch at a time. Command events go in batches of their own,
+// uploaded in order with their own retry state, so a 429 on the other batches (the daily allowance) never holds
+// them back. Positions are committed only after the server acknowledged a batch, in spool order.
 type LogShipper struct {
 	Client   LogClient
 	StateDir string
@@ -70,8 +71,7 @@ type LogShipper struct {
 	flushInterval    time.Duration
 	lastFlush        time.Time
 	lastSent         time.Time
-	retryAt          time.Time
-	failures         int
+	retry            [2]retryState
 
 	// badSkipped are skipped sources the server rejected, left out of later requests so they cannot get every
 	// batch rejected, and droppedRejected is set when it rejected dropped_events.
@@ -84,6 +84,12 @@ type LogShipper struct {
 	bareOmitted []logs.SkippedSource
 	// switchedOff are sources switched off whose removal from the checkpoint could not be spooled yet.
 	switchedOff map[string]bool
+}
+
+// retryState is the backoff of one stream of the spool (see logs.Stream).
+type retryState struct {
+	at       time.Time
+	failures int
 }
 
 // NewLogShipper keeps its spool and positions under stateDir. When root runs the agent, the files it writes
@@ -128,6 +134,9 @@ func (s *LogShipper) Run(ctx context.Context) error {
 	}
 	if s.Logger == nil {
 		s.Logger = slog.Default()
+	}
+	if err := logs.DisableCommands(s.Options); err != nil {
+		s.Logger.Error("reset command collection flag", "error", err)
 	}
 	defer s.stopCollector()
 	ticker := time.NewTicker(s.Tick)
@@ -187,7 +196,7 @@ func (s *LogShipper) apply(ctx context.Context, lc api.LogCollection) {
 		s.flushInterval = min(max(time.Duration(lc.FlushIntervalSeconds)*time.Second, 5*time.Second), 5*time.Minute)
 	}
 	sources := slices.DeleteFunc(slices.Clone(lc.Sources), func(src string) bool {
-		return !slices.Contains([]string{logs.SourceAuth, logs.SourceWeb, logs.SourceApp}, src)
+		return !slices.Contains([]string{logs.SourceAuth, logs.SourceWeb, logs.SourceApp, logs.SourceCommands}, src)
 	})
 	slices.Sort(sources)
 	sources = slices.Compact(sources)
@@ -200,6 +209,11 @@ func (s *LogShipper) apply(ctx context.Context, lc api.LogCollection) {
 		s.stopCollector()
 	}
 	s.sources = sources
+	if !slices.Contains(sources, logs.SourceCommands) {
+		if err := logs.DisableCommands(s.Options); err != nil {
+			s.Logger.Error("disable command collection", "error", err)
+		}
+	}
 	if len(sources) == 0 {
 		if err := s.Spool.Clear(); err != nil {
 			s.Logger.Error("clear log spool", "error", err)
@@ -245,6 +259,9 @@ func (s *LogShipper) resumeAt(sources []string) logs.Checkpoint {
 	if !slices.Contains(resume.Sources, logs.SourceAuth) {
 		resume.JournalCursor = ""
 	}
+	if !slices.Contains(resume.Sources, logs.SourceCommands) {
+		resume.AuditCursor, resume.AuditSessions = "", nil
+	}
 	if changed && s.spoolBatch(nil, resume) {
 		clear(s.switchedOff)
 	}
@@ -279,18 +296,29 @@ func (s *LogShipper) collect(ctx context.Context) {
 		}
 		s.aggregator.Add(logs.Redact(e))
 	}
+	dropped += s.aggregator.TakeDropped()
 	if err := s.Spool.AddDropped(dropped); err != nil {
 		s.Logger.Error("count dropped log events", "error", err)
 	}
 }
 
+// flush spools the aggregated events, the command events in batches of their own (see logs.Stream).
 func (s *LogShipper) flush() {
-	events := s.aggregator.Flush()
+	var events, commands []logs.Event
+	for _, e := range s.aggregator.Flush() {
+		if e.Source == logs.SourceCommands {
+			commands = append(commands, e)
+		} else {
+			events = append(events, e)
+		}
+	}
 	s.lastFlush = s.Now()
-	for len(events) > 0 {
-		n := batchSize(events)
-		s.spoolBatch(events[:n], s.collector.Checkpoint())
-		events = events[n:]
+	for _, events := range [][]logs.Event{events, commands} {
+		for len(events) > 0 {
+			n := batchSize(events)
+			s.spoolBatch(events[:n], s.collector.Checkpoint())
+			events = events[n:]
+		}
 	}
 }
 
@@ -334,11 +362,10 @@ func (s *LogShipper) spoolBatch(events []logs.Event, cp logs.Checkpoint) bool {
 // one response, since what made the request fail may be in the parts every request carries (skipped_sources)
 // or in its size: see rejected.
 func (s *LogShipper) upload(ctx context.Context) error {
+	s.commitAcked()
+	waiting := func(stream logs.Stream) bool { return s.Now().Before(s.retry[stream].at) }
 	for range uploadsPerTick {
-		if s.Now().Before(s.retryAt) {
-			return nil
-		}
-		b, name, ok, err := s.Spool.Oldest()
+		b, name, ok, err := s.Spool.OldestIn(waiting)
 		if err != nil {
 			s.Logger.Error("read log spool", "error", err)
 			return nil
@@ -366,8 +393,7 @@ func (s *LogShipper) upload(ctx context.Context) error {
 		case err == nil:
 			s.accepted(req, resp)
 			if err := s.acknowledged(name, b, req.DroppedEvents); err != nil {
-				s.retryLater("save log positions", b, err, nil)
-				return nil
+				s.retryLater("save log positions", name, b, err, nil)
 			}
 		case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound:
 			s.unsupported()
@@ -379,8 +405,8 @@ func (s *LogShipper) upload(ctx context.Context) error {
 		case ctx.Err() != nil:
 			return nil
 		default:
-			s.retryLater("log upload failed", b, err, httpErr)
-			return nil
+			// The other stream goes on: a 429 on log batches never holds back command batches.
+			s.retryLater("log upload failed", name, b, err, httpErr)
 		}
 	}
 	return nil
@@ -436,7 +462,7 @@ func (s *LogShipper) rejected(ctx context.Context, name string, b logs.Batch, re
 		first := logs.Batch{ID: logs.NewBatchID(), Events: req.Events[:half], Checkpoint: b.Checkpoint, Partial: true, CreatedAt: b.CreatedAt}
 		second := logs.Batch{ID: logs.NewBatchID(), Events: req.Events[half:], Checkpoint: b.Checkpoint, Partial: b.Partial, CreatedAt: b.CreatedAt}
 		if err := s.Spool.Replace(name, []logs.Batch{first, second}); err != nil {
-			s.retryLater("split log batch", b, err, nil)
+			s.retryLater("split log batch", name, b, err, nil)
 			return false, nil
 		}
 		return true, nil
@@ -445,7 +471,7 @@ func (s *LogShipper) rejected(ctx context.Context, name string, b logs.Batch, re
 		s.bare, s.bareOmitted = b.ID, req.SkippedSources
 		return true, nil
 	case len(req.Events) == 0:
-		s.retryLater("log request rejected", b, cause, httpErr)
+		s.retryLater("log request rejected", name, b, cause, httpErr)
 		return false, nil
 	}
 	resp, err := s.Client.PostLogs(ctx, api.LogBatchRequest{BatchID: logs.NewBatchID(), Events: []logs.Event{}, SkippedSources: []logs.SkippedSource{}})
@@ -457,7 +483,7 @@ func (s *LogShipper) rejected(ctx context.Context, name string, b logs.Batch, re
 		s.unsupported()
 		return false, nil
 	case err != nil:
-		s.retryLater("log request rejected, and so is an empty one", b, cause, probeErr)
+		s.retryLater("log request rejected, and so is an empty one", name, b, cause, probeErr)
 		return false, nil
 	}
 	if resp.LogCollection != nil {
@@ -545,7 +571,7 @@ func (s *LogShipper) replace(name string, b logs.Batch, events []logs.Event) boo
 	}
 	b.Events = events
 	if err := s.Spool.Replace(name, []logs.Batch{b}); err != nil {
-		s.retryLater("rewrite log batch", b, err, nil)
+		s.retryLater("rewrite log batch", name, b, err, nil)
 		return false
 	}
 	return true
@@ -555,7 +581,7 @@ func (s *LogShipper) replace(name string, b logs.Batch, events []logs.Event) boo
 // dropped_events.
 func (s *LogShipper) drop(name string, b logs.Batch, events int) bool {
 	if err := s.acknowledged(name, b, 0); err != nil {
-		s.retryLater("save log positions", b, err, nil)
+		s.retryLater("save log positions", name, b, err, nil)
 		return false
 	}
 	if err := s.Spool.AddDropped(events); err != nil {
@@ -593,17 +619,18 @@ func outgoingEvents(events []logs.Event, now time.Time) ([]logs.Event, int) {
 	return out, len(events) - len(out)
 }
 
-// retryLater backs off. A batch being sent bare is sent whole again after it, so that a bare request accepted
-// once a broken server recovers does not blame the skipped sources.
-func (s *LogShipper) retryLater(msg string, b logs.Batch, err error, httpErr *api.HTTPError) {
+// retryLater backs off the stream of the spooled batch name. A batch being sent bare is sent whole again after
+// it, so that a bare request accepted once a broken server recovers does not blame the skipped sources.
+func (s *LogShipper) retryLater(msg, name string, b logs.Batch, err error, httpErr *api.HTTPError) {
 	s.bare, s.bareOmitted = "", nil
-	s.failures++
-	wait := uploadBackoff(s.failures)
+	retry := &s.retry[logs.StreamOf(name)]
+	retry.failures++
+	wait := uploadBackoff(retry.failures)
 	if httpErr != nil {
 		wait = max(wait, httpErr.RetryAfter)
 	}
-	s.retryAt = s.Now().Add(wait)
-	s.Logger.Warn(msg+", retrying", "batch_id", b.ID, "error", err, "retry_at", s.retryAt)
+	retry.at = s.Now().Add(wait)
+	s.Logger.Warn(msg+", retrying", "batch_id", b.ID, "error", err, "retry_at", retry.at)
 }
 
 // unsupported stops collection after the server answered 404: an Oka Core that does not have log ingestion
@@ -627,9 +654,12 @@ func (s *LogShipper) unsupported() {
 // order a stop in between leaves the batch spooled with its positions committed: it is sent again under the same
 // batch_id, which the server recognises as its last batch and ignores, and collection resumes from the same
 // positions. When the positions cannot be saved the batch stays in the spool and is sent again later. A partial
-// batch commits nothing: its checkpoint also covers the parts after it.
+// batch commits nothing: its checkpoint also covers the parts after it. A batch acknowledged while an older one
+// of the other stream still waits commits nothing yet: it is kept as an acknowledged empty batch until it is
+// first in the spool (see commitAcked), so the positions never move back or past a batch not sent yet.
 func (s *LogShipper) acknowledged(name string, b logs.Batch, reportedDropped int) error {
-	if !b.Partial {
+	oldest := s.Spool.IsOldest(name)
+	if oldest && !b.Partial {
 		if err := s.commit(b.Checkpoint); err != nil {
 			return err
 		}
@@ -637,12 +667,37 @@ func (s *LogShipper) acknowledged(name string, b logs.Batch, reportedDropped int
 	if err := s.Spool.AddDropped(-reportedDropped); err != nil {
 		s.Logger.Error("count dropped log events", "error", err)
 	}
-	if err := s.Spool.Remove(name); err != nil {
-		s.Logger.Error("remove sent log batch", "error", err)
+	if oldest {
+		if err := s.Spool.Remove(name); err != nil {
+			s.Logger.Error("remove sent log batch", "error", err)
+		}
+		s.commitAcked()
+	} else if err := s.Spool.MarkAcked(name, b); err != nil {
+		s.Logger.Error("keep the positions of a sent log batch", "error", err)
 	}
 	s.lastSent = s.Now()
-	s.failures = 0
+	s.retry[logs.StreamOf(name)].failures = 0
 	return nil
+}
+
+// commitAcked commits, in order, the positions of the acknowledged batches that are first in the spool.
+func (s *LogShipper) commitAcked() {
+	for {
+		b, name, ok := s.Spool.AckedHead()
+		if !ok {
+			return
+		}
+		if !b.Partial {
+			if err := s.commit(b.Checkpoint); err != nil {
+				s.Logger.Error("save log positions", "batch_id", b.ID, "error", err)
+				return
+			}
+		}
+		if err := s.Spool.Remove(name); err != nil {
+			s.Logger.Error("remove sent log batch", "error", err)
+			return
+		}
+	}
 }
 
 // rejected is a response that sending the same request again cannot fix.

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Oka Cyber command collection opt-in
+
+[Path]
+PathChanged=/run/oka-cyber-agent/commands.enabled
+Unit=oka-cyber-audit.service
+
+[Install]
+WantedBy=multi-user.target

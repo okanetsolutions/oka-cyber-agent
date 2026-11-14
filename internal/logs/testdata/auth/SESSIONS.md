@@ -53,7 +53,7 @@ https://github.com/systemd/systemd/blob/v256/src/login/logind-session.c
 https://github.com/systemd/systemd/blob/v257/src/login/logind-session.c
 
 The exported session key deliberately remains the raw sshd PID required by
-issue #21 and the stacked command capture work. PID reuse within or across
-boots is a known correlation limit; adding a new key format needs a coordinated
-consumer contract change. Internally, logind enrichment checks the boot and
+issue #21 and the stacked command capture work. PID reuse within a boot remains a correlation limit. The companion contract
+in oka-core#4092 adds per-event fields.boot_id to separate boots while keeping
+the raw session key unchanged. Internally, logind enrichment checks the boot and
 nearby timestamps so unrelated or stale metadata is not attached.

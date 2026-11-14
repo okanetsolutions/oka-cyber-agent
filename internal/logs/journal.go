@@ -24,6 +24,8 @@ const logindSessionStart = "8d45620c1a4348dbb17410da57c60c66"
 // journald fills in; Identifier, MessageID, SessionID and Leader are chosen by the sender.
 type JournalEntry struct {
 	Cursor     string
+	Transport  string
+	AuditID    string
 	Identifier string
 	Message    string
 	At         time.Time
@@ -41,24 +43,30 @@ type JournalEntry struct {
 // when it is not valid UTF-8.
 func ParseJournalEntry(line []byte) (JournalEntry, error) {
 	var raw struct {
-		Cursor     string          `json:"__CURSOR"`
-		Realtime   string          `json:"__REALTIME_TIMESTAMP"`
-		Identifier string          `json:"SYSLOG_IDENTIFIER"`
-		Message    json.RawMessage `json:"MESSAGE"`
-		UID        string          `json:"_UID"`
-		Exe        string          `json:"_EXE"`
-		Comm       string          `json:"_COMM"`
-		PID        string          `json:"_PID"`
-		MessageID  string          `json:"MESSAGE_ID"`
-		SessionID  string          `json:"SESSION_ID"`
-		Leader     string          `json:"LEADER"`
-		BootID     string          `json:"_BOOT_ID"`
+		Cursor         string          `json:"__CURSOR"`
+		Transport      string          `json:"_TRANSPORT"`
+		AuditID        string          `json:"_AUDIT_ID"`
+		SourceRealtime string          `json:"_SOURCE_REALTIME_TIMESTAMP"`
+		Realtime       string          `json:"__REALTIME_TIMESTAMP"`
+		Identifier     string          `json:"SYSLOG_IDENTIFIER"`
+		Message        json.RawMessage `json:"MESSAGE"`
+		UID            string          `json:"_UID"`
+		Exe            string          `json:"_EXE"`
+		Comm           string          `json:"_COMM"`
+		PID            string          `json:"_PID"`
+		MessageID      string          `json:"MESSAGE_ID"`
+		SessionID      string          `json:"SESSION_ID"`
+		Leader         string          `json:"LEADER"`
+		BootID         string          `json:"_BOOT_ID"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return JournalEntry{}, err
 	}
-	e := JournalEntry{Cursor: raw.Cursor, Identifier: raw.Identifier, UID: raw.UID, Exe: raw.Exe, Comm: raw.Comm, PID: raw.PID,
+	e := JournalEntry{Transport: raw.Transport, AuditID: raw.AuditID, Cursor: raw.Cursor, Identifier: raw.Identifier, UID: raw.UID, Exe: raw.Exe, Comm: raw.Comm, PID: raw.PID,
 		MessageID: raw.MessageID, SessionID: raw.SessionID, Leader: raw.Leader, BootID: raw.BootID}
+	if raw.Transport == "audit" && raw.SourceRealtime != "" {
+		raw.Realtime = raw.SourceRealtime
+	}
 	if micros, err := strconv.ParseInt(raw.Realtime, 10, 64); err == nil {
 		e.At = time.UnixMicro(micros).UTC()
 	}
@@ -137,12 +145,16 @@ type StartFunc func(ctx context.Context, name string, args ...string) (io.ReadCl
 // starts at the current end of the journal when there is no cursor, so no history is uploaded.
 type Journal struct {
 	Identifiers []string
+	Audit       bool
 	Cursor      string
 	Start       StartFunc
 }
 
 func (j *Journal) Args() []string {
 	args := []string{"--follow", "--output=json", "--no-pager", "--quiet"}
+	if j.Audit {
+		args = append(args, "_TRANSPORT=audit", "--output-fields=__CURSOR,__REALTIME_TIMESTAMP,_SOURCE_REALTIME_TIMESTAMP,_TRANSPORT,_BOOT_ID,_AUDIT_ID,_UID,MESSAGE")
+	}
 	for _, id := range j.Identifiers {
 		args = append(args, "--identifier="+id)
 	}

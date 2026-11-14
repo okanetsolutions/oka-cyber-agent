@@ -32,6 +32,9 @@ fi
 
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload >/dev/null 2>&1 || true
+	# The helper also runs once at boot, where no flag exists yet, so a rule kept in rules.d by a crash or a
+	# shutdown is removed even when commands were turned off meanwhile or the agent is disabled.
+	systemctl enable oka-cyber-audit.service >/dev/null 2>&1 || true
 	if [ -f /etc/oka-cyber-agent/token ]; then
 		systemctl try-restart oka-cyber-agent.service >/dev/null 2>&1 || true
 		if [ "$start" = true ]; then

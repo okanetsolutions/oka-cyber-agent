@@ -24,9 +24,11 @@ const (
 // Checkpoint is how far every reader got: file positions by path and the journal cursor. The agent saves it
 // only after the server acknowledged the events read up to it (at least once delivery).
 type Checkpoint struct {
-	Sources       []string            `json:"sources"`
-	Files         map[string]Position `json:"files"`
-	JournalCursor string              `json:"journal_cursor,omitempty"`
+	Sources       []string                `json:"sources"`
+	Files         map[string]Position     `json:"files"`
+	JournalCursor string                  `json:"journal_cursor,omitempty"`
+	AuditCursor   string                  `json:"audit_cursor,omitempty"`
+	AuditSessions map[string]AuditSession `json:"audit_sessions,omitempty"`
 }
 
 type pendingJournalEntry struct {
@@ -58,8 +60,15 @@ type Collector struct {
 	files       *readFiles
 	skipped     []SkippedSource
 	lastPlan    time.Time
+	boot        bootIdentity
 	// listed holds the file names in the directories of the watched files, read just before the latest plan.
 	listed map[string]map[string]bool
+
+	commandFlag bool
+	auditCancel context.CancelFunc
+	auditDone   chan struct{}
+	auditCh     chan JournalEntry
+	audit       *auditParser
 
 	journalCancel  context.CancelFunc
 	journalDone    chan struct{}
@@ -117,8 +126,14 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 	for _, path := range sortedWatchPaths(c.watches) {
 		w := c.watches[path]
 		result := w.tailer.Poll()
-		for _, line := range result.Lines {
+		for i, line := range result.Lines {
 			if e, ok := c.parseLine(w.plan, line); ok {
+				// Existing bytes may belong to an earlier boot, even if a yearless syslog
+				// timestamp looks recent. Only newly appended lines can use the host ID.
+				if w.plan.Source == SourceAuth && result.live[i] &&
+					e.FirstAt.After(c.boot.started) && !e.FirstAt.After(c.now()) {
+					e.setBootID(c.boot.id)
+				}
 				events = append(events, e)
 			}
 		}
@@ -133,7 +148,8 @@ func (c *Collector) Poll(ctx context.Context) []Event {
 	if planned {
 		c.files.polled()
 	}
-	return append(events, c.pollJournal()...)
+	events = append(events, c.pollJournal()...)
+	return append(events, c.pollCommands()...)
 }
 
 // Hold an unmatched SSH open briefly so logind can enrich it across polls. The cursor
@@ -167,6 +183,7 @@ read:
 		if !TrustedAuthEntry(entry) {
 			c.untrustedEntries++
 		} else if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
+			e.setBootID(entry.BootID)
 			if e.Kind == KindSSHSessionOpened && entry.PID != "" {
 				key := logindLeader{entry.BootID, entry.PID}
 				candidates := c.logindStarts[key]
@@ -235,12 +252,16 @@ func (c *Collector) parseLine(plan FilePlan, line string) (Event, bool) {
 // from where it stopped (see readFiles), so no line is read twice.
 func (c *Collector) plan(ctx context.Context) {
 	startup := c.lastPlan.IsZero()
+	if startup && slices.Contains(c.sources, SourceAuth) {
+		c.boot = c.options.bootIdentity()
+	}
 	previous := c.listed
 	c.listed = map[string]map[string]bool{}
 	c.listWatchedDirs()
 	c.lastPlan = c.now()
 	c.files.planned()
 	p := PlanSources(c.sources, c.options)
+	c.planCommands(ctx, &p)
 	c.skipped = p.Skipped
 	planned := map[string]FilePlan{}
 	for _, f := range p.Files {
@@ -265,6 +286,9 @@ func (c *Collector) plan(ctx context.Context) {
 		}
 		startAtEnd := resume == nil && !createdSince(previous, path)
 		t := NewTailer(c.options.path(path), resume, startAtEnd)
+		if f.Source == SourceAuth {
+			t.bootID = c.boot.id
+		}
 		t.Pattern = c.options.patternPath(f.Pattern)
 		t.Now = c.now
 		t.files = c.files
@@ -405,11 +429,13 @@ func (c *Collector) Checkpoint() Checkpoint {
 			cp.Files[path] = pos
 		}
 	}
+	c.commandCheckpoint(&cp)
 	cp.JournalCursor = c.journalCursor
 	return cp
 }
 
 func (c *Collector) Close() {
+	c.closeCommands()
 	if c.journalCancel != nil {
 		c.journalCancel()
 		<-c.journalDone

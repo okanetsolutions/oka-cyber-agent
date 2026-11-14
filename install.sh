@@ -225,8 +225,8 @@ write_unit() {
 [Unit]
 Description=Oka Cyber Agent
 Documentation=https://github.com/okanetsolutions/oka-cyber-agent
-After=network-online.target
-Wants=network-online.target
+After=network-online.target oka-cyber-audit.path
+Wants=network-online.target oka-cyber-audit.path
 
 [Service]
 Type=simple
@@ -234,6 +234,8 @@ User=oka-cyber
 Group=oka-cyber
 ExecStart=/usr/local/bin/oka-cyber-agent run
 LoadCredential=token:/etc/oka-cyber-agent/token
+RuntimeDirectory=oka-cyber-agent
+RuntimeDirectoryMode=0755
 StateDirectory=oka-cyber-agent
 StateDirectoryMode=0700
 Restart=on-failure
@@ -268,6 +270,74 @@ WantedBy=multi-user.target
 UNIT
 	chmod 0644 "$UNIT_PATH.new"
 	mv -f "$UNIT_PATH.new" "$UNIT_PATH"
+	install -d -m 0755 "/etc/systemd/system"
+	cat >"/etc/systemd/system/oka-cyber-audit.service.new" <<'AUDIT_SERVICE'
+[Unit]
+Description=Oka Cyber fixed command audit rule
+After=auditd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/oka-cyber-agent audit-rules
+User=root
+Group=root
+RuntimeDirectory=oka-cyber-audit
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=0022
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_AUDIT_CONTROL
+AmbientCapabilities=CAP_AUDIT_CONTROL
+ProtectSystem=strict
+ReadWritePaths=-/etc/audit/rules.d /run/oka-cyber-audit
+ProtectHome=yes
+InaccessiblePaths=-/etc/oka-cyber-agent
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
+AUDIT_SERVICE
+	chmod 0644 "/etc/systemd/system/oka-cyber-audit.service.new"
+	mv -f "/etc/systemd/system/oka-cyber-audit.service.new" "/etc/systemd/system/oka-cyber-audit.service"
+
+	install -d -m 0755 "/etc/systemd/system"
+	cat >"/etc/systemd/system/oka-cyber-audit.path.new" <<'AUDIT_PATH'
+[Unit]
+Description=Watch Oka Cyber command collection opt-in
+
+[Path]
+PathChanged=/run/oka-cyber-agent/commands.enabled
+Unit=oka-cyber-audit.service
+
+[Install]
+WantedBy=multi-user.target
+AUDIT_PATH
+	chmod 0644 "/etc/systemd/system/oka-cyber-audit.path.new"
+	mv -f "/etc/systemd/system/oka-cyber-audit.path.new" "/etc/systemd/system/oka-cyber-audit.path"
+
+	install -d -m 0755 "/usr/share/oka-cyber-agent"
+	cat >"/usr/share/oka-cyber-agent/commands.rules.new" <<'AUDIT_RULES'
+# Owned by Oka Cyber Agent. The helper replaces only the rules with this key.
+-a always,exit -F arch=b64 -S execve,execveat -F auid>=1000 -F auid!=unset -k oka_cyber_commands
+-a always,exit -F arch=b64 -S execve,execveat -F auid=0 -k oka_cyber_commands
+-a always,exit -F arch=b32 -S execve,execveat -F auid>=1000 -F auid!=unset -k oka_cyber_commands
+-a always,exit -F arch=b32 -S execve,execveat -F auid=0 -k oka_cyber_commands
+AUDIT_RULES
+	chmod 0644 "/usr/share/oka-cyber-agent/commands.rules.new"
+	mv -f "/usr/share/oka-cyber-agent/commands.rules.new" "/usr/share/oka-cyber-agent/commands.rules"
+
 }
 
 # A half written enrollment (only one of the two files) goes to enroll, which stops and asks for --force.
@@ -294,6 +364,9 @@ start_service() {
 		return
 	fi
 	systemctl daemon-reload
+	# The helper also runs once at boot, where no flag exists yet, so a rule kept in rules.d by a crash or a
+	# shutdown is removed even when commands were turned off meanwhile or the agent is disabled.
+	systemctl enable oka-cyber-audit.service >/dev/null 2>&1
 	if [ -n "$FIRST_INSTALL" ]; then
 		systemctl enable oka-cyber-agent.service >/dev/null 2>&1
 		systemctl restart oka-cyber-agent.service

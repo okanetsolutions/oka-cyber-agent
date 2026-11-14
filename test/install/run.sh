@@ -32,9 +32,10 @@ check_disabled() {
 
 uninstall_agent() {
 	/usr/local/bin/oka-cyber-agent uninstall --yes
-	for path in /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service /etc/oka-cyber-agent /var/lib/oka-cyber-agent; do
+	for path in /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service /etc/oka-cyber-agent /var/lib/oka-cyber-agent /etc/systemd/system/oka-cyber-audit.service /etc/systemd/system/oka-cyber-audit.path /usr/share/oka-cyber-agent /run/oka-cyber-audit /etc/audit/rules.d/oka-cyber-commands.rules; do
 		[ ! -e "$path" ] || fail "$path still exists after uninstall"
 	done
+	[ ! -L /etc/systemd/system/multi-user.target.wants/oka-cyber-audit.service ] || fail "the audit helper is still enabled after uninstall"
 	! getent passwd oka-cyber >/dev/null || fail "the oka-cyber user still exists after uninstall"
 	if has_systemd; then
 		! systemctl is-active --quiet oka-cyber-agent || fail "the service still runs after uninstall"
@@ -51,6 +52,7 @@ echo "== install"
 enrollments_before=$(stat_of enrollments)
 heartbeats_before=$(stat_of heartbeats)
 install_agent "$TOKEN"
+check_audit_assets /etc/systemd/system
 /usr/local/bin/oka-cyber-agent version | grep -q 'v0.0.0-test' || fail "wrong binary installed"
 getent passwd oka-cyber >/dev/null || fail "the oka-cyber user was not created"
 [ -f /etc/systemd/system/oka-cyber-agent.service ] || fail "the systemd unit was not written"
@@ -103,6 +105,7 @@ echo "== rerun keeps the enrollment and restarts the enabled service"
 heartbeats_before=$(stat_of heartbeats)
 if has_systemd; then invocation_before=$(invocation_id); fi
 install_agent "$TOKEN"
+check_audit_assets /etc/systemd/system
 [ "$(stat_of enrollments)" -eq $((enrollments_before + 1)) ] || fail "rerunning install.sh enrolled again"
 if has_systemd; then
 	check_enabled "after a rerun"
@@ -114,6 +117,7 @@ if has_systemd; then
 	echo "== rerun keeps a service the admin disabled disabled"
 	systemctl disable --now oka-cyber-agent
 	install_agent "$TOKEN"
+check_audit_assets /etc/systemd/system
 	check_disabled "after a rerun of a disabled service"
 fi
 
@@ -128,6 +132,7 @@ fi
 if has_systemd; then check_disabled "after a failed enrollment"; fi
 heartbeats_before=$(stat_of heartbeats)
 install_agent "$TOKEN"
+check_audit_assets /etc/systemd/system
 if has_systemd; then
 	check_enabled "after a rerun that enrolled"
 	check_service_reports "$heartbeats_before"

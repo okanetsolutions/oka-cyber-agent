@@ -28,6 +28,9 @@ type Position struct {
 	Inode  uint64 `json:"inode"`
 	Offset int64  `json:"offset"`
 	Sum    uint32 `json:"sum"`
+	// BootOffset separates unknown existing bytes from subsequent appends in BootID.
+	BootID     string `json:"boot_id,omitempty"`
+	BootOffset int64  `json:"boot_offset,omitempty"`
 }
 
 // Tailer follows one file by path and inode. It is polled: every Poll returns the complete lines written
@@ -61,6 +64,9 @@ type Tailer struct {
 	missingSince time.Time
 	removed      bool
 	seen         bool
+	// liveFrom is the end observed on opening this file. Earlier bytes have unknown boot provenance.
+	liveFrom int64
+	bootID   string
 }
 
 // NewTailer starts at resume when it still points at the same file, at the end of the current file when
@@ -72,6 +78,8 @@ func NewTailer(path string, resume *Position, startAtEnd bool) *Tailer {
 
 type PollResult struct {
 	Lines []string
+	// live parallels Lines and identifies lines appended after the file was opened.
+	live []bool
 	// Removed is set once when the file has been missing for RemovedAfter.
 	Removed bool
 	// Missing is set while there is no regular file at Path, after what the old file still held was read.
@@ -81,7 +89,11 @@ type PollResult struct {
 }
 
 func (t *Tailer) Position() Position {
-	return Position{Dev: t.id.dev, Inode: t.inode, Offset: t.offset, Sum: t.sum}
+	pos := Position{Dev: t.id.dev, Inode: t.inode, Offset: t.offset, Sum: t.sum}
+	if t.bootID != "" {
+		pos.BootID, pos.BootOffset = t.bootID, t.liveFrom
+	}
+	return pos
 }
 
 func (t *Tailer) Close() {
@@ -105,7 +117,7 @@ func (t *Tailer) Poll() PollResult {
 		// The file was rotated or deleted. The old file is read to its end before the new one, still at most
 		// maxReadBytes per poll, so a backlog of several polls is read in order and nothing is skipped.
 		var more bool
-		r.Lines, more = t.read()
+		r.Lines, r.live, more = t.read()
 		if more {
 			return r
 		}
@@ -132,11 +144,13 @@ func (t *Tailer) Poll() PollResult {
 		}
 	}
 	if info.Size() < t.offset {
+		t.liveFrom = info.Size()
 		t.moveTo(0)
 		t.skipping = false
 	}
-	lines, _ := t.read()
+	lines, live, _ := t.read()
 	r.Lines = append(r.Lines, lines...)
+	r.live = append(r.live, live...)
 	return r
 }
 
@@ -180,11 +194,17 @@ func (t *Tailer) open() (fs.FileInfo, error) {
 		return nil, errHeld
 	}
 	t.file, t.id = f, id
+	t.liveFrom = size
 	continued, ok := t.files.resume(f, id, size)
 	offset := t.offset
 	switch {
 	case t.resume != nil && t.resume.Dev == id.dev && t.resume.Inode == inode && t.resume.Offset <= size && checksumBefore(f, t.resume.Offset) == t.resume.Sum:
 		offset = t.resume.Offset
+		// A restart within the same boot preserves attribution on replay. After a
+		// reboot, all bytes already present are uncertain again, including a partial line.
+		if t.bootID != "" && t.resume.BootID == t.bootID && t.resume.BootOffset >= 0 && t.resume.BootOffset <= size {
+			t.liveFrom = t.resume.BootOffset
+		}
 	case ok:
 		offset = continued
 	case t.resume != nil:
@@ -208,25 +228,28 @@ func (t *Tailer) open() (fs.FileInfo, error) {
 // them, so a line that is still being written is read again in full on the next poll. more is set when the
 // limit stopped it before the end of the file. Lines longer than maxLineBytes are cut, and the rest of such a
 // line is skipped.
-func (t *Tailer) read() (lines []string, more bool) {
+func (t *Tailer) read() (lines []string, live []bool, more bool) {
 	if t.file == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	reader := bufio.NewReaderSize(io.NewSectionReader(t.file, t.offset, maxReadBytes), maxLineBytes)
 	var consumed int64
 	for {
+		appended := t.offset+consumed >= t.liveFrom
 		chunk, err := reader.ReadSlice('\n')
 		switch {
 		case err == nil:
 			consumed += int64(len(chunk))
 			if !t.skipping {
 				lines = append(lines, strings.TrimRight(string(chunk), "\r\n"))
+				live = append(live, appended)
 			}
 			t.skipping = false
 		case errors.Is(err, bufio.ErrBufferFull):
 			consumed += int64(len(chunk))
 			if !t.skipping {
 				lines = append(lines, string(chunk))
+				live = append(live, appended)
 			}
 			t.skipping = true
 		default:
@@ -237,7 +260,7 @@ func (t *Tailer) read() (lines []string, more bool) {
 			if consumed > 0 {
 				t.moveTo(t.offset + consumed)
 			}
-			return lines, more
+			return lines, live, more
 		}
 	}
 }

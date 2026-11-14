@@ -186,3 +186,66 @@ func TestSpoolReplaceSurvivesAStop(t *testing.T) {
 		t.Fatalf("spool = %v, %v, want the two parts only", entries, err)
 	}
 }
+
+func commandBatchOf(n int, cursor string) Batch {
+	b := Batch{ID: NewBatchID(), Checkpoint: Checkpoint{Sources: []string{SourceCommands}, AuditCursor: cursor}, CreatedAt: testNow}
+	for range n {
+		b.Events = append(b.Events, newEvent(SourceCommands, KindCommand, testNow, "/usr/bin/id [0 args]"))
+	}
+	return b
+}
+
+func TestSpoolKeepsCommandBatchesInTheirOwnStream(t *testing.T) {
+	s := Spool{Dir: filepath.Join(t.TempDir(), "spool")}
+	mixed := batchOf(1, "m")
+	mixed.Events = append(mixed.Events, commandBatchOf(1, "").Events...)
+	logs1, commands, logs2 := batchOf(1, "l1"), commandBatchOf(2, "c1"), batchOf(0, "l2")
+	for _, b := range []Batch{logs1, commands, mixed, logs2} {
+		if err := s.Append(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	skipLogs := func(st Stream) bool { return st == StreamLogs }
+	got, name, ok, err := s.OldestIn(skipLogs)
+	if err != nil || !ok || got.ID != commands.ID || StreamOf(name) != StreamCommands || name != "00000000000000000002-2-commands.json.gz" {
+		t.Fatalf("oldest command batch = %s %s %v %v", got.ID, name, ok, err)
+	}
+	if b, _, _, _ := s.OldestIn(func(st Stream) bool { return st == StreamCommands }); b.ID != logs1.ID {
+		t.Fatalf("oldest log batch = %s", b.ID)
+	}
+	if s.IsOldest(name) {
+		t.Fatal("the command batch is not first in the spool")
+	}
+
+	// Acknowledged behind an older batch, the command batch keeps only its checkpoint, in its place.
+	if err := s.MarkAcked(name, got); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, _ := s.OldestIn(skipLogs); ok {
+		t.Fatal("an acknowledged batch is sent again")
+	}
+	if _, _, ok := s.AckedHead(); ok {
+		t.Fatal("an acknowledged batch behind an unsent one is due")
+	}
+	first, firstName, _, _ := s.Oldest()
+	if first.ID != logs1.ID || !s.IsOldest(firstName) {
+		t.Fatalf("oldest = %s", first.ID)
+	}
+	if err := s.Remove(firstName); err != nil {
+		t.Fatal(err)
+	}
+	acked, ackedName, ok := s.AckedHead()
+	if !ok || acked.ID != commands.ID || len(acked.Events) != 0 || acked.Checkpoint.AuditCursor != "c1" || ackedName != "00000000000000000002.0-0-acked.json.gz" {
+		t.Fatalf("acked head = %+v %s %v", acked, ackedName, ok)
+	}
+	if newest, _ := s.Newest(); newest.ID != logs2.ID {
+		t.Fatalf("newest = %s", newest.ID)
+	}
+	if err := s.Remove(ackedName); err != nil {
+		t.Fatal(err)
+	}
+	// A batch that also holds other events waits with the other events.
+	if b, name, _, _ := s.Oldest(); b.ID != mixed.ID || StreamOf(name) != StreamLogs {
+		t.Fatalf("oldest = %s %s", b.ID, name)
+	}
+}
