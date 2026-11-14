@@ -122,6 +122,30 @@ check_audit_assets /usr/lib/systemd/system
 check_disabled "after an upgrade of a disabled service"
 admin_enable
 
+echo "== a downgrade to a version without the audit helper removes the command rule"
+# On rpm the old package's preremove runs after the older binary is installed. Stand in for that binary (it
+# rejects audit-rules) and for auditctl, so the host's audit policy is never touched.
+stub=$(mktemp -d)
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%s/auditctl.log\n' "$stub" >"$stub/auditctl"
+chmod 0755 "$stub/auditctl"
+had_audit_dir=false
+[ -d /etc/audit ] && had_audit_dir=true
+mkdir -p /etc/audit/rules.d
+mv /usr/bin/oka-cyber-agent "$stub/oka-cyber-agent"
+printf '#!/bin/sh\nexit 2\n' >/usr/bin/oka-cyber-agent
+chmod 0755 /usr/bin/oka-cyber-agent
+for arg in upgrade 1; do
+	: >/etc/audit/rules.d/oka-cyber-commands.rules
+	rm -f "$stub/auditctl.log"
+	PATH="$stub:$PATH" sh "$REPO/packaging/preremove.sh" "$arg" || fail "preremove $arg failed with an older binary"
+	[ ! -e /etc/audit/rules.d/oka-cyber-commands.rules ] || fail "preremove $arg kept the persistent command rule"
+	[ "$(cat "$stub/auditctl.log")" = "-D -k oka_cyber_commands" ] || fail "preremove $arg did not unload only the fixed key"
+done
+mv "$stub/oka-cyber-agent" /usr/bin/oka-cyber-agent
+rm -rf "$stub"
+[ "$had_audit_dir" = true ] || rm -rf /etc/audit
+! has_systemd || systemctl is-active --quiet oka-cyber-agent || fail "the downgrade check stopped the service"
+
 if command -v apt-get >/dev/null 2>&1; then
 	echo "== remove keeps the enrollment, reinstall starts the service again"
 	remove_package

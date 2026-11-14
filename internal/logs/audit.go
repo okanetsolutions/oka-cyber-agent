@@ -11,7 +11,6 @@ import (
 )
 
 const (
-	auditKey         = "oka_cyber_commands"
 	maxAuditPending  = 1024
 	maxAuditSessions = 4096
 )
@@ -83,6 +82,9 @@ func auditFields(text string) (map[string]string, bool) {
 			} else {
 				value, text = text[:end], text[end:]
 			}
+			if key == "subj" {
+				text = skipLabelWords(text)
+			}
 		}
 		switch key {
 		case "msg":
@@ -96,7 +98,7 @@ func auditFields(text string) (map[string]string, bool) {
 				}
 				out[k] = v
 			}
-		case "argc", "auid", "ses", "tty", "pid", "ppid", "success", "key", "exe", "cwd", "terminal", "res", "acct":
+		case "argc", "auid", "ses", "tty", "pid", "ppid", "success", "exe", "cwd", "terminal", "res", "acct":
 			if _, exists := out[key]; exists {
 				return nil, false
 			}
@@ -114,6 +116,22 @@ func auditFields(text string) (map[string]string, bool) {
 		}
 	}
 	return out, true
+}
+
+// skipLabelWords skips the words without "=" that follow an unquoted subj value. The kernel logs an
+// AppArmor label raw, with its mode after a blank on kernels up to 5.x: subj=/usr/bin/man (enforce).
+func skipLabelWords(text string) string {
+	for {
+		rest := strings.TrimLeft(text, " \t")
+		end := strings.IndexAny(rest, " \t")
+		if end < 0 {
+			end = len(rest)
+		}
+		if end == 0 || strings.Contains(rest[:end], "=") {
+			return text
+		}
+		text = rest[end:]
+	}
 }
 
 func auditNumber(value string) bool {
@@ -224,7 +242,7 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 			return Event{}, false
 		}
 		pending.syscall = true
-		for _, k := range []string{"auid", "ses", "tty", "pid", "ppid", "success", "key", "exe"} {
+		for _, k := range []string{"auid", "ses", "tty", "pid", "ppid", "success", "exe"} {
 			pending.fields[k] = f[k]
 		}
 	case "EXECVE":
@@ -254,8 +272,10 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 		}
 		return Event{}, false
 	}
+	// Any rule key is accepted: the kernel records only the key of the first matching exit rule, so an
+	// execve rule the host loaded before ours labels every exec. An EXECVE record proves an exec either way.
 	session, exists := p.sessions[auditSessionKey(e, f["ses"])]
-	if !exists || !session.Interactive || session.AUID != f["auid"] || f["success"] != "yes" || f["key"] != auditKey ||
+	if !exists || !session.Interactive || session.AUID != f["auid"] || f["success"] != "yes" ||
 		!interactiveTTY(f["tty"]) || !strings.HasPrefix(f["exe"], "/") || !strings.HasPrefix(f["cwd"], "/") {
 		return Event{}, false
 	}

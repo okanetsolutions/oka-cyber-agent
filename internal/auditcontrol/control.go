@@ -100,15 +100,20 @@ func (h Helper) apply(ctx context.Context, run func(context.Context, string, ...
 		return h.status("rule_write_failed")
 	}
 	_, err = run(ctx, "auditctl", "-D", "-k", "oka_cyber_commands")
-	if err == nil {
+	loading := err == nil
+	if loading {
 		_, err = run(ctx, "auditctl", "-R", RulePath)
 	}
 	if err != nil {
 		if removeErr := os.Remove(h.path(RulePath)); removeErr != nil {
 			return h.status("rule_remove_failed")
 		}
-	}
-	if err != nil {
+		// auditctl -R stops at the first rejected line but keeps the lines it already loaded.
+		if loading {
+			if _, err := run(ctx, "auditctl", "-D", "-k", "oka_cyber_commands"); err != nil {
+				return h.status("rule_remove_failed")
+			}
+		}
 		return h.status("rule_apply_failed")
 	}
 	return h.status("on")

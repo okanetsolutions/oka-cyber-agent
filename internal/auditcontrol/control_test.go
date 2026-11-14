@@ -175,6 +175,47 @@ func TestHelperReportsFailuresAndRejectsFlagContent(t *testing.T) {
 	}
 }
 
+func TestHelperUnloadsAPartlyLoadedRuleSet(t *testing.T) {
+	for _, tc := range []struct {
+		name, want   string
+		cleanupFails bool
+	}{
+		{name: "unloaded", want: "rule_apply_failed"},
+		{name: "unload fails", want: "rule_remove_failed", cleanupFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := helperHost(t)
+			if err := os.WriteFile(h.path(FlagPath), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var calls []string
+			h.Run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				calls = append(calls, strings.Join(args, " "))
+				switch {
+				case args[0] == "-s":
+					return []byte("enabled 1\npid 123\n"), nil
+				case args[0] == "-R":
+					return nil, errors.New("line 3 rejected after lines 1 and 2 loaded")
+				case tc.cleanupFails && len(calls) > 3:
+					return nil, errors.New("locked")
+				}
+				return nil, nil
+			}
+			if err := h.Apply(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"-s", "-D -k oka_cyber_commands", "-R " + RulePath, "-D -k oka_cyber_commands"}
+			if !slices.Equal(calls, want) {
+				t.Fatalf("calls = %q", calls)
+			}
+			b, _ := os.ReadFile(h.path(StatusPath))
+			if _, err := os.Lstat(h.path(RulePath)); string(b) != tc.want+"\n" || err == nil {
+				t.Fatalf("status = %q, persistent rule kept: %v", b, err == nil)
+			}
+		})
+	}
+}
+
 func TestHelperNeverFollowsFlagOrRuleSymlinks(t *testing.T) {
 	h := helperHost(t)
 	target := filepath.Join(h.Root, "do-not-touch")

@@ -92,7 +92,6 @@ func TestAuditCommandRequiresSSHInteractiveLogin(t *testing.T) {
 		{name: "no tty", syscall: strings.Replace(commandSyscall, "tty=pts1", "tty=(none)", 1), own: true},
 		{name: "wrong session", syscall: strings.Replace(commandSyscall, "ses=7", "ses=8", 1), own: true},
 		{name: "failed exec", syscall: strings.Replace(commandSyscall, "success=yes", "success=no", 1), own: true},
-		{name: "unrelated rule", syscall: strings.Replace(commandSyscall, auditKey, "other", 1), own: true},
 		{name: "agent child", syscall: strings.Replace(commandSyscall, "ppid=401", "ppid="+strconv.Itoa(os.Getpid()), 1), own: true},
 		{name: "agent executable", syscall: strings.Replace(commandSyscall, "/usr/bin/curl", "/usr/bin/oka-cyber-agent", 1), own: true},
 	} {
@@ -127,6 +126,59 @@ func TestAuditCommandRequiresSSHInteractiveLogin(t *testing.T) {
 	root.add(auditEntry("1", "USER_LOGIN", `auid=0 ses=7 msg='exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`))
 	if len(commandAudit(root, "2", strings.Replace(commandSyscall, "auid=1000", "auid=0", 1))) != 1 {
 		t.Fatal("root SSH login excluded")
+	}
+}
+
+func TestAuditCommandUnderAnEarlierHostExecveRule(t *testing.T) {
+	// The kernel keeps only the key of the first matching exit rule, so a host rule loaded before ours
+	// labels every exec with its own key (or none).
+	for _, key := range []string{`key="exec"`, `key=(null)`, `key=6578656301726F6F74636D64`} {
+		p := newAuditParser(nil, "")
+		loginAudit(p)
+		events := commandAudit(p, "2", strings.Replace(commandSyscall, `key="oka_cyber_commands"`, key, 1))
+		if len(events) != 1 || events[0].Fields["executable"] != "/usr/bin/curl" {
+			t.Fatalf("events = %+v for %s", events, key)
+		}
+	}
+}
+
+func TestAuditAppArmorSubjectLabels(t *testing.T) {
+	b, err := os.ReadFile("testdata/audit/apparmor-subj.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The real exec ran outside a session; give it an SSH login and a PTY to check the whole event.
+	inSession := strings.NewReplacer("auid=4294967295", "auid=1000", "ses=4294967295", "ses=7", "tty=(none)", "tty=pts1")
+	p := newAuditParser(nil, "")
+	p.add(auditEntry("1", "USER_LOGIN", `pid=300 uid=0 auid=1000 ses=7 subj=/usr/sbin/sshd (enforce) msg='op=login acct="alice" exe="/usr/sbin/sshd" terminal=/dev/pts/1 res=success'`))
+	if len(p.sessions) != 1 {
+		t.Fatalf("confined sshd login = %+v", p.sessions)
+	}
+	var events []Event
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		head, text, _ := strings.Cut(line, "): ")
+		kind := strings.TrimPrefix(strings.Fields(head)[0], "type=")
+		f, ok := auditFields(text)
+		if !ok || kind != "EXECVE" && kind != "CWD" && f["exe"] == "" {
+			t.Fatalf("%s fields = %+v, %v", kind, f, ok)
+		}
+		if !strings.HasSuffix(head, ":1590") {
+			continue
+		}
+		if kind == "SYSCALL" {
+			text = inSession.Replace(text)
+		}
+		if event, ok := p.add(auditEntry("1590", kind, text)); ok {
+			events = append(events, event)
+		}
+	}
+	if len(events) != 1 || events[0].Fields["executable"] != "/usr/bin/bash" || events[0].Fields["arg_count"] != 3 {
+		t.Fatalf("confined exec events = %+v", events)
+	}
+	for _, text := range []string{`ses=7 (enforce) auid=1000`, `subj=a (enforce) ses=7 ses=8`} {
+		if _, ok := auditFields(text); ok {
+			t.Fatalf("malformed record accepted: %s", text)
+		}
 	}
 }
 
