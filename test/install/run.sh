@@ -35,6 +35,7 @@ uninstall_agent() {
 	for path in /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service /etc/oka-cyber-agent /var/lib/oka-cyber-agent /etc/systemd/system/oka-cyber-audit.service /etc/systemd/system/oka-cyber-audit.path /usr/share/oka-cyber-agent /run/oka-cyber-audit /etc/audit/rules.d/oka-cyber-commands.rules; do
 		[ ! -e "$path" ] || fail "$path still exists after uninstall"
 	done
+	[ ! -L /etc/systemd/system/multi-user.target.wants/oka-cyber-audit.service ] || fail "the audit helper is still enabled after uninstall"
 	! getent passwd oka-cyber >/dev/null || fail "the oka-cyber user still exists after uninstall"
 	if has_systemd; then
 		! systemctl is-active --quiet oka-cyber-agent || fail "the service still runs after uninstall"

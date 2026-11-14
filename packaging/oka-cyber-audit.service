@@ -31,3 +31,6 @@ RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

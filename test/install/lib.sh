@@ -72,6 +72,9 @@ check_audit_assets() {
  grep -qx 'CapabilityBoundingSet=' "$unit_dir/oka-cyber-agent.service" || fail "main agent gained capabilities"
  grep -qx 'NoNewPrivileges=yes' "$unit_dir/oka-cyber-agent.service" || fail "main agent lost NoNewPrivileges"
  [ ! -e /etc/audit/rules.d/oka-cyber-commands.rules ] || fail "commands were enabled without the panel opt-in"
+ if has_systemd; then
+  systemctl is-enabled --quiet oka-cyber-audit.service || fail "audit helper does not run at boot"
+ fi
  if has_systemd && systemctl is-active --quiet oka-cyber-agent.service; then
   systemctl is-active --quiet oka-cyber-audit.path || fail "audit flag watcher is not running"
  fi

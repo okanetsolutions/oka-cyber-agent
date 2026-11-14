@@ -15,7 +15,7 @@ case "$1" in
 		fi
 		if [ -d /run/systemd/system ]; then
 		 systemctl disable --now oka-cyber-audit.path >/dev/null 2>&1 || true
-		 systemctl stop oka-cyber-audit.service >/dev/null 2>&1 || true
+		 systemctl disable --now oka-cyber-audit.service >/dev/null 2>&1 || true
 		fi
 		rm -f /run/oka-cyber-agent/commands.enabled
 		/usr/bin/oka-cyber-agent audit-rules

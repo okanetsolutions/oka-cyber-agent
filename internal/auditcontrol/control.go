@@ -44,10 +44,25 @@ func (h Helper) Apply(ctx context.Context) error {
 	if run == nil {
 		run = runCommand
 	}
-	on := false
-	if info, err := os.Lstat(h.path(FlagPath)); err == nil {
-		on = info.Mode().IsRegular() && info.Size() == 0
+	// PathChanged is edge triggered and a flag change during this run joins the running start job, so
+	// apply again until the flag still says what was applied.
+	for {
+		on := h.flagOn()
+		if err := h.apply(ctx, run, on); err != nil {
+			return err
+		}
+		if h.flagOn() == on || ctx.Err() != nil {
+			return nil
+		}
 	}
+}
+
+func (h Helper) flagOn() bool {
+	info, err := os.Lstat(h.path(FlagPath))
+	return err == nil && info.Mode().IsRegular() && info.Size() == 0
+}
+
+func (h Helper) apply(ctx context.Context, run func(context.Context, string, ...string) ([]byte, error), on bool) error {
 	previous, _ := os.ReadFile(h.path(StatusPath))
 	_, ruleErr := os.Lstat(h.path(RulePath))
 	mayHaveRule := ruleErr == nil || string(previous) == "on\n" || string(previous) == "applying\n" || string(previous) == "rule_apply_failed\n" || string(previous) == "rule_remove_failed\n" || string(previous) == "rule_write_failed\n"

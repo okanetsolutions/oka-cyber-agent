@@ -305,6 +305,9 @@ RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
 AUDIT_SERVICE
 	chmod 0644 "/etc/systemd/system/oka-cyber-audit.service.new"
 	mv -f "/etc/systemd/system/oka-cyber-audit.service.new" "/etc/systemd/system/oka-cyber-audit.service"
@@ -361,6 +364,9 @@ start_service() {
 		return
 	fi
 	systemctl daemon-reload
+	# The helper also runs once at boot, where no flag exists yet, so a rule kept in rules.d by a crash or a
+	# shutdown is removed even when commands were turned off meanwhile or the agent is disabled.
+	systemctl enable oka-cyber-audit.service >/dev/null 2>&1
 	if [ -n "$FIRST_INSTALL" ]; then
 		systemctl enable oka-cyber-agent.service >/dev/null 2>&1
 		systemctl restart oka-cyber-agent.service

@@ -68,6 +68,19 @@ runuser -u oka-cyber -- rm /run/oka-cyber-agent/commands.enabled
 wait_status off
 [ ! -e /etc/audit/rules.d/oka-cyber-commands.rules ] || fail "disabling kept persistent rules"
 
+# A rule kept in rules.d by a crash or a shutdown, with no flag at boot: the boot run of the helper removes it.
+# The flag is renamed into place as the agent does: systemd 239 misses a plain create right after a delete.
+runuser -u oka-cyber -- sh -c ': >/run/oka-cyber-agent/commands.enabled.new && mv /run/oka-cyber-agent/commands.enabled.new /run/oka-cyber-agent/commands.enabled'
+wait_status on
+systemctl stop oka-cyber-agent.service oka-cyber-audit.path
+rm -f /run/oka-cyber-agent/commands.enabled /run/oka-cyber-audit/status
+systemctl show -p WantedBy --value oka-cyber-audit.service | grep -qw multi-user.target || fail "audit helper does not run at boot"
+systemctl start multi-user.target
+wait_status off
+[ ! -e /etc/audit/rules.d/oka-cyber-commands.rules ] || fail "boot kept persistent rules with collection off"
+[ "$(cat /etc/audit/rules.d/oka-helper-test.state)" = off ] || fail "boot did not unload the fixed key"
+systemctl start oka-cyber-agent.service
+
 # Upgrade replaces the units and leaves the hardened main service reporting with collection off.
 before=$(systemctl show -p MainPID --value oka-cyber-agent.service)
 install_agent

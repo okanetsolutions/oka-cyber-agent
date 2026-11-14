@@ -52,7 +52,7 @@ var newUninstaller = func(self string) agent.Uninstaller {
 				if err := u.Systemctl(ctx, "disable", "--now", auditcontrol.PathUnit); err != nil {
 					return err
 				}
-				if err := u.Systemctl(ctx, "stop", auditcontrol.Service); err != nil {
+				if err := u.Systemctl(ctx, "disable", "--now", auditcontrol.Service); err != nil {
 					return err
 				}
 			}

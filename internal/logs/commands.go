@@ -40,9 +40,14 @@ func (c *Collector) planCommands(ctx context.Context, p *Plan) {
 		skip("journal_" + reason)
 		return
 	}
-	if err := config.WriteFileAtomic(c.options.path(auditcontrol.FlagPath), nil, 0o600, nil); err != nil {
-		skip("flag_write_failed")
-		return
+	// Every rename of the flag fires the PathChanged unit, and each helper run reloads the rule, so the flag
+	// is written only when it is not already the empty regular file the helper reads as on.
+	flag := c.options.path(auditcontrol.FlagPath)
+	if info, err := os.Lstat(flag); err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
+		if err := config.WriteFileAtomic(flag, nil, 0o600, nil); err != nil {
+			skip("flag_write_failed")
+			return
+		}
 	}
 	c.commandFlag = true
 	if c.auditCh == nil {

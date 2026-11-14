@@ -92,6 +92,47 @@ func TestFixedRuleLifecycle(t *testing.T) {
 	}
 }
 
+func TestHelperAppliesAFlagChangeMadeDuringItsRun(t *testing.T) {
+	for _, startOn := range []bool{true, false} {
+		h := helperHost(t)
+		if startOn {
+			if err := os.WriteFile(h.path(FlagPath), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		flipped := false
+		var calls []string
+		h.Run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			calls = append(calls, strings.Join(args, " "))
+			if !flipped {
+				// The agent stops, or the server toggles commands, while this run is applying.
+				flipped = true
+				if startOn {
+					_ = os.Remove(h.path(FlagPath))
+				} else if err := os.WriteFile(h.path(FlagPath), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if args[0] == "-s" {
+				return []byte("enabled 1\npid 512\n"), nil
+			}
+			return nil, nil
+		}
+		if err := h.Apply(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(h.path(StatusPath))
+		_, ruleErr := os.Stat(h.path(RulePath))
+		last := calls[len(calls)-1]
+		if startOn && (string(b) != "off\n" || !errors.Is(ruleErr, os.ErrNotExist) || last != "-D -k oka_cyber_commands") {
+			t.Fatalf("flag deleted during an enable: status %q, rule %v, calls %q", b, ruleErr, calls)
+		}
+		if !startOn && (string(b) != "on\n" || ruleErr != nil || last != "-R "+RulePath) {
+			t.Fatalf("flag written during a disable: status %q, rule %v, calls %q", b, ruleErr, calls)
+		}
+	}
+}
+
 func TestHelperReportsFailuresAndRejectsFlagContent(t *testing.T) {
 	for _, tc := range []struct {
 		name, flag, status, want string

@@ -93,6 +93,45 @@ func TestCommandCollectorOptInAndJournalTrust(t *testing.T) {
 	}
 }
 
+func TestCommandFlagIsNotRewrittenOnReplan(t *testing.T) {
+	o := commandHost(t, "on")
+	start := func(ctx context.Context, _ string, _ ...string) (io.ReadCloser, func() error, error) {
+		r, w := io.Pipe()
+		go func() { <-ctx.Done(); w.Close() }()
+		return r, func() error { return nil }, nil
+	}
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	c := NewCollector([]string{SourceCommands}, o, Checkpoint{}, start, func() time.Time { return now })
+	t.Cleanup(c.Close)
+	c.Poll(context.Background())
+	first, err := os.Lstat(o.path(auditcontrol.FlagPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each rename of the flag would start the helper, which reloads the audit rule.
+	now = now.Add(2 * replanEvery)
+	c.Poll(context.Background())
+	second, err := os.Lstat(o.path(auditcontrol.FlagPath))
+	if err != nil || !os.SameFile(first, second) {
+		t.Fatalf("replan replaced the flag: %v", err)
+	}
+	// A flag the helper would read as off is replaced by the empty one.
+	if err := os.WriteFile(o.path(auditcontrol.FlagPath), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * replanEvery)
+	c.Poll(context.Background())
+	if info, err := os.Lstat(o.path(auditcontrol.FlagPath)); err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
+		t.Fatalf("flag was not restored: %v", err)
+	}
+	os.Remove(o.path(auditcontrol.FlagPath))
+	now = now.Add(2 * replanEvery)
+	c.Poll(context.Background())
+	if _, err := os.Lstat(o.path(auditcontrol.FlagPath)); err != nil {
+		t.Fatalf("missing flag was not written: %v", err)
+	}
+}
+
 func TestCommandsSkippedWhenUnavailableAndOffByDefault(t *testing.T) {
 	for _, tc := range []struct {
 		name, status, want string
