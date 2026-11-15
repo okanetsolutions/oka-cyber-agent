@@ -16,12 +16,15 @@ const ServiceName = "oka-cyber-agent.service"
 var ErrServiceNotStopped = errors.New("the agent service could not be stopped, so nothing was removed")
 
 type Uninstaller struct {
-	ConfigDir   string
-	StateDir    string
-	UnitPath    string
-	BinaryPath  string
-	User        string
-	ExtraPaths  []string
+	ConfigDir  string
+	StateDir   string
+	UnitPath   string
+	BinaryPath string
+	User       string
+	ExtraPaths []string
+	// StopUpdates turns off the daily update before anything else, so an update cannot reinstall the agent while
+	// it is being removed. A failure removes nothing.
+	StopUpdates func(context.Context) error
 	RemoveAudit func(context.Context) error
 	// Systemctl runs systemctl with args and returns an error for a non zero exit. It is nil when systemd is not
 	// running, in which case no service can be running either.
@@ -36,6 +39,11 @@ func (u Uninstaller) Uninstall(ctx context.Context) ([]string, error) {
 	for _, path := range append([]string{u.ConfigDir, u.StateDir, u.UnitPath, u.BinaryPath}, u.ExtraPaths...) {
 		if path != "" && (!filepath.IsAbs(path) || filepath.Clean(path) == "/") {
 			return nil, fmt.Errorf("refusing to remove %q", path)
+		}
+	}
+	if u.StopUpdates != nil {
+		if err := u.StopUpdates(ctx); err != nil {
+			return nil, fmt.Errorf("stop the daily update: %w", err)
 		}
 	}
 	if err := u.stopService(ctx); err != nil {

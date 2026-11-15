@@ -206,3 +206,28 @@ func TestUninstallCleansAuditBeforeDeletingHelper(t *testing.T) {
 	}
 	assertRemoved(t, helper, u.BinaryPath)
 }
+
+func TestUninstallStopsUpdatesBeforeTheService(t *testing.T) {
+	u, calls := installedTree(t)
+	u.StopUpdates = func(ctx context.Context) error { return u.Systemctl(ctx, "disable", "--now", "updates") }
+	if _, err := u.Uninstall(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"disable --now updates", "disable --now " + ServiceName, "daemon-reload"}; !slices.Equal(*calls, want) {
+		t.Fatalf("systemctl calls = %v, want %v", *calls, want)
+	}
+}
+
+func TestUninstallRemovesNothingWhenUpdatesDoNotStop(t *testing.T) {
+	u, calls := installedTree(t)
+	u.StopUpdates = func(context.Context) error { return errors.New("exit status 1") }
+	removed, err := u.Uninstall(context.Background())
+	if err == nil || len(removed) != 0 || len(*calls) != 0 {
+		t.Fatalf("removed = %v, calls = %v, err = %v; want nothing touched and an error", removed, *calls, err)
+	}
+	for _, path := range []string{u.ConfigDir, u.StateDir, u.UnitPath, u.BinaryPath} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("%s was removed: %v", path, err)
+		}
+	}
+}

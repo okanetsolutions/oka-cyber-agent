@@ -28,7 +28,7 @@ oka-cyber-agent inventory
 - Your users' data: databases, uploads, mail or application data.
 - Anything from a path chosen by the dashboard. The dashboard can only switch built in sources on and off; every file path the agent reads comes from its local configuration on your server.
 
-The main agent is read only. It never installs, updates or removes packages, never changes services, firewall rules or users, and never runs commands sent from the dashboard. The optional `commands` source has one fixed exception: an isolated systemd helper installs or removes only the packaged Oka command audit rule when its on/off flag changes.
+The main agent is read only. It never installs, updates or removes packages (the daily update of the agent itself is a separate root timer, see [Daily updates](#daily-updates)), never changes services, firewall rules or users, and never runs commands sent from the dashboard. The optional `commands` source has one fixed exception: an isolated systemd helper installs or removes only the packaged Oka command audit rule when its on/off flag changes.
 
 ## Where it sends it
 
@@ -41,7 +41,7 @@ Only to the Oka Cyber tenant URL you enroll it with, over HTTPS, authenticated w
 | `PUT /inventory` | When the inventory changed, and at least once a day. |
 | `POST /logs` | Every 30 seconds while log collection is enabled, plus an empty batch at least every 5 minutes. |
 
-Nothing is sent to any other host. There is no telemetry.
+Nothing is sent to any other host. There is no telemetry. The daily update timer (install script only) downloads releases from `github.com`; it sends nothing about the server.
 
 ## Install
 
@@ -53,15 +53,22 @@ curl -fsSL https://github.com/okanetsolutions/oka-cyber-agent/releases/latest/do
 
 The [install script](install.sh) is short; read it first if you like. It:
 
-1. resolves one release and downloads the binary for your architecture (x86_64 or aarch64) and `checksums.txt` from it,
-2. verifies the binary's SHA-256 against `checksums.txt`, and the cosign signature of `checksums.txt` when `cosign` is installed (cosign v3 or newer: the installer stops and asks you to upgrade an older cosign that cannot read the signature),
+1. resolves one release and downloads the binary for your architecture (x86_64 or aarch64), its `install.sh` and `checksums.txt` from it,
+2. verifies the SHA-256 of both against `checksums.txt`, and the cosign signature of `checksums.txt` when `cosign` is installed (cosign v3 or newer: the installer stops and asks you to upgrade an older cosign that cannot read the signature),
 3. installs `/usr/local/bin/oka-cyber-agent` and creates the `oka-cyber` system user,
 4. writes a hardened systemd unit (`/etc/systemd/system/oka-cyber-agent.service`),
-5. enrolls the server and starts the service.
+5. enrolls the server and starts the service,
+6. keeps the release's `install.sh` in `/usr/local/lib/oka-cyber-agent` and turns on the daily update timer (see [Daily updates](#daily-updates)).
 
-Rerunning it upgrades the agent, keeps the enrollment and restarts the service on the new binary. A service you disabled stays disabled. Pass `--version v1.2.3` to install a specific release. It refuses to run on a server where the agent was installed from a package: upgrade that one with your package manager.
+Rerunning it upgrades the agent, keeps the enrollment and restarts the service on the new binary (`--url` and `--token` are only needed to enroll). A service you disabled stays disabled. Pass `--version v1.2.3` to install a specific release, with `--no-auto-update` if it must stay on that release. It refuses to run on a server where the agent was installed from a package: upgrade that one with your package manager.
 
 The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It writes its state directory, `/var/lib/oka-cyber-agent`, and the empty command-source flag in its systemd runtime directory, `/run/oka-cyber-agent`. The agent token stays root only (mode 0600) and systemd hands it to the service with `LoadCredential`. systemd older than 247 (the RHEL 8 family) has no `LoadCredential`, so there `enroll` makes the token readable by the `oka-cyber` group only (mode 0640), for the install script and the packages alike.
+
+### Daily updates
+
+The install script writes `oka-cyber-agent-update.timer` and `oka-cyber-agent-update.service` to `/etc/systemd/system` and enables the timer. Once a day, at a random time within six hours after midnight (or at the next boot when the server was off), the service runs `/usr/local/lib/oka-cyber-agent/install.sh --update` as root. It resolves the latest release and downloads its `checksums.txt` (and verifies its cosign signature when `cosign` is installed). When the release's binary has the same SHA-256 as the installed one, it stops there and changes nothing. Otherwise it downloads that release's `install.sh`, checks it against the same `checksums.txt` and runs it, which upgrades the agent exactly like a rerun of the install command: the enrollment is kept, and the service is restarted unless you disabled it. A failed download or check leaves the installed agent untouched. See the runs with `journalctl -u oka-cyber-agent-update`.
+
+The update installs whatever is the latest release on GitHub, so it trusts the release pipeline the same way the install command does. Turn it off with `sudo systemctl disable --now oka-cyber-agent-update.timer` (or install with `--no-auto-update`); rerunning the install script keeps it off. Turn it on again with `sudo systemctl enable --now oka-cyber-agent-update.timer`. Servers without systemd get no timer. The packages have no daily update: upgrade them with your package manager.
 
 ### Packages
 
@@ -209,7 +216,7 @@ If you used the install script:
 sudo oka-cyber-agent uninstall
 ```
 
-This stops and disables the service and removes the unit, `/etc/oka-cyber-agent` (configuration and token), `/var/lib/oka-cyber-agent` (state), the `oka-cyber` user and `/usr/local/bin/oka-cyber-agent`. If the service cannot be stopped, it removes nothing and exits with an error.
+This turns off the daily update, stops and disables the service and removes the units, `/usr/local/lib/oka-cyber-agent`, `/etc/oka-cyber-agent` (configuration and token), `/var/lib/oka-cyber-agent` (state), the `oka-cyber` user and `/usr/local/bin/oka-cyber-agent`. If the service cannot be stopped, it removes nothing and exits with an error.
 
 If you installed a package, remove it with the package manager instead: `sudo apt purge oka-cyber-agent` or `sudo dnf remove oka-cyber-agent`. Both remove the same files and the user (`apt remove` without purge keeps the enrollment).
 

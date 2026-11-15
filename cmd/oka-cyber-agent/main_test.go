@@ -760,3 +760,43 @@ func TestLogUploadsHonourRetryAfter(t *testing.T) {
 		t.Fatalf("POST /logs sent %d times, want the batch sent again once Retry-After passed", got)
 	}
 }
+
+func TestStopUpdatesDisablesTheTimerAndStopsARunningUpdate(t *testing.T) {
+	timer := filepath.Join(t.TempDir(), updateTimer)
+	var calls []string
+	systemctl := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	if err := stopUpdates(systemctl, timer)(context.Background()); err != nil || len(calls) != 0 {
+		t.Fatalf("without a timer: calls = %q, err = %v; want nothing", calls, err)
+	}
+	if err := os.WriteFile(timer, []byte("[Timer]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := stopUpdates(systemctl, timer)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"disable --now " + updateTimer, "stop " + updateService}; !slices.Equal(calls, want) {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+	if err := stopUpdates(nil, timer)(context.Background()); err != nil {
+		t.Fatalf("without systemd: %v", err)
+	}
+	failing := func(context.Context, ...string) error { return errors.New("exit status 1") }
+	if err := stopUpdates(failing, timer)(context.Background()); err == nil {
+		t.Fatal("a timer that cannot be disabled was ignored")
+	}
+}
+
+func TestScriptUninstallerRemovesTheUpdater(t *testing.T) {
+	u := newUninstaller(installedBinaryPath)
+	for _, path := range []string{updateTimerPath, "/etc/systemd/system/" + updateService, installerLibDir} {
+		if !slices.Contains(u.ExtraPaths, path) {
+			t.Fatalf("uninstall does not remove %s: %q", path, u.ExtraPaths)
+		}
+	}
+	if u.StopUpdates == nil {
+		t.Fatal("uninstall does not stop the daily update")
+	}
+}

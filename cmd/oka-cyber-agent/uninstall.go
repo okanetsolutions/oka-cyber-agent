@@ -21,6 +21,10 @@ const (
 	installedBinaryPath = "/usr/local/bin/oka-cyber-agent"
 	packagedBinaryPath  = "/usr/bin/oka-cyber-agent"
 	installedUnitPath   = "/etc/systemd/system/" + agent.ServiceName
+	updateService       = "oka-cyber-agent-update.service"
+	updateTimer         = "oka-cyber-agent-update.timer"
+	updateTimerPath     = "/etc/systemd/system/" + updateTimer
+	installerLibDir     = "/usr/local/lib/oka-cyber-agent"
 	serviceUser         = "oka-cyber"
 )
 
@@ -45,7 +49,8 @@ var newUninstaller = func(self string) agent.Uninstaller {
 		UserExists: userExists,
 		DeleteUser: deleteUser,
 	}
-	u.ExtraPaths = []string{"/etc/systemd/system/" + auditcontrol.Service, "/etc/systemd/system/" + auditcontrol.PathUnit, "/usr/share/oka-cyber-agent", "/run/oka-cyber-audit", "/run/oka-cyber-agent"}
+	u.ExtraPaths = []string{"/etc/systemd/system/" + auditcontrol.Service, "/etc/systemd/system/" + auditcontrol.PathUnit, "/usr/share/oka-cyber-agent", "/run/oka-cyber-audit", "/run/oka-cyber-agent", updateTimerPath, "/etc/systemd/system/" + updateService, installerLibDir}
+	u.StopUpdates = stopUpdates(u.Systemctl, updateTimerPath)
 	u.RemoveAudit = func(ctx context.Context) error {
 		if u.Systemctl != nil {
 			if _, err := os.Stat(u.ExtraPaths[1]); err == nil {
@@ -103,6 +108,23 @@ func uninstallCommand(ctx context.Context, args []string, io streams) int {
 	}
 	fmt.Fprintln(io.stdout, "Oka Cyber Agent is uninstalled. Revoke this server in your Oka Cyber dashboard so its token stops working.")
 	return exitOK
+}
+
+// stopUpdates disables the daily update timer and stops an update that is running, when install.sh wrote the
+// timer at timerPath.
+func stopUpdates(systemctl func(ctx context.Context, args ...string) error, timerPath string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if systemctl == nil {
+			return nil
+		}
+		if _, err := os.Lstat(timerPath); err != nil {
+			return nil
+		}
+		if err := systemctl(ctx, "disable", "--now", updateTimer); err != nil {
+			return err
+		}
+		return systemctl(ctx, "stop", updateService)
+	}
 }
 
 func userExists(name string) bool {
