@@ -32,6 +32,7 @@ FIRST_INSTALL=""
 AUTO_UPDATE=1
 UPDATE=""
 TIMER_EXISTED=""
+RELEASE_UPDATES=""
 
 say() {
 	printf 'oka-cyber-agent: %s\n' "$*"
@@ -208,14 +209,23 @@ download_and_verify() {
 	fetch_verified install.sh
 }
 
+# Releases older than the daily update reject --update, and their binary's uninstall does not know the timer, so
+# their install.sh is not kept and the update units are removed (see write_unit).
+release_has_updates() {
+	sh "$WORK_DIR/install.sh" --update --help >/dev/null 2>&1
+}
+
 install_binary() {
 	install -d -m 0755 "$(dirname "$BINARY_PATH")"
 	install -m 0755 "$WORK_DIR/oka-cyber-agent_linux_$ARCH" "$BINARY_PATH.new"
 	mv -f "$BINARY_PATH.new" "$BINARY_PATH"
 	say "installed $("$BINARY_PATH" version)"
-	install -d -m 0755 "$LIB_DIR"
-	install -m 0755 "$WORK_DIR/install.sh" "$LIB_DIR/install.sh.new"
-	mv -f "$LIB_DIR/install.sh.new" "$LIB_DIR/install.sh"
+	if release_has_updates; then
+		RELEASE_UPDATES=1
+		install -d -m 0755 "$LIB_DIR"
+		install -m 0755 "$WORK_DIR/install.sh" "$LIB_DIR/install.sh.new"
+		mv -f "$LIB_DIR/install.sh.new" "$LIB_DIR/install.sh"
+	fi
 }
 
 create_user() {
@@ -370,6 +380,10 @@ AUDIT_RULES
 	chmod 0644 "/usr/share/oka-cyber-agent/commands.rules.new"
 	mv -f "/usr/share/oka-cyber-agent/commands.rules.new" "/usr/share/oka-cyber-agent/commands.rules"
 
+	if [ -z "$RELEASE_UPDATES" ]; then
+		remove_updates
+		return
+	fi
 	cat >"/etc/systemd/system/$UPDATE_SERVICE.new" <<'UPDATE_SERVICE'
 [Unit]
 Description=Oka Cyber Agent update to the latest release
@@ -401,6 +415,14 @@ WantedBy=timers.target
 UPDATE_TIMER
 	chmod 0644 "/etc/systemd/system/$UPDATE_TIMER.new"
 	mv -f "/etc/systemd/system/$UPDATE_TIMER.new" "/etc/systemd/system/$UPDATE_TIMER"
+}
+
+remove_updates() {
+	if has_systemd && [ -e "/etc/systemd/system/$UPDATE_TIMER" ]; then
+		systemctl disable --now "$UPDATE_TIMER" >/dev/null 2>&1 || true
+	fi
+	rm -f "/etc/systemd/system/$UPDATE_TIMER" "/etc/systemd/system/$UPDATE_SERVICE"
+	rm -rf "$LIB_DIR"
 }
 
 # A half written enrollment (only one of the two files) goes to enroll, which stops and asks for --force.
@@ -450,11 +472,16 @@ start_service() {
 # A timer the admin disabled stays disabled, like the service. The update run itself reruns this script, so it
 # never stops or restarts the timer (or the update service it runs in).
 configure_updates() {
-	if [ -z "$AUTO_UPDATE" ]; then
+	if [ -z "$RELEASE_UPDATES" ]; then
+		say "release ${VERSION:-at $RELEASE_URL} has no daily update, so there is none. Install a newer release to get it."
+	elif [ -z "$AUTO_UPDATE" ]; then
 		systemctl disable --now "$UPDATE_TIMER" >/dev/null 2>&1 || true
 		say "daily updates are off. Turn them on with: systemctl enable --now $UPDATE_TIMER"
 	elif [ -z "$TIMER_EXISTED" ]; then
-		systemctl enable --now "$UPDATE_TIMER" >/dev/null 2>&1
+		if ! systemctl enable --now "$UPDATE_TIMER" >/dev/null 2>&1; then
+			say "warning: the daily update timer could not be enabled. See: systemctl status $UPDATE_TIMER"
+			return
+		fi
 		say "daily updates are on: systemctl list-timers $UPDATE_TIMER. Turn them off with: systemctl disable --now $UPDATE_TIMER"
 	elif systemctl is-enabled --quiet "$UPDATE_TIMER"; then
 		systemctl start "$UPDATE_TIMER"
@@ -470,6 +497,12 @@ update() {
 		say "this server is not enrolled: nothing to update"
 		return
 	fi
+	# Without the binary the script install was removed, for example to replace it with the package keeping the
+	# enrollment: the update must not install it again.
+	if [ ! -f "$BINARY_PATH" ]; then
+		say "$BINARY_PATH is not installed: nothing to update"
+		return
+	fi
 	detect_arch
 	resolve_release_url
 	WORK_DIR=$(mktemp -d)
@@ -477,7 +510,7 @@ update() {
 	fetch_checksums
 	expected=$(listed_checksum "oka-cyber-agent_linux_$ARCH")
 	[ -n "$expected" ] || fail "oka-cyber-agent_linux_$ARCH is not listed in checksums.txt"
-	if [ -f "$BINARY_PATH" ] && [ "$(sha256_of "$BINARY_PATH")" = "$expected" ]; then
+	if [ "$(sha256_of "$BINARY_PATH")" = "$expected" ]; then
 		say "already up to date ($("$BINARY_PATH" version))"
 		return
 	fi

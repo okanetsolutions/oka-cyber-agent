@@ -148,7 +148,8 @@ fi
 
 echo "== an update finding the installed release changes nothing"
 if has_systemd; then invocation_before=$(invocation_id); fi
-update_agent good | grep -q 'already up to date' || fail "the update did not report the installed release as current"
+update_agent good >/dev/null || fail "the update failed without a new release"
+check_installer v0.0.0-test "after an update without a new release"
 check_version v0.0.0-test "after an update without a new release"
 if has_systemd; then
 	[ "$(invocation_id)" = "$invocation_before" ] || fail "an update without a new release restarted the service"
@@ -192,6 +193,16 @@ if has_systemd; then
 	install_agent "$TOKEN"
 	check_updates_off "after a rerun of a disabled timer"
 fi
+
+echo "== a release without the daily update removes the timer, a newer one brings it back"
+OKA_CYBER_AGENT_DOWNLOAD_URL="$TENANT/files/old" sh "$REPO/install.sh"
+for path in /usr/local/lib/oka-cyber-agent /etc/systemd/system/oka-cyber-agent-update.timer /etc/systemd/system/oka-cyber-agent-update.service; do
+	[ ! -e "$path" ] || fail "$path was kept for a release without the daily update"
+done
+if has_systemd; then check_updates_off "after installing a release without the daily update"; fi
+install_agent "$TOKEN"
+check_installer v0.0.0-test "after going back to a release with the daily update"
+if has_systemd; then check_updates_on "after going back to a release with the daily update"; fi
 
 echo "== uninstall"
 uninstall_agent

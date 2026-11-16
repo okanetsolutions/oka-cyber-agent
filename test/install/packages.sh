@@ -201,9 +201,19 @@ fi
 [ ! -e /usr/bin/oka-cyber-agent ] || fail "the refused package left /usr/bin/oka-cyber-agent"
 [ -x /usr/local/bin/oka-cyber-agent ] || fail "the refused package removed the script install"
 
-echo "== the package replaces a script install whose binary and unit were removed, keeping the enrollment"
+echo "== the script's daily update neither reinstalls a removed script agent nor lets the package in"
 admin_disable
 rm -f /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service /etc/systemd/system/oka-cyber-audit.service /etc/systemd/system/oka-cyber-audit.path
+OKA_CYBER_AGENT_DOWNLOAD_URL="$TENANT/files/good" sh /usr/local/lib/oka-cyber-agent/install.sh --update
+[ ! -e /usr/local/bin/oka-cyber-agent ] || fail "the daily update reinstalled the removed script agent"
+if install_package; then
+	fail "the package installed while the script's daily update was still there"
+fi
+[ ! -e /usr/bin/oka-cyber-agent ] || fail "the refused package left /usr/bin/oka-cyber-agent"
+
+echo "== the package replaces a script install whose binary, units and update were removed, keeping the enrollment"
+if has_systemd; then systemctl disable --now oka-cyber-agent-update.timer; fi
+rm -rf /etc/systemd/system/oka-cyber-agent-update.timer /etc/systemd/system/oka-cyber-agent-update.service /usr/local/lib/oka-cyber-agent
 before=$(stat_of_systemd heartbeats)
 install_package
 check_enrollment_files

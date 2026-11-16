@@ -762,30 +762,58 @@ func TestLogUploadsHonourRetryAfter(t *testing.T) {
 }
 
 func TestStopUpdatesDisablesTheTimerAndStopsARunningUpdate(t *testing.T) {
-	timer := filepath.Join(t.TempDir(), updateTimer)
+	dir := t.TempDir()
+	timer := filepath.Join(dir, updateTimer)
+	service := filepath.Join(dir, updateService)
 	var calls []string
 	systemctl := func(_ context.Context, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
 		return nil
 	}
-	if err := stopUpdates(systemctl, timer)(context.Background()); err != nil || len(calls) != 0 {
+	if err := stopUpdates(systemctl, timer, service)(context.Background()); err != nil || len(calls) != 0 {
 		t.Fatalf("without a timer: calls = %q, err = %v; want nothing", calls, err)
 	}
 	if err := os.WriteFile(timer, []byte("[Timer]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := stopUpdates(systemctl, timer)(context.Background()); err != nil {
+	if err := os.WriteFile(service, []byte("[Service]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := stopUpdates(systemctl, timer, service)(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"disable --now " + updateTimer, "stop " + updateService}; !slices.Equal(calls, want) {
 		t.Fatalf("calls = %q, want %q", calls, want)
 	}
-	if err := stopUpdates(nil, timer)(context.Background()); err != nil {
+	if err := stopUpdates(nil, timer, service)(context.Background()); err != nil {
 		t.Fatalf("without systemd: %v", err)
 	}
 	failing := func(context.Context, ...string) error { return errors.New("exit status 1") }
-	if err := stopUpdates(failing, timer)(context.Background()); err == nil {
+	if err := stopUpdates(failing, timer, service)(context.Background()); err == nil {
 		t.Fatal("a timer that cannot be disabled was ignored")
+	}
+}
+
+// systemctl stop fails on a service that is not loaded, so without its file uninstall must not try it.
+func TestStopUpdatesWithoutTheServiceFileOnlyDisablesTheTimer(t *testing.T) {
+	dir := t.TempDir()
+	timer := filepath.Join(dir, updateTimer)
+	if err := os.WriteFile(timer, []byte("[Timer]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	systemctl := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "stop" {
+			return errors.New("exit status 5: Unit not loaded")
+		}
+		return nil
+	}
+	if err := stopUpdates(systemctl, timer, filepath.Join(dir, updateService))(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"disable --now " + updateTimer}; !slices.Equal(calls, want) {
+		t.Fatalf("calls = %q, want %q", calls, want)
 	}
 }
 

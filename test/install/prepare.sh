@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds release like directories for install.sh (files/good and a newer files/next) and a tampered copy
-# (files/bad), then starts the fake tenant on 127.0.0.1:8090. Run from the repository root on the CI host.
+# Builds release like directories for install.sh (files/good, a newer files/next and files/old, whose install.sh
+# predates the daily update) and a tampered copy (files/bad), then starts the fake tenant on 127.0.0.1:8090. Run from the repository root on the CI host.
 set -eu
 
 work="${1:-/tmp/oka-install-test}"
@@ -15,6 +15,12 @@ for release in good:v0.0.0-test next:v0.0.1-test; do
 	printf '# %s\n' "${release#*:}" >>"$dir/install.sh"
 	(cd "$dir" && sha256sum oka-cyber-agent_linux_amd64 install.sh >checksums.txt)
 done
+
+mkdir -p "$work/files/old"
+cp "$work/files/good/oka-cyber-agent_linux_amd64" "$work/files/old/"
+grep -v '^[[:space:]]*--update)' install.sh >"$work/files/old/install.sh"
+printf '# v0.0.0-old\n' >>"$work/files/old/install.sh"
+(cd "$work/files/old" && sha256sum oka-cyber-agent_linux_amd64 install.sh >checksums.txt)
 
 # Neither the binary nor install.sh of files/bad matches its checksum.
 cp "$work/files/good/oka-cyber-agent_linux_amd64" "$work/files/good/install.sh" "$work/files/bad/"

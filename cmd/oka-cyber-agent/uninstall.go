@@ -50,7 +50,7 @@ var newUninstaller = func(self string) agent.Uninstaller {
 		DeleteUser: deleteUser,
 	}
 	u.ExtraPaths = []string{"/etc/systemd/system/" + auditcontrol.Service, "/etc/systemd/system/" + auditcontrol.PathUnit, "/usr/share/oka-cyber-agent", "/run/oka-cyber-audit", "/run/oka-cyber-agent", updateTimerPath, "/etc/systemd/system/" + updateService, installerLibDir}
-	u.StopUpdates = stopUpdates(u.Systemctl, updateTimerPath)
+	u.StopUpdates = stopUpdates(u.Systemctl, updateTimerPath, "/etc/systemd/system/"+updateService)
 	u.RemoveAudit = func(ctx context.Context) error {
 		if u.Systemctl != nil {
 			if _, err := os.Stat(u.ExtraPaths[1]); err == nil {
@@ -111,8 +111,9 @@ func uninstallCommand(ctx context.Context, args []string, io streams) int {
 }
 
 // stopUpdates disables the daily update timer and stops an update that is running, when install.sh wrote the
-// timer at timerPath.
-func stopUpdates(systemctl func(ctx context.Context, args ...string) error, timerPath string) func(context.Context) error {
+// timer at timerPath. Without the service file at servicePath no update can run, and systemctl stop would fail
+// on the unit that is not loaded, which would make uninstall impossible.
+func stopUpdates(systemctl func(ctx context.Context, args ...string) error, timerPath, servicePath string) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if systemctl == nil {
 			return nil
@@ -122,6 +123,9 @@ func stopUpdates(systemctl func(ctx context.Context, args ...string) error, time
 		}
 		if err := systemctl(ctx, "disable", "--now", updateTimer); err != nil {
 			return err
+		}
+		if _, err := os.Lstat(servicePath); err != nil {
+			return nil
 		}
 		return systemctl(ctx, "stop", updateService)
 	}
