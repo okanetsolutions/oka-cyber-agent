@@ -18,6 +18,11 @@ const (
 	MaxPackages     = 20000
 	MaxSkippedFiles = 1000
 	MaxServices     = 4096
+
+	MaxApplications           = 1000
+	MaxApplicationRuntimes    = 20
+	MaxApplicationFieldLength = 255
+	MaxRepositoryLength       = 1024
 )
 
 // ErrTooManyOSPackages means the OS packages alone exceed MaxPackages. They have no manifest path to record as
@@ -36,6 +41,9 @@ type Inventory struct {
 	Packages     []Package     `json:"packages"`
 	SkippedFiles []SkippedFile `json:"skipped_files"`
 	Services     []Service     `json:"services"`
+	// Applications is left out of the snapshot when empty: an agent with collect_application_details off sends
+	// what an agent older than the key does.
+	Applications []Application `json:"applications,omitempty"`
 	// DroppedManifests lists the manifests with packages stored on the server whose skip record Marshal had to leave
 	// out of skipped_files (see limitSkippedFiles): the server deletes what it stored for them.
 	DroppedManifests []string `json:"-"`
@@ -72,6 +80,23 @@ type Service struct {
 	Address  string `json:"address"`
 	Port     int    `json:"port"`
 	Process  string `json:"process,omitempty"`
+}
+
+// Application describes the directory the agent parsed at least one lock file in. Path is that directory as the
+// manifest paths of its packages name it; every other field is left out when the directory does not say.
+type Application struct {
+	Path       string    `json:"path"`
+	Name       string    `json:"name,omitempty"`
+	Repository string    `json:"repository,omitempty"`
+	Branch     string    `json:"branch,omitempty"`
+	Commit     string    `json:"commit,omitempty"`
+	Runtimes   []Runtime `json:"runtimes,omitempty"`
+}
+
+// Runtime is a language runtime requirement the application declares, such as php ^8.3.
+type Runtime struct {
+	Name       string `json:"name"`
+	Constraint string `json:"constraint"`
 }
 
 type Collector interface {
@@ -194,6 +219,18 @@ func (inv *Inventory) Normalize() error {
 	})
 	if len(inv.Services) > MaxServices {
 		inv.Services = inv.Services[:MaxServices]
+	}
+
+	inv.Applications = slices.DeleteFunc(inv.Applications, func(a Application) bool { return !validPath(a.Path) })
+	slices.SortStableFunc(inv.Applications, func(a, b Application) int { return cmp.Compare(a.Path, b.Path) })
+	inv.Applications = slices.CompactFunc(inv.Applications, func(a, b Application) bool { return a.Path == b.Path })
+	if len(inv.Applications) > MaxApplications {
+		inv.Applications = inv.Applications[:MaxApplications]
+	}
+	for i, a := range inv.Applications {
+		if len(a.Runtimes) > MaxApplicationRuntimes {
+			inv.Applications[i].Runtimes = a.Runtimes[:MaxApplicationRuntimes]
+		}
 	}
 	return nil
 }

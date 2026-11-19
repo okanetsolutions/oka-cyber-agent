@@ -49,8 +49,18 @@ func TestParseAppliesDefaultsForMissingKeys(t *testing.T) {
 	if cfg.ReportIntervalSeconds != DefaultReportIntervalSeconds || !cfg.CollectServices || !cfg.CollectDependencyFiles || cfg.CollectGoBinaries {
 		t.Fatalf("cfg = %+v, want defaults", cfg)
 	}
-	if !slices.Equal(cfg.ScanPaths, DefaultScanPaths) || cfg.MaxDepth != 6 || cfg.MaxFileSize != 20<<20 {
+	if !slices.Equal(cfg.ScanPaths, DefaultScanPaths) || cfg.MaxDepth != 6 || cfg.MaxFileSize != 20<<20 || !cfg.CollectApplicationDetails {
 		t.Fatalf("cfg = %+v, want the default dependency scan", cfg)
+	}
+}
+
+func TestParseTurnsApplicationDetailsOff(t *testing.T) {
+	cfg, err := Parse([]byte("url: https://acme.oka.example\nserver_id: \"7\"\ncollect_application_details: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CollectApplicationDetails || !cfg.CollectDependencyFiles {
+		t.Fatalf("cfg = %+v, want only the application details off", cfg)
 	}
 }
 

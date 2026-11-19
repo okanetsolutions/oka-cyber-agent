@@ -113,11 +113,12 @@ func collectOptions(cfg config.Config) collect.Options {
 	o := collect.Options{Root: collectRoot, CollectServices: cfg.CollectServices}
 	if cfg.CollectDependencyFiles {
 		o.Dependencies = &collect.DependencyOptions{
-			ScanPaths:    cfg.ScanPaths,
-			ExcludePaths: cfg.ExcludePaths,
-			MaxDepth:     cfg.MaxDepth,
-			MaxFileSize:  cfg.MaxFileSize,
-			GoBinaries:   cfg.CollectGoBinaries,
+			ScanPaths:          cfg.ScanPaths,
+			ExcludePaths:       cfg.ExcludePaths,
+			MaxDepth:           cfg.MaxDepth,
+			MaxFileSize:        cfg.MaxFileSize,
+			GoBinaries:         cfg.CollectGoBinaries,
+			ApplicationDetails: cfg.CollectApplicationDetails,
 		}
 	}
 	return o
