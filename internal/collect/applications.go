@@ -207,7 +207,7 @@ func (s *scan) gitHead(git *os.File, gitPath string) (branch, commit string) {
 	}
 	ref = strings.TrimSpace(ref)
 	branch, isBranch := strings.CutPrefix(ref, gitBranchPrefix)
-	if !isBranch || !validRef(ref) || detail(branch, MaxApplicationFieldLength) == "" {
+	if !isBranch || !validRef(ref) || branch == "" || detail(branch, MaxApplicationFieldLength) != branch {
 		return "", ""
 	}
 	commit, missing := s.looseRef(git, gitPath, ref)

@@ -236,6 +236,9 @@ func TestApplicationDetailsOmitWhatCannotBeRead(t *testing.T) {
 	tr.write("/srv/rejected/.git/HEAD", "ref: refs/heads/"+strings.Repeat("b", MaxApplicationFieldLength+1)+"\n")
 	tr.write("/srv/rejected/.git/config", "[remote \"origin\"]\n\turl = https://github.com/acme/"+strings.Repeat("c", MaxRepositoryLength)+".git\n")
 
+	tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/padded/Cargo.lock")
+	tr.write("/srv/padded/.git/HEAD", "ref: refs/heads/"+strings.Repeat("\u00a0", MaxApplicationFieldLength)+"main\n")
+
 	tr.copy(lockFixture("cargo/Cargo.lock"), "/srv/garbage/Cargo.lock")
 	tr.write("/srv/garbage/.git/HEAD", "ref: refs/heads/main\n")
 	tr.write("/srv/garbage/.git/refs/heads/main", "not a commit\n")
@@ -246,10 +249,11 @@ func TestApplicationDetailsOmitWhatCannotBeRead(t *testing.T) {
 	checkApplications(t, inv.Applications, []Application{
 		{Path: "/srv/garbage", Branch: "main"},
 		{Path: "/srv/oversized", Name: "@acme/storefront", Branch: "main", Commit: looseCommit, Runtimes: []Runtime{{"node", ">=24"}}},
+		{Path: "/srv/padded"},
 		{Path: "/srv/rejected", Name: "acme/rejected"},
 		{Path: "/srv/unparsable"},
 	})
-	want := map[string]int{"/srv/garbage/Cargo.lock": 9, "/srv/oversized/Cargo.lock": 9, "/srv/rejected/Cargo.lock": 9, "/srv/unparsable/Cargo.lock": 9}
+	want := map[string]int{"/srv/garbage/Cargo.lock": 9, "/srv/oversized/Cargo.lock": 9, "/srv/padded/Cargo.lock": 9, "/srv/rejected/Cargo.lock": 9, "/srv/unparsable/Cargo.lock": 9}
 	if !mapsEqual(manifests(inv), want) {
 		t.Fatalf("manifests = %v, want %v", manifests(inv), want)
 	}
