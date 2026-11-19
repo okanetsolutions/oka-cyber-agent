@@ -1,0 +1,8 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+[remote "origin"]
+	url = ssh://deploy:hunter2@git.acme.example:2222/acme/api.git
+	fetch = +refs/heads/*:refs/remotes/origin/*

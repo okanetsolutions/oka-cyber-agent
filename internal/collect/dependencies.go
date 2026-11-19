@@ -42,10 +42,14 @@ type DependencyOptions struct {
 	MaxDepth     int
 	MaxFileSize  int64
 	GoBinaries   bool
+	// ApplicationDetails also reads, in a directory with a parsed lock file, the name and runtime requirements of
+	// composer.json and package.json and the origin remote, branch and commit of .git (see scan.application).
+	ApplicationDetails bool
 }
 
 // DependencyCollector finds dependency lock files under the scan paths. It opens only the file names in
-// lockfile.Formats (plus executables when GoBinaries is on) and never follows a symlink below a scan path: every
+// lockfile.Formats (plus executables when GoBinaries is on, and the files scan.application names when
+// ApplicationDetails is on) and never follows a symlink below a scan path: every
 // directory and file is opened relative to its parent directory without following one (see safeopen.OpenAt), so
 // the path it checks against exclude_paths is the path of what it opens.
 type DependencyCollector struct {
@@ -182,6 +186,7 @@ func (s *scan) walk(ctx context.Context, dir *os.File, rel string) error {
 	if releases != nil {
 		defer releases.Close()
 	}
+	parsedLockFile := false
 	for _, d := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -205,7 +210,12 @@ func (s *scan) walk(ctx context.Context, dir *os.File, rel string) error {
 			}
 			continue
 		}
-		s.file(dir, entryRel, hostPath, d)
+		if s.file(dir, entryRel, hostPath, d) {
+			parsedLockFile = true
+		}
+	}
+	if parsedLockFile && s.options.ApplicationDetails {
+		s.application(dir, path.Join(s.hostRoot, rel))
 	}
 	return nil
 }
@@ -298,7 +308,8 @@ func entryNamed(entries []fs.DirEntry, name string) (fs.DirEntry, bool) {
 	return entries[i], true
 }
 
-func (s *scan) file(dir *os.File, rel, hostPath string, d fs.DirEntry) {
+// file tells whether d is a lock file it parsed.
+func (s *scan) file(dir *os.File, rel, hostPath string, d fs.DirEntry) bool {
 	format, isLockFile := lockfile.ForFile(d.Name())
 	_, isManifest := lockfile.Manifests[d.Name()]
 	// An exclude path may name the file under another path, such as releases/<name>/package.json for a file the
@@ -309,13 +320,15 @@ func (s *scan) file(dir *os.File, rel, hostPath string, d fs.DirEntry) {
 		s.dirs[path.Dir(rel)] = append(s.dirs[path.Dir(rel)], d.Name())
 	}
 	if excluded {
-		return
+		return false
 	}
 	if isLockFile {
-		s.lockFile(dir, hostPath, format, d)
-	} else if s.options.GoBinaries && d.Type().IsRegular() {
+		return s.lockFile(dir, hostPath, format, d)
+	}
+	if s.options.GoBinaries && d.Type().IsRegular() {
 		s.goBinary(dir, hostPath, d)
 	}
+	return false
 }
 
 // skippedDirectory leaves out installed dependency trees (their own lock files describe libraries, not the
@@ -326,28 +339,28 @@ func skippedDirectory(rel, name string) bool {
 }
 
 // lockFile reports a symlinked lock file without opening it: its target may be outside the scan path or under
-// an excluded path. A target inside a scan path is reported under its own path.
-func (s *scan) lockFile(dir *os.File, hostPath string, format lockfile.Format, d fs.DirEntry) {
+// an excluded path. A target inside a scan path is reported under its own path. It tells whether it parsed the file.
+func (s *scan) lockFile(dir *os.File, hostPath string, format lockfile.Format, d fs.DirEntry) bool {
 	if s.seen[hostPath] || s.isExcludedEntry(d) {
-		return
+		return false
 	}
 	s.seen[hostPath] = true
 	if d.Type()&fs.ModeSymlink != 0 {
 		s.inv.Skip(hostPath, ReasonSymlink)
-		return
+		return false
 	}
 	data, reason := s.read(dir, d.Name())
 	if reason == ReasonNotFound {
-		return
+		return false
 	}
 	if reason != "" {
 		s.inv.Skip(hostPath, reason)
-		return
+		return false
 	}
 	result, err := format.Parse(data)
 	if err != nil {
 		s.inv.Skip(hostPath, ReasonParseError)
-		return
+		return false
 	}
 	if result.Unresolved > 0 {
 		// Normalize drops this record when some packages of the file are sent (see Inventory.Normalize).
@@ -362,6 +375,7 @@ func (s *scan) lockFile(dir *os.File, hostPath string, format lockfile.Format, d
 			Direct:       d.Direct,
 		})
 	}
+	return true
 }
 
 // read opens a lock file the walk listed as a regular file. A symlink swapped in since is refused (ELOOP), a

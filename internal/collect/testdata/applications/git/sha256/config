@@ -1,0 +1,10 @@
+[extensions]
+	objectformat = sha256
+[core]
+	repositoryformatversion = 1
+	filemode = true
+	bare = false
+	logallrefupdates = true
+[remote "origin"]
+	url = https://github.com/acme/ledger.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
