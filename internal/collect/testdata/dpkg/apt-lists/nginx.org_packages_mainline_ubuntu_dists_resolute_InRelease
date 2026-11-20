@@ -1,0 +1,57 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Origin: nginx
+Label: nginx
+Suite: stable
+Codename: resolute
+Date: Wed, 11 Nov 2026 20:05:37 UTC
+Architectures: amd64 arm64
+Components: nginx
+Description: nginx apt repository
+MD5Sum:
+ 51ceca318b87ff79212fb5529fec96e6 150236 nginx/binary-amd64/Packages
+ c78fc15e676db95f25010a66dfa18062 31385 nginx/binary-amd64/Packages.gz
+ 3ef48e742ba54be1ec3346ff10b4be50 114 nginx/binary-amd64/Release
+ 1295d216cae7d3b2636f1590fef2ebc0 150262 nginx/binary-arm64/Packages
+ e30269d4ee38bdbf9534d3f48601e8e7 31372 nginx/binary-arm64/Packages.gz
+ 601276c11e9bcd9c561ca8626352c69f 114 nginx/binary-arm64/Release
+ b89a575102bbac4b3778b724ab855587 139476 nginx/source/Sources
+ 3947bce2d93c23694ae8e641ae110f26 22725 nginx/source/Sources.gz
+ e35785d76bcca4b12423220b79b8f760 115 nginx/source/Release
+SHA1:
+ 6eb41db01411cc5e84e7ed68faa7424a05ba87b2 150236 nginx/binary-amd64/Packages
+ 653da00fed6426be101a17c0c13416f332e3dc50 31385 nginx/binary-amd64/Packages.gz
+ f674f0704c1bb082daf390bce7644486cd2b49e4 114 nginx/binary-amd64/Release
+ d393f83e2c1b3443ee0dfdfe86e20ee4fe04ed5b 150262 nginx/binary-arm64/Packages
+ a47b9e35e9d9baadf71b14d5ae97fa1a6d610f8d 31372 nginx/binary-arm64/Packages.gz
+ 65d77cb5b124248187967b53c7d22e291248995d 114 nginx/binary-arm64/Release
+ 0a9116594edac804cdf79d671ae32dd64784bb4c 139476 nginx/source/Sources
+ d8a1b16ae0679e0e85357048d2648353c2926573 22725 nginx/source/Sources.gz
+ ce1a87bb56938647e90dd05884abc76b01874827 115 nginx/source/Release
+SHA256:
+ ff61892cfcfce71cb4fb8046976dfe09ea9a2678da448f1a8548c8a940b428ea 150236 nginx/binary-amd64/Packages
+ 2c81643a87a2f40b8c1189e9aecc7459e6a3893a40b6dd04bf0ed572452f516f 31385 nginx/binary-amd64/Packages.gz
+ c5a9a25b606c893bdfd1ad791126ec47f5b6ca8855426f37d402254cdbfe540b 114 nginx/binary-amd64/Release
+ a1d33da0b2f88dd8408bfc735a31f41fd45f9ba4d53f96afd273f3b18b8a0657 150262 nginx/binary-arm64/Packages
+ aff20849fa9edad764f0a1f235ba9cbf325b9bee83c5bb1002dc7a79b69b1a1c 31372 nginx/binary-arm64/Packages.gz
+ f13dc43d735a03ccb1aa1b74f7744376677e5ba6f931f4f2f97a11aff68dd2ed 114 nginx/binary-arm64/Release
+ 53ce13bd37b0df8630cd2c2abbdc77828e1d77cf15a89b6f52d7282660ccf7c8 139476 nginx/source/Sources
+ a399d475fa7dfa73e847b4caa61e856c580994890fdbdaf728d3b84a69d401c8 22725 nginx/source/Sources.gz
+ 8a85a2666a942de4798cecc309b2e2eb7b2a55ec72f8eb9e22e6989d2ccada84 115 nginx/source/Release
+-----BEGIN PGP SIGNATURE-----
+
+wsFzBAEBCAAnBQJq9MzECRAv0hMQtJ9rRhYhBIVApvGIM6gOnBZTpC/SExC0n2tG
+AABAwhAAltOCuooDBCpML1oR5ldYCjO5WQrXmyVWpDTbeC65+DDQjqOshDHsmgMh
+AKhwfGChIdWkzN/eqzsikWA1+ZFUVCxt9NkmTk+P1uWOFfCqfFYrzHZFmA3x6uw2
+L9AWfdbCr/FtMWRSlknK7sOrQ8rD5gfWYmUQBlu20dtKvdYe5FE66Mt5VTCvI+/4
+MnCH3JfmN6YSFkJTLl1Dw1Au6MIrs3XND3wwGFUVTAj8cBt+k1RUYeGXuRfF+GUK
+ZNLL+Lpt5L0/ZSxBNIUI8y8rJPgzE7MduHKAJW8g9GrMRdjkHFwfDPVXY5J5cK0/
+MEOqeHWJybWErugtZgfa6I3Q/RWANDZb9KXzJLk00mTYj+ak1IcfQDJPg0W6/A0U
+o0lPxO4Qa6F+RMDncPWNx16pHAzJYeGAW/ACv21xwWrhjEPAcYqKpGCaMS9OqoJO
+Dg4fU/TlMfgSDfz6vO40RbGO5LSzmPdipMDdPtnCjK3kRfwn+nvYhkTWg9jw6L+n
+CPkWoPl9ilHctux3H7Ub/uD09g9YUfsM11dh9YVp5R3OGlkNF+ExYa7VVWI9lIzh
+cds+kH4M4piCMWe7/+Bfx88rGSXBFW/r1ulb/Thjh/EtpGbPYfrpHqXXjRS5lldw
+X/8tbvgv2aI3ezMzY91uiG40gZ0JFyqahUL4JIBQPunNQKXAPMw=
+=fwP9
+-----END PGP SIGNATURE-----

@@ -2,6 +2,7 @@ package collect
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -38,6 +39,125 @@ func TestDpkgUbuntu2204(t *testing.T) {
 	ssl := findPackage(t, inv, "libssl3")
 	if ssl.Ecosystem != "Ubuntu:22.04:LTS" || ssl.Version != "3.0.2-0ubuntu1.30" || ssl.SourcePackage != "openssl" {
 		t.Fatalf("libssl3 = %+v", ssl)
+	}
+}
+
+func TestDpkgAPTOrigins(t *testing.T) {
+	const vendor = "nginx.org_packages_mainline_ubuntu_dists_resolute"
+	const vendorIndex = vendor + "_nginx_binary-amd64_Packages"
+	const vendorVersion = "1.31.9-1~resolute"
+	const distroVersion = "1.28.3-2ubuntu1"
+	fixtures := filepath.Join("testdata", "dpkg")
+	status, err := os.ReadFile(filepath.Join(fixtures, "apt.status"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, pkg, version, arch, lists, origin string
+	}{
+		{"exact vendor match with CRLF InRelease", "nginx", vendorVersion, "amd64", "", "nginx"},
+		{"exact distro match with Release", "nginx", distroVersion, "amd64", "", "Ubuntu"},
+		{"exact vendor match in flat repository", "kubectl", "1.30.9-1.1", "amd64", "", "obs://build.opensuse.org/isv:kubernetes:core:stable:v1.30/deb"},
+		{"version absent from both lists", "nginx", "1.28.3-2ubuntu1.14", "amd64", "", "nginx"},
+		{"version listed for another architecture", "nginx", distroVersion, "arm64", "", "nginx"},
+		{"InRelease takes precedence over Release", "nginx", vendorVersion, "amd64", "both release files", "nginx"},
+		{"unreadable vendor list", "nginx", vendorVersion, "amd64", "unreadable", "Ubuntu"},
+		{"compressed vendor list", "nginx", vendorVersion, "amd64", "compressed", "Ubuntu"},
+		{"missing lists directory", "nginx", vendorVersion, "amd64", "missing", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			statusFile := filepath.Join(root, dpkgStatusPath)
+			if err := os.MkdirAll(filepath.Dir(statusFile), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// Set the installed package identity in the captured status stanza.
+			installed := strings.Replace(string(status), "Package: nginx\n", "Package: "+tt.pkg+"\n", 1)
+			installed = strings.Replace(installed, "Version: "+vendorVersion, "Version: "+tt.version, 1)
+			installed = strings.Replace(installed, "Architecture: amd64", "Architecture: "+tt.arch, 1)
+			if err := os.WriteFile(statusFile, []byte(installed), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			lists := filepath.Join(root, aptListsPath)
+			if tt.lists != "missing" {
+				if err := os.CopyFS(lists, os.DirFS(filepath.Join(fixtures, "apt-lists"))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			index := filepath.Join(lists, vendorIndex)
+			switch tt.lists {
+			case "both release files":
+				copyFile(t, filepath.Join(lists, "archive.ubuntu.com_ubuntu_dists_resolute_Release"), filepath.Join(lists, vendor+"_Release"))
+			case "unreadable":
+				if os.Geteuid() == 0 {
+					t.Skip("root reads files regardless of mode")
+				}
+				if err := os.Chmod(index, 0); err != nil {
+					t.Fatal(err)
+				}
+			case "compressed":
+				if err := os.Rename(index, index+".lz4"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const ecosystem = "Ubuntu:26.04:LTS"
+			inv := &Inventory{OS: OS{Family: FamilyDebian, OSVEcosystem: ecosystem}}
+			if err := (DpkgCollector{Root: root}).Collect(context.Background(), inv); err != nil {
+				t.Fatal(err)
+			}
+			want := Package{Ecosystem: ecosystem, Name: tt.pkg, Version: tt.version, Architecture: tt.arch, SourcePackage: tt.pkg, SourceVersion: tt.version, Origin: tt.origin}
+			if got := findPackage(t, inv, tt.pkg); got != want {
+				t.Fatalf("%s = %+v, want %+v", tt.pkg, got, want)
+			}
+			if got := findPackage(t, inv, "bash"); got.Origin != "" {
+				t.Fatalf("bash origin = %q, want empty because it is absent from the lists", got.Origin)
+			}
+			raw, err := json.Marshal(inv.Packages)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rows []struct {
+				Name   string          `json:"name"`
+				Origin json.RawMessage `json:"origin"`
+			}
+			if err := json.Unmarshal(raw, &rows); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range rows {
+				var wantOrigin string
+				if row.Name == tt.pkg && tt.origin != "" {
+					wantOrigin = `"` + tt.origin + `"`
+				}
+				if got := string(row.Origin); got != wantOrigin {
+					t.Fatalf("JSON origin for %s = %q, want %q", row.Name, got, wantOrigin)
+				}
+			}
+		})
+	}
+}
+
+func TestCompareDebianVersions(t *testing.T) {
+	for _, tt := range []struct {
+		a, b string
+		want int
+	}{
+		{"1:1.0-1", "9.99-99", 1},
+		{"2:9.0-1", "10:1.0-1", -1},
+		{"1.9-1", "1.10-1", -1},
+		{"1.0-9ubuntu1", "1.0-10ubuntu1", -1},
+		{"1.0~rc1-1", "1.0-1", -1},
+		{"1.0-1~ubuntu1", "1.0-1", -1},
+		{"1.0a", "1.0+git", -1},
+		{"1.0-1-2", "1.0-9", 1},
+		{"0:1.01-0", "1.1", 0},
+		{"1.0-000001", "1.0-1", 0},
+	} {
+		if got := compareDebianVersions(tt.a, tt.b); got != tt.want {
+			t.Errorf("compareDebianVersions(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
+		if got := compareDebianVersions(tt.b, tt.a); got != -tt.want {
+			t.Errorf("compareDebianVersions(%q, %q) = %d, want %d", tt.b, tt.a, got, -tt.want)
+		}
 	}
 }
 

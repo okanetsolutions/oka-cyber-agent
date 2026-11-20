@@ -1,0 +1,43 @@
+Package: nginx
+Version: 1.31.0-1~resolute
+Architecture: amd64
+Maintainer: NGINX Packaging <nginx-packaging@f5.com>
+Installed-Size: 3934
+Depends: libc6 (>= 2.34), libcrypt1 (>= 1:4.1.0), libpcre2-8-0 (>= 10.22), libssl3t64 (>= 3.5.0), zlib1g (>= 1:1.1.4), lsb-base (>= 3.0-6)
+Recommends: logrotate
+Conflicts: nginx-common, nginx-core
+Replaces: nginx-common, nginx-core
+Provides: httpd, nginx, nginx-r1.31.0
+Filename: pool/nginx/n/nginx/nginx_1.31.0-1~resolute_amd64.deb
+Size: 1264742
+MD5sum: b27fbac2d81ae70d38f753bfb0ab4239
+SHA1: ee919a91ad1c4e12404b564a27dc55095c88bb5d
+SHA256: 335d2f4639a338ea1858153aeaa21bc57a1bc5f8308acd17523ceea9b30e0cbd
+Section: httpd
+Priority: optional
+Homepage: https://nginx.org
+Description: high performance web server
+ nginx [engine x] is an HTTP and reverse proxy server, as well as
+ a mail proxy server.
+
+Package: nginx
+Version: 1.31.9-1~resolute
+Architecture: amd64
+Maintainer: NGINX Packaging <nginx-packaging@f5.com>
+Installed-Size: 4070
+Depends: libc6 (>= 2.34), libcrypt1 (>= 1:4.1.0), libpcre2-8-0 (>= 10.22), libssl3t64 (>= 3.5.0), zlib1g (>= 1:1.1.4)
+Recommends: logrotate
+Conflicts: nginx-common, nginx-core
+Replaces: nginx-common, nginx-core
+Provides: httpd, nginx, nginx-r1.31.9
+Filename: pool/nginx/n/nginx/nginx_1.31.9-1~resolute_amd64.deb
+Size: 1311106
+MD5sum: dd573d74b2d9d9853341435b7f47e432
+SHA1: f2aafa4685c5ce7c8299f3ce78422028a715f13e
+SHA256: 014d7a06a1bf153c4e7b72e86822a15a1a80d1d1bd2138380e4f97d95aeada56
+Section: httpd
+Priority: optional
+Homepage: https://nginx.org
+Description: high performance web server
+ nginx [engine x] is an HTTP and reverse proxy server, as well as
+ a mail proxy server.

@@ -1,0 +1,61 @@
+Package: nginx
+Status: install ok installed
+Priority: optional
+Section: httpd
+Installed-Size: 4070
+Maintainer: NGINX Packaging <nginx-packaging@f5.com>
+Architecture: amd64
+Version: 1.31.9-1~resolute
+Replaces: nginx-common, nginx-core
+Provides: httpd, nginx, nginx-r1.31.9
+Depends: libc6 (>= 2.34), libcrypt1 (>= 1:4.1.0), libpcre2-8-0 (>= 10.22), libssl3t64 (>= 3.5.0), zlib1g (>= 1:1.1.4)
+Recommends: logrotate
+Conflicts: nginx-common, nginx-core
+Conffiles:
+ /etc/default/nginx a5dceca74753e64a87cde1bdff5a22f9
+ /etc/default/nginx-debug 19b6bca1280f70d9ca571b7635961253
+ /etc/init.d/nginx a624aefc32bae891d24293a1985e3958
+ /etc/init.d/nginx-debug cfecc035e4f75cbe8769aceef61ef9bf
+ /etc/logrotate.d/nginx a6fa110b571d1afc5ec6ee739ac33f5b
+ /etc/nginx/conf.d/default.conf 25c02145e4a2e1d2bc6da5d585cddd32
+ /etc/nginx/fastcgi_params 4729c30112ca3071f4650479707993ad
+ /etc/nginx/mime.types 754582375e90b09edaa6d3dbd657b3cf
+ /etc/nginx/nginx.conf 583ad3d81ca65e3d259c94d82b89bd36
+ /etc/nginx/scgi_params df8c71e25e0356ffc539742f08fddfff
+ /etc/nginx/uwsgi_params 88ac833ee8ea60904a8b3063fde791de
+Description: high performance web server
+ nginx [engine x] is an HTTP and reverse proxy server, as well as
+ a mail proxy server.
+Homepage: https://nginx.org
+
+Package: bash
+Essential: yes
+Status: install ok installed
+Priority: required
+Section: shells
+Installed-Size: 2020
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Architecture: amd64
+Multi-Arch: foreign
+Version: 5.3-2ubuntu1
+Depends: base-files (>= 2.1.12), debianutils (>= 5.6-0.1)
+Pre-Depends: libc6 (>= 2.38), libtinfo6 (>= 6)
+Recommends: bash-completion
+Suggests: bash-doc
+Conffiles:
+ /etc/bash.bashrc a2b7735b79750a503c4265166cab2f88
+ /etc/skel/.bash_logout 22bfb8c1dd94b5f3813a2b25da67463f
+ /etc/skel/.bashrc 1f98b8f3f3c8f8927eca945d59dcc1c6
+ /etc/skel/.profile f4e81ade7d6f9fb342541152d08e7a97
+Description: GNU Bourne Again SHell
+ Bash is an sh-compatible command language interpreter that executes
+ commands read from the standard input or from a file.  Bash also
+ incorporates useful features from the Korn and C shells (ksh and csh).
+ .
+ Bash is ultimately intended to be a conformant implementation of the
+ IEEE POSIX Shell and Tools specification (IEEE Working Group 1003.2).
+ .
+ The Programmable Completion Code, by Ian Macdonald, is now found in
+ the bash-completion package.
+Homepage: http://tiswww.case.edu/php/chet/bash/bashtop.html
+Original-Maintainer: Matthias Klose <doko@debian.org>
