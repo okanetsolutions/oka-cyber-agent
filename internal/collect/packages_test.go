@@ -53,16 +53,17 @@ func TestDpkgAPTOrigins(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct {
-		name, version, arch, lists, origin string
+		name, pkg, version, arch, lists, origin string
 	}{
-		{"exact vendor match with CRLF InRelease", vendorVersion, "amd64", "", "nginx"},
-		{"exact distro match with Release", distroVersion, "amd64", "", "Ubuntu"},
-		{"version absent from both lists", "1.28.3-2ubuntu1.14", "amd64", "", "nginx"},
-		{"version listed for another architecture", distroVersion, "arm64", "", "nginx"},
-		{"InRelease takes precedence over Release", vendorVersion, "amd64", "both release files", "nginx"},
-		{"unreadable vendor list", vendorVersion, "amd64", "unreadable", "Ubuntu"},
-		{"compressed vendor list", vendorVersion, "amd64", "compressed", "Ubuntu"},
-		{"missing lists directory", vendorVersion, "amd64", "missing", ""},
+		{"exact vendor match with CRLF InRelease", "nginx", vendorVersion, "amd64", "", "nginx"},
+		{"exact distro match with Release", "nginx", distroVersion, "amd64", "", "Ubuntu"},
+		{"exact vendor match in flat repository", "kubectl", "1.30.9-1.1", "amd64", "", "obs://build.opensuse.org/isv:kubernetes:core:stable:v1.30/deb"},
+		{"version absent from both lists", "nginx", "1.28.3-2ubuntu1.14", "amd64", "", "nginx"},
+		{"version listed for another architecture", "nginx", distroVersion, "arm64", "", "nginx"},
+		{"InRelease takes precedence over Release", "nginx", vendorVersion, "amd64", "both release files", "nginx"},
+		{"unreadable vendor list", "nginx", vendorVersion, "amd64", "unreadable", "Ubuntu"},
+		{"compressed vendor list", "nginx", vendorVersion, "amd64", "compressed", "Ubuntu"},
+		{"missing lists directory", "nginx", vendorVersion, "amd64", "missing", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -70,8 +71,9 @@ func TestDpkgAPTOrigins(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(statusFile), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			// Use the captured status stanza with a different installed version or architecture where needed.
-			installed := strings.Replace(string(status), "Version: "+vendorVersion, "Version: "+tt.version, 1)
+			// Set the installed package identity in the captured status stanza.
+			installed := strings.Replace(string(status), "Package: nginx\n", "Package: "+tt.pkg+"\n", 1)
+			installed = strings.Replace(installed, "Version: "+vendorVersion, "Version: "+tt.version, 1)
 			installed = strings.Replace(installed, "Architecture: amd64", "Architecture: "+tt.arch, 1)
 			if err := os.WriteFile(statusFile, []byte(installed), 0o644); err != nil {
 				t.Fatal(err)
@@ -103,9 +105,9 @@ func TestDpkgAPTOrigins(t *testing.T) {
 			if err := (DpkgCollector{Root: root}).Collect(context.Background(), inv); err != nil {
 				t.Fatal(err)
 			}
-			want := Package{Ecosystem: ecosystem, Name: "nginx", Version: tt.version, Architecture: tt.arch, SourcePackage: "nginx", SourceVersion: tt.version, Origin: tt.origin}
-			if got := findPackage(t, inv, "nginx"); got != want {
-				t.Fatalf("nginx = %+v, want %+v", got, want)
+			want := Package{Ecosystem: ecosystem, Name: tt.pkg, Version: tt.version, Architecture: tt.arch, SourcePackage: tt.pkg, SourceVersion: tt.version, Origin: tt.origin}
+			if got := findPackage(t, inv, tt.pkg); got != want {
+				t.Fatalf("%s = %+v, want %+v", tt.pkg, got, want)
 			}
 			if got := findPackage(t, inv, "bash"); got.Origin != "" {
 				t.Fatalf("bash origin = %q, want empty because it is absent from the lists", got.Origin)
@@ -123,7 +125,7 @@ func TestDpkgAPTOrigins(t *testing.T) {
 			}
 			for _, row := range rows {
 				var wantOrigin string
-				if row.Name == "nginx" && tt.origin != "" {
+				if row.Name == tt.pkg && tt.origin != "" {
 					wantOrigin = `"` + tt.origin + `"`
 				}
 				if got := string(row.Origin); got != wantOrigin {

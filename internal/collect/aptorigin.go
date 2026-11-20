@@ -41,7 +41,7 @@ func setAPTOrigins(ctx context.Context, root string, packages []Package) {
 		if !signed {
 			prefix = strings.TrimSuffix(name, "_Release")
 		}
-		if prefix == name || !strings.Contains(prefix, "_dists_") {
+		if prefix == name {
 			continue
 		}
 		if _, seen := origins[prefix]; !seen {

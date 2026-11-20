@@ -1,0 +1,30 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Archive: deb
+Codename: deb
+Origin: obs://build.opensuse.org/isv:kubernetes:core:stable:v1.30/deb
+Label: isv:kubernetes:core:stable:v1.30
+Architectures: amd64 arm64 s390x ppc64el
+Date: Wed Jun 18 19:01:24 2025
+Description: Kubernetes v1.30 (Stable) (deb)
+MD5Sum:
+ 5be1dda35367589b2598a768ecff2a55 112397 Packages
+ 3a9c2fda35e34d36278ad4d531a73d25 20264 Packages.gz
+SHA1:
+ f89081d4a1115f79732e392dd95978ae17b1294d 112397 Packages
+ c6aac84a140eabf0ca99ac203d4fc444c1174d3b 20264 Packages.gz
+SHA256:
+ ea2036c9a9007f81f44f5eea3d942cf7e41dfc58905f3c2f1426baa108594e85 112397 Packages
+ 166b0a81caa108aa41470a5d0ce4d91dbcb3f13099687bae098237e302227a97 20264 Packages.gz
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.0.7 (GNU/Linux)
+
+iQEVAwUBaFMNBCNGVNqaKWQ2AQgVpggAl8pUZ0ZHbsdFkrNU/NU11i1L64ydV6tN
+8BrERMFyLjZt5pGjZOyFKUt3tV1ouOaIoeHqtfcwezdoBFrGzOIp6DGn7CUl2IAS
+75+F84B0FZdwAePs61HnOqNMSp/9KcJEEfYTwydKC3PC/2oXzbUIbIkaMbO1snxs
+iMKmYlex73fmNhIN4GDiXbGRD1aiCdnMtgfbskPTQjA0D7CYXr8mC7N5ckOU2s0n
+FViF3HREJBhcqaAO8gf/v6CNncW2s0eRmyAe3ewcrejrKehIQ5IxIcZ08XCEFwPJ
+Tx5Xgqfwp5cIxkQqq5d5RUeE6q8cw/oUxdu6pDN00s9Tq5WqTZOeMg==
+=C2mH
+-----END PGP SIGNATURE-----
