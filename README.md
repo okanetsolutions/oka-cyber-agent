@@ -9,7 +9,7 @@ It is a single static binary with no runtime dependencies for inventory; optiona
 ## What it collects
 
 - OS facts: hostname, OS family, name and version, kernel version, CPU architecture.
-- Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine). On Red Hat Enterprise Linux it also reads which repository each package was installed from in the dnf history database, never the commands recorded there.
+- Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine). For dpkg packages it reports the repository's `Origin` from local APT metadata when available. It uses an exact name, version and architecture match, or the highest listed version of the package name if there is no exact match. On Red Hat Enterprise Linux it also reads which repository each package was installed from in the dnf history database, never the commands recorded there.
 - Application dependencies: name and resolved version of the libraries listed in common lock files, with the path of the file each one came from (see [Dependency files](#dependency-files)). You can turn this off.
 - Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. The process ID is not sent, so restarting a service does not count as an inventory change. You can turn this off.
 - Security log events, only when an admin turns log collection on for that server in the dashboard: SSH logins and session boundaries, sudo and su use, account and cron changes, suspicious web requests and application errors; a separate `commands` toggle adds interactive SSH command metadata through auditd. Lines are redacted on your server before they are sent, and normal web traffic is only sent as counts per IP and minute.
@@ -22,7 +22,7 @@ oka-cyber-agent inventory
 
 ## What it never collects
 
-- The contents of your files, other than the package databases, the dnf history database, the dependency lock files and the log files listed above.
+- The contents of your files, other than the package databases, local APT metadata, the dnf history database, the dependency lock files and the log files listed above.
 - Secrets, passwords, keys or tokens, environment variables, shell history or command line arguments of other processes.
 - The arguments of commands run with sudo and the variables sudo passes them: a sudo event carries only the executable and the number of arguments (`/usr/bin/ldapmodify [5 args]`).
 - Your users' data: databases, uploads, mail or application data.
