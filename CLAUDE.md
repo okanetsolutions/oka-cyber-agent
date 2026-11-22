@@ -43,7 +43,7 @@ These are product promises written in the README. A change that breaks one is a 
 - `testdata` directories next to the code they feed: real sample files, never generated at test time.
 - `install.sh`: the one line installer (POSIX `sh`, it runs as `curl ... | sudo sh -s --`), also kept on the host as the daily updater (`--update`). It embeds the systemd unit, which must stay identical to `packaging/oka-cyber-agent.service` apart from the binary path (`test/install/check-unit.sh` enforces it).
 - `packaging`: the main systemd unit, the command audit helper service and path unit and the `.deb`/`.rpm` maintainer scripts used by `.goreleaser.yaml`.
-- `.github/workflows`: CI, `tag.yml` with `tag.sh` (tags every merge to main that passes CI with the next patch version and dispatches the release, tested by `test/release/tag.sh`) and `release.yml` (goreleaser, cosign signature).
+- `.github/workflows`: CI, `tag.yml` with `tag.sh` (tags every merge to main that passes CI with the next patch version, or the head of main with the next minor or major version when run by hand, using the deploy key of the `release-tagging` environment, the only identity the tag ruleset lets create tags; the tag push starts the release; tested by `test/release/tag.sh`) and `release.yml` (goreleaser, cosign signature).
 - `test/faketenant` and `test/install`: a stand in for the agent API and the CI scripts that install, rerun, update, upgrade and uninstall the agent (script and packages) on Ubuntu, Debian, Rocky and RHEL 8 (systemd 239, without `LoadCredential`).
 
 Update this section in the same PR when a package is added, moved or removed.
