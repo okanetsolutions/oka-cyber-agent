@@ -20,6 +20,7 @@ RestartPreventExitStatus=77
 UMask=0077
 Nice=10
 IOSchedulingClass=idle
+MemoryMax=1G
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only

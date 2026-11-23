@@ -15,6 +15,7 @@ import (
 	"github.com/okanetsolutions/oka-cyber-agent/internal/agent"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/auditcontrol"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/config"
+	"github.com/okanetsolutions/oka-cyber-agent/internal/trustedcmd"
 )
 
 const (
@@ -137,23 +138,42 @@ func userExists(name string) bool {
 }
 
 func deleteUser(ctx context.Context, name string) error {
-	if _, err := exec.LookPath("userdel"); err == nil {
-		return exec.CommandContext(ctx, "userdel", name).Run()
+	cmd, err := trustedCommand(ctx, "userdel", name)
+	if err != nil {
+		if cmd, err = trustedCommand(ctx, "deluser", name); err != nil {
+			return err
+		}
 	}
-	return exec.CommandContext(ctx, "deluser", name).Run()
+	return cmd.Run()
+}
+
+// trustedCommand prepares a system command from the fixed system directories with a fixed environment. These
+// commands run as root, and a PATH kept by sudo or set in root's shell can hold a directory others can write to.
+func trustedCommand(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+	path, err := trustedcmd.Look(name)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = trustedcmd.Env()
+	return cmd, nil
 }
 
 // systemctl returns a runner for systemctl, or nil when systemd is not the running init system (the check
 // sd_booted does), because then no agent service can be running.
 func systemctl() func(ctx context.Context, args ...string) error {
-	if _, err := exec.LookPath("systemctl"); err != nil {
+	if _, err := trustedcmd.Look("systemctl"); err != nil {
 		return nil
 	}
 	if info, err := os.Stat("/run/systemd/system"); err != nil || !info.IsDir() {
 		return nil
 	}
 	return func(ctx context.Context, args ...string) error {
-		out, err := exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
+		cmd, err := trustedCommand(ctx, "systemctl", args...)
+		if err != nil {
+			return err
+		}
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if msg := strings.TrimSpace(string(out)); msg != "" {
 				return fmt.Errorf("%w: %s", err, msg)

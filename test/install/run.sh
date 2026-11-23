@@ -223,9 +223,12 @@ if has_systemd; then
 fi
 uninstall_agent
 
-echo "== an install under umask 077 (a hardened host) still lets the service read its configuration"
+echo "== an install under umask 077 (a hardened host) still lets the service read its configuration, with the token from a file"
 heartbeats_before=$(stat_of heartbeats)
-(umask 077 && install_agent "$TOKEN")
+token_file=$(mktemp)
+printf '%s\n' "$TOKEN" >"$token_file"
+(umask 077 && OKA_CYBER_AGENT_DOWNLOAD_URL="$TENANT/files/good" sh "$REPO/install.sh" --url "$TENANT" --token-file "$token_file" --insecure-dev)
+rm -f "$token_file"
 check_enrollment_files
 if has_systemd; then
 	check_enabled "after an install under umask 077"
