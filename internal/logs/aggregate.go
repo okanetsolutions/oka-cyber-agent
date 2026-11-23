@@ -64,8 +64,8 @@ func Suspicious(e Event) bool {
 }
 
 type sshKey struct {
-	boot, ip, user string
-	minute         time.Time
+	boot, session, ip, user string
+	minute                  time.Time
 }
 
 type commandKey struct {
@@ -85,9 +85,9 @@ type trafficKey struct {
 	minute time.Time
 }
 
-// Aggregator keeps what detection needs and condenses the noise: failed SSH logins become one event per IP,
-// user name and minute, and web requests Redact did not mark suspicious one http_traffic event per IP and
-// minute with counts per status class. Everything else passes through.
+// Aggregator keeps what detection needs and condenses the noise: failed SSH logins become one event per boot,
+// login session, IP, user name and minute, and web requests Redact did not mark suspicious one http_traffic
+// event per IP and minute with counts per status class. Everything else passes through.
 type Aggregator struct {
 	commands     map[commandKey]*Event
 	commandOrder []commandKey
@@ -133,7 +133,8 @@ func (a *Aggregator) Add(e Event) {
 		a.commandOrder = append(a.commandOrder, key)
 	case e.Kind == KindSSHLoginFailed:
 		boot, _ := e.Fields["boot_id"].(string)
-		key := sshKey{boot, e.SrcIP, e.Username, e.FirstAt.Truncate(time.Minute)}
+		session, _ := e.Fields["logind_session"].(string)
+		key := sshKey{boot, session, e.SrcIP, e.Username, e.FirstAt.Truncate(time.Minute)}
 		if existing, ok := a.ssh[key]; ok {
 			merge(existing, e)
 			return

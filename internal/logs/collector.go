@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	replanEvery    = time.Minute
-	journalBackoff = 10 * time.Second
-	journalBuffer  = 10000
-	logindWait     = 5 * time.Second
+	replanEvery       = time.Minute
+	journalBackoff    = 10 * time.Second
+	journalBuffer     = 10000
+	logindWait        = 5 * time.Second
+	unsetAuditSession = "4294967295"
 )
 
 // Checkpoint is how far every reader got: file positions by path and the journal cursor. The agent saves it
@@ -195,6 +196,13 @@ read:
 					c.logindStarts[key] = candidates[1:]
 				} else if now.Sub(pending.received) < logindWait && len(c.journalPending) < journalBuffer {
 					break
+				}
+			}
+			if e.Fields["logind_session"] == nil {
+				if entry.SystemdSession != "" {
+					e.set("logind_session", entry.SystemdSession)
+				} else if entry.AuditSession != "" && entry.AuditSession != unsetAuditSession {
+					e.set("logind_session", entry.AuditSession)
 				}
 			}
 			events = append(events, e)

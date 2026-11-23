@@ -23,13 +23,16 @@ func TestSSHSessionsPerDistribution(t *testing.T) {
 			a := NewAggregator()
 			for _, line := range readLines(t, filepath.Join("testdata", "auth", tc.fixture)) {
 				if e, ok := c.parseLine(FilePlan{Source: SourceAuth}, line); ok {
+					if _, present := e.Fields["logind_session"]; present {
+						t.Fatalf("file event acquired a journal session: %+v", e)
+					}
 					a.Add(Redact(e))
 				}
 			}
 			events := a.Flush()
 			for _, kind := range []string{KindSSHLoginSucceeded, KindSSHSessionOpened, KindSSHSessionClosed} {
 				e := findEvent(t, events, kind, nil)
-				if e.Fields["session"] != tc.pid || e.Fields["logind_session"] != nil || e.Program != tc.program || e.Source != SourceAuth || e.Username == "" || e.Count != 1 {
+				if e.Fields["session"] != tc.pid || e.Program != tc.program || e.Source != SourceAuth || e.Username == "" || e.Count != 1 {
 					t.Fatalf("%s: %+v", kind, e)
 				}
 			}
@@ -60,6 +63,73 @@ func sessionCollector(now *time.Time) *Collector {
 	c.lastPlan = *now
 	c.journalCh = make(chan JournalEntry, journalBuffer)
 	return c
+}
+
+// The fixture comes from login shells and a shell outside logind in a disposable Debian 12 container.
+func TestJournalAuthLoginSessions(t *testing.T) {
+	entries := journalFixture(t, "debian-12.auth-sessions.jsonl")
+	cases := []struct{ name, kind, session string }{
+		{"sudo", KindSudoCommand, "c1"},
+		{"failed sudo", KindSudoFailed, "c4"},
+		{"su", KindSuSession, "c1"},
+		{"useradd", KindUserCreated, "c1"},
+		{"usermod", KindUserGroupChanged, "c1"},
+		{"crontab", KindCronModified, "c3"},
+		{"audit fallback", KindSudoCommand, "51"},
+		{"systemd takes precedence", KindSudoCommand, "52"},
+		{"message text without session metadata", KindSudoCommand, ""},
+		{"forged sender with session metadata", "", ""},
+		{"unset audit session", KindSudoCommand, ""},
+	}
+	if len(entries) != len(cases)-1 {
+		t.Fatalf("fixture entries = %d, want %d", len(entries), len(cases)-1)
+	}
+	unset := entries[6]
+	unset.AuditSession = "4294967295"
+	entries = append(entries, unset)
+	entries[7].AuditSession = "53" // Distinguish the two sources to verify precedence.
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := testNow
+			c := sessionCollector(&now)
+			c.journalCh <- entries[i]
+			events := c.Poll(context.Background())
+			if tc.kind == "" {
+				if len(events) != 0 || c.UntrustedEntries() != 1 {
+					t.Fatalf("forged entry: events = %+v, untrusted = %d", events, c.UntrustedEntries())
+				}
+				return
+			}
+			if len(events) != 1 || events[0].Kind != tc.kind {
+				t.Fatalf("events = %+v, want one %s", events, tc.kind)
+			}
+			event := Redact(events[0])
+			if got, present := event.Fields["logind_session"]; present != (tc.session != "") || present && got != tc.session {
+				t.Fatalf("logind_session = %v, present = %v, want %q", got, present, tc.session)
+			}
+			if event.Fields["boot_id"] != otherBootID {
+				t.Fatalf("boot_id = %v, want %q", event.Fields["boot_id"], otherBootID)
+			}
+		})
+	}
+}
+
+func TestFailedSSHLoginsAggregateSeparatelyByLoginSession(t *testing.T) {
+	a := NewAggregator()
+	for _, session := range []string{"c1", "c2", "", "c1"} {
+		e := sshFailure("192.0.2.10", "alice", testNow)
+		e.setBootID(testBootID)
+		if session != "" {
+			e.set("logind_session", session)
+		}
+		a.Add(Redact(e))
+	}
+	events := a.Flush()
+	if len(events) != 3 || events[0].Fields["logind_session"] != "c1" || events[0].Count != 2 ||
+		events[1].Fields["logind_session"] != "c2" || events[1].Count != 1 ||
+		events[2].Fields["logind_session"] != nil || events[2].Count != 1 {
+		t.Fatalf("failed login aggregates: %+v", events)
+	}
 }
 
 // Debian logs pam_unix's open before logind's New session, Rocky logs logind first (pam_systemd comes
@@ -301,6 +371,8 @@ func TestJournalSessionWaitIsBounded(t *testing.T) {
 func TestJournalLogindDoesNotReuseMetadata(t *testing.T) {
 	entries := sessionJournalEntries(t)
 	first, start := entries[4], entries[5]
+	first.SystemdSession = "c1"
+	first.AuditSession = "99"
 	second, next := first, start
 	second.At = second.At.Add(time.Second)
 	next.At = next.At.Add(time.Second)
