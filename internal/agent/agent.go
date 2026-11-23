@@ -199,8 +199,8 @@ func (a *Agent) inventory(ctx context.Context) error {
 	}
 	a.Logger.Info("inventory sent", "packages", len(inv.Packages), "services", len(inv.Services), "changed", resp.Changed)
 	if len(inv.DroppedManifests) > 0 {
-		a.Logger.Warn("more skipped dependency files than the server accepts: Oka Cyber deleted the packages it stored for some of them",
-			"files", len(inv.DroppedManifests), "first", inv.DroppedManifests[0], "limit", collect.MaxSkippedFiles)
+		a.Logger.Warn("some skipped dependency files did not fit in the inventory. Oka Cyber deleted their stored packages",
+			"files", len(inv.DroppedManifests), "first", inv.DroppedManifests[0])
 	}
 	a.state.StoredManifests = manifestDigests(inv.StoredManifests(stored))
 	a.state.InventoryHash = hash

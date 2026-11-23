@@ -442,6 +442,46 @@ func TestMarshalDegradesWhenStoredManifestsExceedTheSkippedFilesLimit(t *testing
 	}
 }
 
+func TestMarshalReportsStoredManifestsWhoseSkipRecordsDoNotFit(t *testing.T) {
+	const kept = "/srv/a/package-lock.json"
+	dropped := "/srv/0-" + strings.Repeat("x", 80) + "/package-lock.json"
+	inv := &Inventory{
+		Packages: dependencyPackages("/srv/c/package-lock.json", 1),
+		SkippedFiles: []SkippedFile{
+			{Path: "/home/u/package-lock.json", Reason: ReasonParseError},
+			{Path: kept, Reason: ReasonParseError},
+			{Path: kept, Reason: ReasonPermissionDenied},
+			{Path: dropped, Reason: ReasonParseError},
+		},
+		Services:     []Service{},
+		Applications: []Application{{Path: "/srv/c", Name: "app"}},
+	}
+	if err := inv.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	want := *inv
+	want.SkippedFiles = []SkippedFile{{Path: kept, Reason: ReasonParseError}}
+	want.Applications = nil
+	wantData, err := json.Marshal(&want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := storedSet(kept, dropped)
+	data, err := inv.Marshal(len(wantData), stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(wantData) {
+		t.Errorf("snapshot = %s, want %s", data, wantData)
+	}
+	if !slices.Equal(inv.DroppedManifests, []string{dropped}) {
+		t.Errorf("dropped manifests = %v, want only %s", inv.DroppedManifests, dropped)
+	}
+	if got := inv.StoredManifests(stored); !slices.Equal(got, []string{kept, "/srv/c/package-lock.json"}) {
+		t.Errorf("stored manifests = %v, want the retained and reported manifests", got)
+	}
+}
+
 func TestStoredManifestsAfterASnapshot(t *testing.T) {
 	inv := &Inventory{
 		Packages: slices.Concat(osPackages(1), dependencyPackages("/srv/a/package-lock.json", 2)),
