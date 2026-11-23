@@ -442,6 +442,114 @@ func TestMarshalDegradesWhenStoredManifestsExceedTheSkippedFilesLimit(t *testing
 	}
 }
 
+func TestMarshalKeepsStoredManifestsWhenFittingTheBody(t *testing.T) {
+	const current = "/srv/current/package-lock.json"
+	kept := []SkippedFile{
+		{Path: "/srv/a/package-lock.json", Reason: ReasonParseError},
+		{Path: "/srv/b/package-lock.json", Reason: ReasonPermissionDenied},
+	}
+	optional := SkippedFile{Path: "/home/u/package-lock.json", Reason: ReasonParseError}
+	os := osPackages(1)
+	packages := slices.Concat(os, dependencyPackages(current, 1))
+	stored := storedSet(kept[0].Path, kept[1].Path, current)
+	for _, tc := range []struct {
+		name     string
+		packages []Package
+		skipped  []SkippedFile
+	}{
+		{"drop applications first", packages, slices.Concat(kept, []SkippedFile{optional})},
+		{"drop non-keeping skips next", packages, kept},
+		{"cut packages to keep stored skips", os, slices.Concat(kept, []SkippedFile{{Path: current, Reason: ReasonPackageLimit}})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inv := &Inventory{
+				Packages:     packages,
+				SkippedFiles: slices.Concat(kept, []SkippedFile{optional}),
+				Services:     []Service{},
+				Applications: []Application{{Path: "/srv/current", Name: "app"}},
+			}
+			want := &Inventory{Packages: tc.packages, SkippedFiles: slices.Clone(tc.skipped), Services: inv.Services}
+			checkMarshaledInventory(t, inv, want, want, stored)
+			if got := inv.StoredManifests(stored); !slices.Equal(got, []string{kept[0].Path, kept[1].Path, current}) {
+				t.Errorf("stored manifests = %v, want all three manifests", got)
+			}
+		})
+	}
+}
+
+func TestMarshalReservesSpaceForItsPackageLimitRecords(t *testing.T) {
+	const largest = "/srv/large/package-lock.json"
+	const smaller = "/srv/small/package-lock.json"
+	for _, tc := range []struct {
+		name   string
+		stored func(string) bool
+	}{
+		{"with stored state", storedSet(largest, smaller)},
+		{"without stored state", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			os := osPackages(1)
+			budget := &Inventory{Packages: slices.Concat(os, dependencyPackages(smaller, 2)), SkippedFiles: []SkippedFile{}, Services: []Service{}}
+			inv := &Inventory{Packages: slices.Concat(budget.Packages, dependencyPackages(largest, 3)), SkippedFiles: []SkippedFile{}, Services: []Service{}}
+			want := &Inventory{
+				Packages: os,
+				SkippedFiles: []SkippedFile{
+					{Path: largest, Reason: ReasonPackageLimit},
+					{Path: smaller, Reason: ReasonPackageLimit},
+				},
+				Services: []Service{},
+			}
+			checkMarshaledInventory(t, inv, want, budget, tc.stored)
+		})
+	}
+}
+
+func TestMarshalFailsWhenStoredSkipsAndOSPackagesAloneExceedTheBody(t *testing.T) {
+	const path = "/srv/a/package-lock.json"
+	inv := &Inventory{
+		Packages:     osPackages(1),
+		SkippedFiles: []SkippedFile{{Path: path, Reason: ReasonParseError}},
+		Services:     []Service{},
+	}
+	full, err := json.Marshal(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := inv.Marshal(len(full)-1, storedSet(path)); err == nil || len(data) != 0 {
+		t.Fatalf("Marshal = %s, %v; want an error without a snapshot", data, err)
+	}
+}
+
+func checkMarshaledInventory(t *testing.T, inv, want, budget *Inventory, stored func(string) bool) {
+	t.Helper()
+	for _, snapshot := range []*Inventory{inv, want, budget} {
+		if err := snapshot.Normalize(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	budgetData, err := json.Marshal(budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantData, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := inv.Marshal(len(budgetData), stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > len(budgetData) {
+		t.Errorf("snapshot is %d bytes, want at most %d", len(data), len(budgetData))
+	}
+	if string(data) != string(wantData) {
+		t.Errorf("snapshot = %s, want %s", data, wantData)
+	}
+	if len(inv.DroppedManifests) != 0 {
+		t.Errorf("dropped manifests = %v, want none", inv.DroppedManifests)
+	}
+}
+
 func TestStoredManifestsAfterASnapshot(t *testing.T) {
 	inv := &Inventory{
 		Packages: slices.Concat(osPackages(1), dependencyPackages("/srv/a/package-lock.json", 2)),

@@ -65,6 +65,72 @@ func newTestAgent(t *testing.T, client *fakeClient, packages *[]collect.Package)
 	}, c
 }
 
+func TestInventoryKeepsPackagesWhenOptionalRecordsExceedTheBodyLimit(t *testing.T) {
+	const manifest = "/var/www/app/package-lock.json"
+	const storedManifest = "/var/www/previous/package-lock.json"
+	packages := []collect.Package{
+		{Ecosystem: "Debian:12", Name: "bash", Version: "5.2"},
+		{Ecosystem: "npm", Name: "express", Version: "5.1.0", ManifestPath: manifest},
+	}
+	for _, section := range []string{"applications", "skipped_files"} {
+		t.Run(section, func(t *testing.T) {
+			client := &fakeClient{}
+			a, _ := newTestAgent(t, client, &packages)
+			a.state.StoredManifests = manifestDigests([]string{storedManifest})
+			inv := &collect.Inventory{
+				Packages: slices.Clone(packages),
+				Services: []collect.Service{},
+				SkippedFiles: []collect.SkippedFile{
+					{Path: storedManifest, Reason: collect.ReasonParseError},
+				},
+			}
+			count := collect.MaxApplications
+			if section == "skipped_files" {
+				count = collect.MaxSkippedFiles - 1
+			}
+			longName := strings.Repeat("&", 980)
+			for i := range count {
+				path := fmt.Sprintf("/home/example/%04d/%s", i, longName)
+				if section == "applications" {
+					inv.Applications = append(inv.Applications, collect.Application{Path: path})
+				} else {
+					inv.Skip(path+"/package-lock.json", collect.ReasonParseError)
+				}
+			}
+			if err := inv.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			full, err := json.Marshal(inv)
+			if err != nil || len(full) <= api.MaxBodyBytes {
+				t.Fatalf("full snapshot = %d bytes, err = %v; want more than %d bytes", len(full), err, api.MaxBodyBytes)
+			}
+			a.Collect = func(context.Context) (*collect.Inventory, error) { return inv, nil }
+			if err := a.inventory(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(client.inventories) != 1 || len(client.inventories[0]) > api.MaxBodyBytes {
+				t.Fatal("expected one inventory within the API body limit")
+			}
+			var sent collect.Inventory
+			if err := json.Unmarshal(client.inventories[0], &sent); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(sent.Packages, packages) {
+				t.Errorf("sent packages = %v, want %v", sent.Packages, packages)
+			}
+			if !slices.Contains(sent.SkippedFiles, collect.SkippedFile{Path: storedManifest, Reason: collect.ReasonParseError}) {
+				t.Error("skip record protecting stored packages was dropped")
+			}
+			if section == "applications" && (len(sent.Applications) == 0 || len(sent.Applications) >= collect.MaxApplications) {
+				t.Errorf("sent %d applications, want a subset", len(sent.Applications))
+			}
+			if section == "skipped_files" && (len(sent.SkippedFiles) <= 1 || len(sent.SkippedFiles) >= collect.MaxSkippedFiles) {
+				t.Errorf("sent %d skipped files, want a subset", len(sent.SkippedFiles))
+			}
+		})
+	}
+}
+
 func TestCycleSendsInventoryOnlyWhenChangedOrDaily(t *testing.T) {
 	client := &fakeClient{}
 	packages := []collect.Package{{Ecosystem: "Debian:12", Name: "bash", Version: "5.2.15-2+b7"}}

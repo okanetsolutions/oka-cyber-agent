@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -695,6 +696,71 @@ func TestInventoryIncludesDependencyFilesFromConfiguredScanPaths(t *testing.T) {
 	}
 	if len(inv.Packages) != 7 {
 		t.Fatalf("packages = %d, want 7", len(inv.Packages))
+	}
+}
+
+// The application details follow collect_application_details: on by default, and without the applications key
+// in the snapshot when it is off.
+func TestInventoryReportsApplicationDetailsUnlessTurnedOff(t *testing.T) {
+	root := t.TempDir()
+	useRoot(t, root)
+	source := filepath.Join("..", "..", "internal", "collect")
+	for src, dst := range map[string]string{
+		"testdata/hosts/debian-12/etc/os-release":   "etc/os-release",
+		"lockfile/testdata/composer/composer.lock":  "srv/shop/composer.lock",
+		"testdata/applications/composer.json":       "srv/shop/composer.json",
+		"testdata/applications/git/detached/HEAD":   "srv/shop/.git/HEAD",
+		"testdata/applications/git/detached/config": "srv/shop/.git/config",
+	} {
+		data, err := os.ReadFile(filepath.Join(source, filepath.FromSlash(src)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, dst)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dst), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := func(configuration string) map[string]json.RawMessage {
+		configDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(configDir, config.FileName), []byte(configuration), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		r := runCLI(t, "", "inventory", "--services=false", "--config-dir", configDir)
+		if r.code != exitOK {
+			t.Fatalf("inventory = %+v", r)
+		}
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(r.stdout), &keys); err != nil {
+			t.Fatal(err)
+		}
+		return keys
+	}
+
+	var applications []collect.Application
+	if err := json.Unmarshal(snapshot("scan_paths: [/srv]\n")["applications"], &applications); err != nil {
+		t.Fatal(err)
+	}
+	want := []collect.Application{{
+		Path:       "/srv/shop",
+		Name:       "acme/shop",
+		Repository: "git@github.com:acme/storefront.git",
+		Commit:     "4b5e7496a25c895d276231f9c2bd22af3dd90b73",
+		Runtimes:   []collect.Runtime{{Name: "php", Constraint: "^8.3"}},
+	}}
+	if !reflect.DeepEqual(applications, want) {
+		t.Fatalf("applications = %+v\nwant %+v", applications, want)
+	}
+
+	off := snapshot("scan_paths: [/srv]\ncollect_application_details: false\n")
+	var packages []collect.Package
+	if err := json.Unmarshal(off["packages"], &packages); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := off["applications"]; sent || len(packages) != 7 {
+		t.Fatalf("applications sent = %v with %d packages, want no applications key and the 7 packages", sent, len(packages))
 	}
 }
 

@@ -50,12 +50,13 @@ type Config struct {
 	InsecureDev           bool   `yaml:"insecure_dev,omitempty"`
 	CollectServices       bool   `yaml:"collect_services"`
 
-	CollectDependencyFiles bool     `yaml:"collect_dependency_files"`
-	ScanPaths              []string `yaml:"scan_paths"`
-	ExcludePaths           []string `yaml:"exclude_paths"`
-	MaxDepth               int      `yaml:"max_depth"`
-	MaxFileSize            int64    `yaml:"max_file_size"`
-	CollectGoBinaries      bool     `yaml:"collect_go_binaries"`
+	CollectDependencyFiles    bool     `yaml:"collect_dependency_files"`
+	ScanPaths                 []string `yaml:"scan_paths"`
+	ExcludePaths              []string `yaml:"exclude_paths"`
+	MaxDepth                  int      `yaml:"max_depth"`
+	MaxFileSize               int64    `yaml:"max_file_size"`
+	CollectGoBinaries         bool     `yaml:"collect_go_binaries"`
+	CollectApplicationDetails bool     `yaml:"collect_application_details"`
 
 	// LogPaths are the application log files the app log source reads. They only ever come from this file.
 	LogPaths []string `yaml:"log_paths"`
@@ -63,14 +64,15 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		ReportIntervalSeconds:  DefaultReportIntervalSeconds,
-		CollectServices:        true,
-		CollectDependencyFiles: true,
-		ScanPaths:              slices.Clone(DefaultScanPaths),
-		ExcludePaths:           []string{},
-		LogPaths:               []string{},
-		MaxDepth:               DefaultMaxDepth,
-		MaxFileSize:            DefaultMaxFileSize,
+		ReportIntervalSeconds:     DefaultReportIntervalSeconds,
+		CollectServices:           true,
+		CollectDependencyFiles:    true,
+		ScanPaths:                 slices.Clone(DefaultScanPaths),
+		ExcludePaths:              []string{},
+		LogPaths:                  []string{},
+		MaxDepth:                  DefaultMaxDepth,
+		MaxFileSize:               DefaultMaxFileSize,
+		CollectApplicationDetails: true,
 	}
 }
 
