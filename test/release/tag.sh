@@ -1,5 +1,5 @@
 #!/bin/sh
-# Tests .github/workflows/tag.sh against a scratch repository and a stub gh.
+# Tests release tagging against a scratch repository and checks the release workflow's tag selection.
 set -eu
 
 script="$(cd "$(dirname "$0")/../.." && pwd)/.github/workflows/tag.sh"
@@ -13,59 +13,122 @@ git config user.email test@example.invalid
 git config user.name test
 git remote add origin "$work/remote.git"
 
-cat > "$work/gh" <<'STUB'
-#!/bin/sh
-echo "$*" >> "$GH_LOG"
-STUB
-chmod +x "$work/gh"
-export GH="$work/gh" GH_LOG="$work/gh.log"
-
 fail() {
 	echo "FAIL: $*" >&2
 	exit 1
 }
+
+# A patch tag and a manual bump can point at the same commit.
+grep -Eq '^[[:space:]]+GORELEASER_CURRENT_TAG: \$\{\{ github\.ref_name \}\}[[:space:]]*$' \
+	"${script%/*}/release.yml" || fail "the release workflow must pass its triggering tag to GoReleaser"
 
 commit() {
 	git commit -q --allow-empty -m "$1"
 	git rev-parse HEAD
 }
 
+merge_to_main() {
+	git push -q origin "$1:refs/heads/main"
+	git fetch -q origin
+}
+
+remote_tags() {
+	git ls-remote --tags origin
+}
+
 expect_tag() {
 	got=$(git ls-remote --tags origin "refs/tags/$1" | cut -f 1)
 	[ "$got" = "$2" ] || fail "expected $1 at $2 on the remote, got '$got'"
-	tail -n 1 "$GH_LOG" | grep -qx "workflow run release.yml --ref $1" || fail "release.yml not dispatched on $1"
+}
+
+expect_no_release() {
+	before_remote=$(remote_tags)
+	before_local=$(git tag)
+	sh "$script" "$1" "$2" >/dev/null || fail "the $2 bump at $1 did not exit successfully"
+	[ "$(remote_tags)" = "$before_remote" ] || fail "the $2 bump at $1 pushed another tag"
+	[ "$(git tag)" = "$before_local" ] || fail "the $2 bump at $1 created another tag"
 }
 
 first=$(commit first)
+merge_to_main "$first"
 sh "$script" "$first" >/dev/null
 expect_tag v0.1.0 "$first"
 
 second=$(commit second)
+merge_to_main "$second"
 sh "$script" "$second" >/dev/null
 expect_tag v0.1.1 "$second"
 
 # A commit already contained in the latest tag is not released again.
-calls=$(wc -l < "$GH_LOG")
+before=$(remote_tags)
 sh "$script" "$first" >/dev/null
 sh "$script" "$second" >/dev/null
-[ "$(wc -l < "$GH_LOG")" = "$calls" ] || fail "an already released commit was released again"
+[ "$(remote_tags)" = "$before" ] || fail "an already released commit was released again"
 [ "$(git tag | wc -l)" -eq 2 ] || fail "an already released commit was tagged again"
 
-# Versions compare numerically, a hand made minor release is continued and other tags are ignored.
+# Versions compare numerically, an existing minor release is continued and other tags are ignored.
 git tag v0.1.9 "$second"
 git tag v0.1.10 "$second"
 third=$(commit third)
+merge_to_main "$third"
 git tag v0.2.0 "$third"
 git tag v0.3.0-rc1 "$third"
 git tag latest "$third"
 fourth=$(commit fourth)
+merge_to_main "$fourth"
 sh "$script" "$fourth" >/dev/null
 expect_tag v0.2.1 "$fourth"
 
-# A commit that is not in any tag but older than one is released on top of the latest version.
+# A commit of main whose CI finishes after main moved on is still released.
+fifth=$(commit fifth)
+sixth=$(commit sixth)
+merge_to_main "$sixth"
+sh "$script" "$fifth" >/dev/null
+expect_tag v0.2.2 "$fifth"
+
+# A commit outside main is never released, whatever its branch is called or the bump is.
 git checkout -q -b side "$first"
 side=$(commit side)
-sh "$script" "$side" >/dev/null
-expect_tag v0.2.2 "$side"
+git push -q origin "$side:refs/heads/side"
+before=$(remote_tags)
+for bump in patch minor major; do
+	if sh "$script" "$side" "$bump" >/dev/null 2>&1; then
+		fail "a commit outside main was released ($bump)"
+	fi
+done
+if sh "$script" "$sixth" 1.2.3 >/dev/null 2>&1; then
+	fail "an unknown bump was accepted"
+fi
+[ "$(remote_tags)" = "$before" ] || fail "a refused release left a tag"
+
+# A minor or major release by hand takes the head of main, also when it is the latest patch release.
+sh "$script" "$sixth" >/dev/null
+expect_tag v0.2.3 "$sixth"
+sh "$script" "$sixth" minor >/dev/null
+expect_tag v0.3.0 "$sixth"
+sh "$script" "$sixth" major >/dev/null
+expect_tag v1.0.0 "$sixth"
+
+# A bump never releases a commit older than the latest release.
+expect_no_release "$fifth" minor
+
+git checkout -q --detach "$sixth"
+seventh=$(commit seventh)
+merge_to_main "$seventh"
+sh "$script" "$seventh" minor >/dev/null
+expect_tag v1.1.0 "$seventh"
+expect_no_release "$seventh" minor
+
+eighth=$(commit eighth)
+merge_to_main "$eighth"
+sh "$script" "$eighth" major >/dev/null
+expect_tag v2.0.0 "$eighth"
+expect_no_release "$eighth" major
+
+ninth=$(commit ninth)
+merge_to_main "$ninth"
+sh "$script" "$ninth" major >/dev/null
+expect_tag v3.0.0 "$ninth"
+expect_no_release "$ninth" minor
 
 echo "tag.sh: all tests passed"

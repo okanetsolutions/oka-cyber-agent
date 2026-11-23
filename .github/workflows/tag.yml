@@ -1,14 +1,24 @@
 name: Tag
 
-# Every merge to main that passes CI becomes a patch release: this workflow tags the commit and starts
-# release.yml on the tag. A tag pushed with GITHUB_TOKEN does not start other workflows, so release.yml is
-# dispatched on the tag ref instead, which keeps the signing identity release.yml@refs/tags/v* that
-# install.sh and the README verify. Push a vX.Y.0 tag by hand for a minor or major release.
+# Every merge to main that passes CI becomes a patch release. For a minor or major release, run this
+# workflow on main and choose the bump: it releases the head of main once CI passed on it.
+#
+# A tag ruleset lets only the release deploy key create tags. The key is a secret of the release-tagging
+# environment, which accepts main only, so a workflow on another branch can neither read it nor tag. A tag
+# pushed with the key starts release.yml by itself, with the identity release.yml@refs/tags/v* that
+# install.sh and the README verify.
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Part of the version to increase
+        required: true
+        type: choice
+        options: [minor, major]
 
 permissions:
   contents: read
@@ -19,17 +29,33 @@ concurrency:
 
 jobs:
   tag:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    if: >-
+      github.ref == 'refs/heads/main' && (
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
+    environment: release-tagging
     permissions:
-      contents: write
-      actions: write
+      contents: read
+      actions: read
     steps:
+      - name: Require a successful CI run for a manual release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          passed="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push \
+            --commit "$GITHUB_SHA" --status success --json databaseId --jq length)"
+          if [ "$passed" -eq 0 ]; then
+            echo "CI has not passed on main at $GITHUB_SHA"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Tag the next patch release
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+      - name: Tag the release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: sh .github/workflows/tag.sh "$HEAD_SHA"
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          BUMP: ${{ inputs.bump || 'patch' }}
+        run: sh .github/workflows/tag.sh "$HEAD_SHA" "$BUMP"

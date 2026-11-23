@@ -1,8 +1,8 @@
 name: Release
 
-# tag.yml tags every merge to main that passes CI and dispatches this workflow on the new tag, because a
-# tag pushed with GITHUB_TOKEN does not start workflows. A dispatch from a branch is skipped: the signing
-# identity must stay release.yml@refs/tags/v*.
+# tag.yml pushes the tag with the release deploy key, which starts this workflow. It can also be run by
+# hand on an existing tag to retry a release. A dispatch from a branch is skipped: the signing identity
+# must stay release.yml@refs/tags/v*.
 on:
   push:
     tags: ["v*"]
@@ -36,3 +36,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
