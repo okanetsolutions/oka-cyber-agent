@@ -3,11 +3,8 @@ package lockfile
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"regexp"
 	"strings"
-
-	"github.com/BurntSushi/toml"
 )
 
 var pinnedRequirement = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*===?\s*([A-Za-z0-9][A-Za-z0-9.+!_-]*)$`)
@@ -15,6 +12,9 @@ var pinnedRequirement = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\
 // ParseRequirements reads requirements.txt. Only exact pins (==, ===) are resolved versions; every other
 // requirement line is counted as unresolved.
 func ParseRequirements(data []byte) (Result, error) {
+	if err := checkLines(data); err != nil {
+		return Result{}, err
+	}
 	var r Result
 	var logical strings.Builder
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -76,7 +76,7 @@ func ParsePoetryLock(data []byte) (Result, error) {
 			Source  pythonSource `toml:"source"`
 		} `toml:"package"`
 	}
-	if err := toml.Unmarshal(data, &lock); err != nil {
+	if err := unmarshalTOML(data, &lock); err != nil {
 		return Result{}, err
 	}
 	var r Result
@@ -102,7 +102,7 @@ func ParsePipfileLock(data []byte) (Result, error) {
 			Version string `json:"version"`
 		} `json:"develop"`
 	}
-	if err := json.Unmarshal(data, &lock); err != nil {
+	if err := UnmarshalJSON(data, &lock); err != nil {
 		return Result{}, err
 	}
 	var r Result
@@ -138,7 +138,7 @@ func ParseUVLock(data []byte) (Result, error) {
 			OptionalDependencies map[string][]reference `toml:"optional-dependencies"`
 		} `toml:"package"`
 	}
-	if err := toml.Unmarshal(data, &lock); err != nil {
+	if err := unmarshalTOML(data, &lock); err != nil {
 		return Result{}, err
 	}
 	declared := map[string]bool{}

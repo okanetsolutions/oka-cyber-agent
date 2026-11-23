@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"iter"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,6 +36,33 @@ var (
 	skippedDirectories = []string{"node_modules", "vendor", "bower_components", "site-packages", "dist-packages", "__pycache__"}
 	pseudoFilesystems  = []string{"/proc", "/sys", "/dev"}
 )
+
+// What one walk keeps and reads, whatever any local user planted under a scan path. A host within these limits is
+// reported as it was before them.
+const (
+	// maxWalkPackages is how many dependency packages the walk holds for Normalize to choose MaxPackages from. The
+	// lock files and Go binaries found after that are recorded as package_limit, as Normalize records those it cuts.
+	maxWalkPackages = 4 * MaxPackages
+
+	// maxGoBinaryBytes is how much of one executable is read to find its Go build info. A real Go binary needs its
+	// headers and build info section, well under a megabyte.
+	maxGoBinaryBytes = 8 << 20
+
+	directoryBatch = 1024
+)
+
+// Variables so that tests can reach them with small trees.
+var (
+	// maxWalkBytes is how much of lock files and application detail files one walk reads: 51 files of the default
+	// size limit. Past it a lock file is recorded as package_limit without being read.
+	maxWalkBytes int64 = 1 << 30
+
+	// maxDirectoryEntries is how many subdirectories and dependency files of one directory are walked. A directory
+	// with more is recorded as too_large and walked in part.
+	maxDirectoryEntries = 100_000
+)
+
+var errGoBinaryBudget = errors.New("more to read than a Go binary needs")
 
 type DependencyOptions struct {
 	ScanPaths    []string
@@ -69,6 +97,7 @@ func (c DependencyCollector) Collect(ctx context.Context, inv *Inventory) error 
 	}
 	excluded := excludedFiles(c.Root, o.ExcludePaths)
 	seen := map[string]bool{}
+	budget := &walkBudget{}
 	for _, scanPath := range o.ScanPaths {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -77,7 +106,7 @@ func (c DependencyCollector) Collect(ctx context.Context, inv *Inventory) error 
 		if !filepath.IsAbs(scanPath) || isExcluded(scanPath, o.ExcludePaths) {
 			continue
 		}
-		s := &scan{collector: c, options: o, hostRoot: scanPath, excluded: excluded, inv: inv, seen: seen, dirs: map[string][]string{}}
+		s := &scan{collector: c, options: o, hostRoot: scanPath, excluded: excluded, inv: inv, seen: seen, budget: budget, dirs: map[string][]string{}}
 		if err := s.run(ctx); err != nil {
 			return err
 		}
@@ -105,7 +134,14 @@ type scan struct {
 	excluded  []fs.FileInfo
 	inv       *Inventory
 	seen      map[string]bool
+	budget    *walkBudget
 	dirs      map[string][]string
+}
+
+// walkBudget counts what the scans of one Collect hold and read (see maxWalkPackages and maxWalkBytes).
+type walkBudget struct {
+	packages int
+	bytes    int64
 }
 
 func (s *scan) run(ctx context.Context) error {
@@ -180,7 +216,10 @@ func (s *scan) isExcludedEntry(d fs.DirEntry) bool {
 // so the walk never descends into one; and because a subdirectory is opened relative to dir without following
 // a symlink, one swapped in after the listing is refused rather than followed.
 func (s *scan) walk(ctx context.Context, dir *os.File, rel string) error {
-	entries, _ := dir.ReadDir(-1)
+	entries, complete := s.list(ctx, dir)
+	if !complete {
+		s.inv.Skip(path.Join(s.hostRoot, rel), ReasonTooLarge)
+	}
 	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	releases, release := s.liveRelease(ctx, dir, rel, entries)
 	if releases != nil {
@@ -210,7 +249,7 @@ func (s *scan) walk(ctx context.Context, dir *os.File, rel string) error {
 			}
 			continue
 		}
-		if s.file(dir, entryRel, hostPath, d) {
+		if s.file(ctx, dir, entryRel, hostPath, d) {
 			parsedLockFile = true
 		}
 	}
@@ -218,6 +257,55 @@ func (s *scan) walk(ctx context.Context, dir *os.File, rel string) error {
 		s.application(dir, path.Join(s.hostRoot, rel))
 	}
 	return nil
+}
+
+// list reads dir in batches and keeps only the entries the walk acts on, so a directory of millions of other files
+// (uploads, caches, mail) costs no memory, and at most maxDirectoryEntries of those it keeps. complete is false
+// when it left entries out.
+func (s *scan) list(ctx context.Context, dir *os.File) (entries []fs.DirEntry, complete bool) {
+	for ctx.Err() == nil {
+		batch, err := dir.ReadDir(directoryBatch)
+		for _, d := range batch {
+			if !s.walked(d) {
+				continue
+			}
+			if len(entries) == maxDirectoryEntries {
+				return entries, false
+			}
+			entries = append(entries, d)
+		}
+		if err != nil || len(batch) == 0 {
+			break
+		}
+	}
+	return entries, true
+}
+
+// walked tells whether the walk does anything with the entry d: a directory it may descend into, a lock file or a
+// manifest by name, the current link of a deployment folder, or an executable when Go binaries are read.
+func (s *scan) walked(d fs.DirEntry) bool {
+	name := d.Name()
+	if d.IsDir() {
+		return !skippedDirectoryName(name)
+	}
+	if _, isLockFile := lockfile.ForFile(name); isLockFile {
+		return true
+	}
+	if _, isManifest := lockfile.Manifests[name]; isManifest {
+		return true
+	}
+	if d.Type()&fs.ModeSymlink != 0 {
+		return name == "current"
+	}
+	if !s.options.GoBinaries || !d.Type().IsRegular() {
+		return false
+	}
+	info, err := d.Info()
+	return err == nil && executable(info)
+}
+
+func executable(info fs.FileInfo) bool {
+	return info.Mode().Perm()&0o111 != 0 && info.Size() >= 4
 }
 
 func (s *scan) directory(ctx context.Context, parent *os.File, rel, hostPath string, d fs.DirEntry) error {
@@ -281,9 +369,11 @@ func (s *scan) liveRelease(ctx context.Context, dir *os.File, rel string, entrie
 		releases.Close()
 		return nil, nil
 	}
-	list, _ := releases.ReadDir(-1)
-	if release := slices.IndexFunc(list, func(d fs.DirEntry) bool { return d.Name() == name && d.IsDir() }); release >= 0 {
-		return releases, list[release]
+	// The release is looked up by name instead of listing releases, which can hold any number of entries. Like a
+	// listed entry, it only says what to open: openDirectory opens it relative to releases without following a
+	// symlink.
+	if release, err := os.Lstat(filepath.Join(releases.Name(), name)); err == nil && release.IsDir() {
+		return releases, fs.FileInfoToDirEntry(release)
 	}
 	releases.Close()
 	return nil, nil
@@ -309,7 +399,7 @@ func entryNamed(entries []fs.DirEntry, name string) (fs.DirEntry, bool) {
 }
 
 // file tells whether d is a lock file it parsed.
-func (s *scan) file(dir *os.File, rel, hostPath string, d fs.DirEntry) bool {
+func (s *scan) file(ctx context.Context, dir *os.File, rel, hostPath string, d fs.DirEntry) bool {
 	format, isLockFile := lockfile.ForFile(d.Name())
 	_, isManifest := lockfile.Manifests[d.Name()]
 	// An exclude path may name the file under another path, such as releases/<name>/package.json for a file the
@@ -326,7 +416,7 @@ func (s *scan) file(dir *os.File, rel, hostPath string, d fs.DirEntry) bool {
 		return s.lockFile(dir, hostPath, format, d)
 	}
 	if s.options.GoBinaries && d.Type().IsRegular() {
-		s.goBinary(dir, hostPath, d)
+		s.goBinary(ctx, dir, hostPath, d)
 	}
 	return false
 }
@@ -335,11 +425,17 @@ func (s *scan) file(dir *os.File, rel, hostPath string, d fs.DirEntry) bool {
 // deployed application), hidden directories (.git and package manager caches such as .npm, .cargo, .m2) and
 // the Go module cache.
 func skippedDirectory(rel, name string) bool {
-	return slices.Contains(skippedDirectories, name) || strings.HasPrefix(name, ".") || rel == "pkg/mod" || strings.HasSuffix(rel, "/pkg/mod")
+	return skippedDirectoryName(name) || rel == "pkg/mod" || strings.HasSuffix(rel, "/pkg/mod")
+}
+
+func skippedDirectoryName(name string) bool {
+	return slices.Contains(skippedDirectories, name) || strings.HasPrefix(name, ".")
 }
 
 // lockFile reports a symlinked lock file without opening it: its target may be outside the scan path or under
-// an excluded path. A target inside a scan path is reported under its own path. It tells whether it parsed the file.
+// an excluded path. A target inside a scan path is reported under its own path. It tells whether the directory
+// holds a lock file whose packages are sent or kept on the server: one it parsed, or one it left out as
+// package_limit because the walk already holds or read as much as it may.
 func (s *scan) lockFile(dir *os.File, hostPath string, format lockfile.Format, d fs.DirEntry) bool {
 	if s.seen[hostPath] || s.isExcludedEntry(d) {
 		return false
@@ -349,15 +445,23 @@ func (s *scan) lockFile(dir *os.File, hostPath string, format lockfile.Format, d
 		s.inv.Skip(hostPath, ReasonSymlink)
 		return false
 	}
+	if s.budget.packages >= maxWalkPackages {
+		s.inv.Skip(hostPath, ReasonPackageLimit)
+		return true
+	}
 	data, reason := s.read(dir, d.Name())
 	if reason == ReasonNotFound {
 		return false
 	}
 	if reason != "" {
 		s.inv.Skip(hostPath, reason)
-		return false
+		return reason == ReasonPackageLimit
 	}
 	result, err := format.Parse(data)
+	if errors.Is(err, lockfile.ErrTooLarge) {
+		s.inv.Skip(hostPath, ReasonTooLarge)
+		return false
+	}
 	if err != nil {
 		s.inv.Skip(hostPath, ReasonParseError)
 		return false
@@ -366,21 +470,49 @@ func (s *scan) lockFile(dir *os.File, hostPath string, format lockfile.Format, d
 		// Normalize drops this record when some packages of the file are sent (see Inventory.Normalize).
 		s.inv.Skip(hostPath, ReasonUnresolvedVersions)
 	}
-	for _, d := range result.Dependencies {
-		s.inv.Packages = append(s.inv.Packages, Package{
-			Ecosystem:    format.Ecosystem,
-			Name:         d.Name,
-			Version:      d.Version,
-			ManifestPath: hostPath,
-			Direct:       d.Direct,
-		})
-	}
+	s.keep(hostPath, func(yield func(Package) bool) {
+		for _, d := range result.Dependencies {
+			if !yield(Package{Ecosystem: format.Ecosystem, Name: d.Name, Version: d.Version, ManifestPath: hostPath, Direct: d.Direct}) {
+				return
+			}
+		}
+	})
 	return true
+}
+
+// keep adds the packages of the manifest at hostPath to the inventory. It applies the rules of Inventory.Normalize
+// while the walk runs, so that what the walk holds is bounded whatever the files hold: an entry the server would
+// reject is recorded as invalid_entries instead of kept (its name can be as long as the file), names and versions
+// are copied out of the file they were parsed from, and a manifest is recorded as package_limit with none of its
+// packages kept when it has more than MaxPackages of them, which can never be sent, or when the walk would hold
+// more than maxWalkPackages with it.
+func (s *scan) keep(hostPath string, packages iter.Seq[Package]) {
+	start := len(s.inv.Packages)
+	invalid := false
+	for p := range packages {
+		if !p.valid() {
+			invalid = true
+			continue
+		}
+		if kept := len(s.inv.Packages) - start; kept == MaxPackages || s.budget.packages+kept == maxWalkPackages {
+			s.inv.Packages = s.inv.Packages[:start]
+			s.inv.Skip(hostPath, ReasonPackageLimit)
+			return
+		}
+		p.Name, p.Version = strings.Clone(p.Name), strings.Clone(p.Version)
+		s.inv.Packages = append(s.inv.Packages, p)
+	}
+	if invalid {
+		s.inv.Skip(hostPath, ReasonInvalidEntries)
+	}
+	s.budget.packages += len(s.inv.Packages) - start
 }
 
 // read opens a lock file the walk listed as a regular file. A symlink swapped in since is refused (ELOOP), a
 // file removed since is ignored, and safeopen.OpenAt's O_NONBLOCK keeps a FIFO given a lock file name by any
-// local user from blocking the open, and with it the whole inventory.
+// local user from blocking the open, and with it the whole inventory. The reason is package_limit when the walk
+// already read maxWalkBytes: any number of large files, or of links to one, would otherwise keep one report
+// reading for hours.
 func (s *scan) read(dir *os.File, name string) ([]byte, string) {
 	f, err := safeopen.OpenAt(dir, name, os.O_RDONLY)
 	switch {
@@ -401,7 +533,11 @@ func (s *scan) read(dir *os.File, name string) ([]byte, string) {
 	if info.Size() > s.options.MaxFileSize {
 		return nil, ReasonTooLarge
 	}
+	if s.budget.bytes+info.Size() > maxWalkBytes {
+		return nil, ReasonPackageLimit
+	}
 	data, err := io.ReadAll(io.LimitReader(f, s.options.MaxFileSize+1))
+	s.budget.bytes += int64(len(data))
 	if err != nil {
 		return nil, ReasonParseError
 	}
@@ -412,13 +548,15 @@ func (s *scan) read(dir *os.File, name string) ([]byte, string) {
 }
 
 // goBinary reads the module list Go embeds in executables (only when collect_go_binaries is on). The lock file
-// size limit does not apply: buildinfo.Read reads the headers and searches the data segment in small chunks
-// through io.ReaderAt, so a large binary (terraform, kubectl) costs no more memory than a small one. Like a lock
-// file it is opened with safeopen.OpenAt, and once open it must still be the regular file the walk listed, so a
-// FIFO or a symlink swapped in after the walk cannot block the inventory or be read in its place.
-func (s *scan) goBinary(dir *os.File, hostPath string, d fs.DirEntry) {
+// size limit does not apply: a real binary (terraform, kubectl) is far larger, and buildinfo.Read only needs its
+// headers and its build info section. It gets a reader that stops at maxGoBinaryBytes, because what it reads and
+// allocates otherwise follows sizes written in the file, which any local user can set to terabytes in a sparse
+// file. Like a lock file the binary is opened with safeopen.OpenAt, and once open it must still be the regular
+// file the walk listed, so a FIFO or a symlink swapped in after the walk cannot block the inventory or be read in
+// its place.
+func (s *scan) goBinary(ctx context.Context, dir *os.File, hostPath string, d fs.DirEntry) {
 	listed, err := d.Info()
-	if err != nil || listed.Mode().Perm()&0o111 == 0 || listed.Size() < 4 || s.seen[hostPath] || s.isExcludedFile(listed) {
+	if err != nil || !executable(listed) || s.seen[hostPath] || s.isExcludedFile(listed) {
 		return
 	}
 	f, err := safeopen.OpenAt(dir, d.Name(), os.O_RDONLY)
@@ -430,12 +568,29 @@ func (s *scan) goBinary(dir *os.File, hostPath string, d fs.DirEntry) {
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(listed, opened) {
 		return
 	}
-	build, err := buildinfo.Read(f)
+	build, err := buildinfo.Read(&budgetReader{ctx: ctx, file: f, left: maxGoBinaryBytes})
 	if err != nil {
 		return
 	}
 	s.seen[hostPath] = true
-	s.inv.Packages = append(s.inv.Packages, GoBuildPackages(build, hostPath)...)
+	s.keep(hostPath, slices.Values(GoBuildPackages(build, hostPath)))
+}
+
+// budgetReader reads a file until it has been asked for more than left bytes in all, or ctx is done.
+type budgetReader struct {
+	ctx  context.Context
+	file io.ReaderAt
+	left int64
+}
+
+func (b *budgetReader) ReadAt(p []byte, off int64) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if b.left -= int64(len(p)); b.left < 0 {
+		return 0, errGoBinaryBudget
+	}
+	return b.file.ReadAt(p, off)
 }
 
 // GoBuildPackages lists the binary's own module and the modules compiled into it, plus the standard library as

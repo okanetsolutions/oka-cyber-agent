@@ -15,6 +15,9 @@ type goModule struct {
 // ParseGoMod reads the require and replace directives of go.mod (Go 1.17 and later list every module the
 // build uses there). Versions drop the leading "v", as in OSV.dev's Go ecosystem.
 func ParseGoMod(data []byte) (Result, error) {
+	if err := checkLines(data); err != nil {
+		return Result{}, err
+	}
 	var requires []goModule
 	replacements := map[string]goModule{}
 	var block string

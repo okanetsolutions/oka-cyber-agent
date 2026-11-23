@@ -16,6 +16,9 @@ var (
 // private gem server). Gems from GIT and PATH sections are not registry releases and are counted as unresolved. A
 // platform suffix (1.16.4-x86_64-linux) is removed.
 func ParseGemfileLock(data []byte) (Result, error) {
+	if err := checkLines(data); err != nil {
+		return Result{}, err
+	}
 	var r Result
 	var section string
 	declared := map[string]bool{}

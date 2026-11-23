@@ -12,44 +12,104 @@ import (
 // {specifier, version} mapping from 6.0 on.
 type pnpmReference string
 
-func (p *pnpmReference) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind == yaml.ScalarNode {
-		*p = pnpmReference(node.Value)
-		return nil
+func pnpmReferenceOf(n *yaml.Node) (pnpmReference, error) {
+	if n.Kind == yaml.ScalarNode {
+		if n.ShortTag() == yamlNullTag {
+			return "", nil
+		}
+		return pnpmReference(n.Value), nil
 	}
-	var ref struct {
-		Version string `yaml:"version"`
-	}
-	if err := node.Decode(&ref); err != nil {
+	var version string
+	err := yamlPairs(n, func(key string, value *yaml.Node) (err error) {
+		if key == "version" {
+			version, err = yamlString(value)
+		}
 		return err
-	}
-	*p = pnpmReference(ref.Version)
-	return nil
+	})
+	return pnpmReference(version), err
 }
 
 type pnpmDependencies struct {
-	Dependencies         map[string]pnpmReference `yaml:"dependencies"`
-	DevDependencies      map[string]pnpmReference `yaml:"devDependencies"`
-	OptionalDependencies map[string]pnpmReference `yaml:"optionalDependencies"`
+	Dependencies         map[string]pnpmReference
+	DevDependencies      map[string]pnpmReference
+	OptionalDependencies map[string]pnpmReference
+}
+
+// field reads the key of the root project or of an importer when it is one of its three dependency mappings.
+func (d *pnpmDependencies) field(key string, value *yaml.Node) (err error) {
+	switch key {
+	case "dependencies":
+		d.Dependencies, err = yamlMap(value, pnpmReferenceOf)
+	case "devDependencies":
+		d.DevDependencies, err = yamlMap(value, pnpmReferenceOf)
+	case "optionalDependencies":
+		d.OptionalDependencies, err = yamlMap(value, pnpmReferenceOf)
+	}
+	return err
+}
+
+type pnpmResolution struct {
+	Type, Repo, Commit string
+}
+
+type pnpmLock struct {
+	LockfileVersion string
+	Importers       map[string]pnpmDependencies
+	Packages        map[string]pnpmResolution
+	pnpmDependencies
+}
+
+func decodePNPMLock(data []byte) (lock pnpmLock, err error) {
+	root, err := parseYAML(data)
+	if err != nil {
+		return lock, err
+	}
+	err = yamlPairs(root, func(key string, value *yaml.Node) (err error) {
+		switch key {
+		case "lockfileVersion":
+			lock.LockfileVersion, err = yamlString(value)
+		case "importers":
+			lock.Importers, err = yamlMap(value, pnpmImporter)
+		case "packages":
+			lock.Packages, err = yamlMap(value, pnpmPackage)
+		default:
+			err = lock.field(key, value)
+		}
+		return err
+	})
+	return lock, err
+}
+
+func pnpmImporter(n *yaml.Node) (importer pnpmDependencies, err error) {
+	return importer, yamlPairs(n, importer.field)
+}
+
+func pnpmPackage(n *yaml.Node) (resolution pnpmResolution, err error) {
+	err = yamlPairs(n, func(key string, value *yaml.Node) error {
+		if key != "resolution" {
+			return nil
+		}
+		return yamlPairs(value, func(key string, value *yaml.Node) (err error) {
+			switch key {
+			case "type":
+				resolution.Type, err = yamlString(value)
+			case "repo":
+				resolution.Repo, err = yamlString(value)
+			case "commit":
+				resolution.Commit, err = yamlString(value)
+			}
+			return err
+		})
+	})
+	return resolution, err
 }
 
 // ParsePNPMLock reads pnpm-lock.yaml lockfile versions 5.x, 6.x and 9.x. Direct dependencies are the ones
 // listed by the root project or a workspace importer, which Format.Parse keeps when a name is locked in
 // several versions.
 func ParsePNPMLock(data []byte) (Result, error) {
-	var lock struct {
-		LockfileVersion string                      `yaml:"lockfileVersion"`
-		Importers       map[string]pnpmDependencies `yaml:"importers"`
-		Packages        map[string]struct {
-			Resolution struct {
-				Type   string `yaml:"type"`
-				Repo   string `yaml:"repo"`
-				Commit string `yaml:"commit"`
-			} `yaml:"resolution"`
-		} `yaml:"packages"`
-		pnpmDependencies `yaml:",inline"`
-	}
-	if err := yaml.Unmarshal(data, &lock); err != nil {
+	lock, err := decodePNPMLock(data)
+	if err != nil {
 		return Result{}, err
 	}
 	major, err := strconv.ParseFloat(strings.Trim(lock.LockfileVersion, `'"`), 64)
@@ -75,7 +135,7 @@ func ParsePNPMLock(data []byte) (Result, error) {
 	var r Result
 	for _, key := range sortedKeys(lock.Packages) {
 		name, version := pnpmPackageKey(key, major)
-		resolution := lock.Packages[key].Resolution
+		resolution := lock.Packages[key]
 		if name == "" || !looksLikeVersion(version) || resolution.Type != "" || resolution.Repo != "" || resolution.Commit != "" {
 			r.Unresolved++
 			continue
