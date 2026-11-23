@@ -1,0 +1,24 @@
+name: Merge rule probe
+on:
+  push:
+    branches: [ci-merge-probe-head]
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          if git push origin HEAD:refs/heads/ci-merge-probe-base; then echo "RESULT token_push=ALLOWED"; else echo "RESULT token_push=denied"; fi
+          for i in $(seq 1 30); do
+            n=$(gh pr list --head ci-merge-probe-head --base ci-merge-probe-base --json number --jq '.[0].number // empty')
+            [ -n "$n" ] && break
+            sleep 5
+          done
+          [ -n "$n" ] || { echo "RESULT pr=missing"; exit 1; }
+          if gh pr merge "$n" --merge; then echo "RESULT token_merge=ALLOWED"; else echo "RESULT token_merge=denied"; fi
