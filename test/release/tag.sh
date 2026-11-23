@@ -37,6 +37,14 @@ expect_tag() {
 	[ "$got" = "$2" ] || fail "expected $1 at $2 on the remote, got '$got'"
 }
 
+expect_no_release() {
+	before_remote=$(remote_tags)
+	before_local=$(git tag)
+	sh "$script" "$1" "$2" >/dev/null || fail "the $2 bump at $1 did not exit successfully"
+	[ "$(remote_tags)" = "$before_remote" ] || fail "the $2 bump at $1 pushed another tag"
+	[ "$(git tag)" = "$before_local" ] || fail "the $2 bump at $1 created another tag"
+}
+
 first=$(commit first)
 merge_to_main "$first"
 sh "$script" "$first" >/dev/null
@@ -90,14 +98,33 @@ fi
 [ "$(remote_tags)" = "$before" ] || fail "a refused release left a tag"
 
 # A minor or major release by hand takes the head of main, also when it is the latest patch release.
+sh "$script" "$sixth" >/dev/null
+expect_tag v0.2.3 "$sixth"
 sh "$script" "$sixth" minor >/dev/null
 expect_tag v0.3.0 "$sixth"
 sh "$script" "$sixth" major >/dev/null
 expect_tag v1.0.0 "$sixth"
 
 # A bump never releases a commit older than the latest release.
-before=$(remote_tags)
-sh "$script" "$fifth" minor >/dev/null
-[ "$(remote_tags)" = "$before" ] || fail "an older commit was promoted"
+expect_no_release "$fifth" minor
+
+git checkout -q --detach "$sixth"
+seventh=$(commit seventh)
+merge_to_main "$seventh"
+sh "$script" "$seventh" minor >/dev/null
+expect_tag v1.1.0 "$seventh"
+expect_no_release "$seventh" minor
+
+eighth=$(commit eighth)
+merge_to_main "$eighth"
+sh "$script" "$eighth" major >/dev/null
+expect_tag v2.0.0 "$eighth"
+expect_no_release "$eighth" major
+
+ninth=$(commit ninth)
+merge_to_main "$ninth"
+sh "$script" "$ninth" major >/dev/null
+expect_tag v3.0.0 "$ninth"
+expect_no_release "$ninth" minor
 
 echo "tag.sh: all tests passed"
