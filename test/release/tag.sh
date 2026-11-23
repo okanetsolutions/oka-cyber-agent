@@ -1,5 +1,5 @@
 #!/bin/sh
-# Tests .github/workflows/tag.sh against a scratch repository.
+# Tests release tagging against a scratch repository and checks the release workflow's tag selection.
 set -eu
 
 script="$(cd "$(dirname "$0")/../.." && pwd)/.github/workflows/tag.sh"
@@ -17,6 +17,10 @@ fail() {
 	echo "FAIL: $*" >&2
 	exit 1
 }
+
+# A patch tag and a manual bump can point at the same commit.
+grep -Eq '^[[:space:]]+GORELEASER_CURRENT_TAG: \$\{\{ github\.ref_name \}\}[[:space:]]*$' \
+	"${script%/*}/release.yml" || fail "the release workflow must pass its triggering tag to GoReleaser"
 
 commit() {
 	git commit -q --allow-empty -m "$1"
