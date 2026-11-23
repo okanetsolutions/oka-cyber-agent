@@ -32,7 +32,7 @@ These are product promises written in the README. A change that breaks one is a 
 
 - `cmd/oka-cyber-agent`: the CLI entry point and subcommand wiring only. No business logic.
 - `internal/auditcontrol`: the fixed audit rule template and isolated rule helper, driven only by the presence of the command-source flag; it cannot take paths, rule text or command arguments.
-- `internal/collect`: collectors (OS facts, package databases, listening services, dependency file discovery with the application details of each directory). Each collector implements the collector interface and is tested against fixture files.
+- `internal/collect` contains collectors for OS facts, package databases, TCP and UDP listening services, and dependency files with application details. Each collector implements the collector interface and is tested against fixture files.
 - `internal/collect/lockfile`: one parser per dependency file format, pure functions from bytes to resolved versions. Fixtures under its `testdata` were produced by the real tools (composer, npm, yarn, pnpm, poetry, pipenv, uv, bundler, go, cargo, gradle, dotnet).
 - `internal/logs`: log sources (journald through `journalctl`, auth and cron log files, nginx and Apache access logs, configured application logs), the polling file tailer and the parsers that turn lines into the event kinds of okanetsolutions/oka-core#3779. Parsers are tested against real lines captured per distribution under `testdata`. It also holds redaction (`redact.go`, every rule with before and after tests), aggregation and the suspicious web request tokens (`testdata/suspicious_tokens.txt`, embedded in the binary), and the on disk spool.
 - `internal/api`: the HTTP client for the Oka Cyber agent API and the wire types.

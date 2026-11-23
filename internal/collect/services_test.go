@@ -6,13 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
 func procRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	for _, table := range []string{"tcp", "tcp6"} {
+	for _, table := range []string{"tcp", "tcp6", "udp", "udp6"} {
 		copyFile(t, filepath.Join("testdata", "proc", "net", table), filepath.Join(root, "proc", "net", table))
 	}
 	process := func(pid, comm string, sockets map[string]string) {
@@ -32,26 +33,37 @@ func procRoot(t *testing.T) string {
 	process("812", "nginx", map[string]string{"0": "/dev/null", "6": "socket:[21202848]"})
 	process("813", "nginx", map[string]string{"6": "socket:[21202848]"})
 	process("1450", "redis-server", map[string]string{"7": "socket:[21214876]", "8": "pipe:[1]"})
+	process("1500", "example-dns", map[string]string{"3": "socket:[1001]", "4": "socket:[1002]"})
 	if err := os.MkdirAll(filepath.Join(root, "proc", "self"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return root
 }
 
-func TestServicesCollectorListsListeningSocketsWithOwners(t *testing.T) {
-	inv, err := Run(context.Background(), ServicesCollector{Root: procRoot(t)})
+func collectServices(t *testing.T, root string) []Service {
+	t.Helper()
+	inv, err := Run(context.Background(), ServicesCollector{Root: root})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return inv.Services
+}
+
+func TestServicesCollectorListsListeningSocketsWithOwners(t *testing.T) {
+	services := collectServices(t, procRoot(t))
 	want := []Service{
 		{Protocol: "tcp", Address: "0.0.0.0", Port: 8080, Process: "nginx"},
 		{Protocol: "tcp", Address: "127.0.0.1", Port: 3306},
 		{Protocol: "tcp6", Address: "::1", Port: 6379, Process: "redis-server"},
+		{Protocol: "udp", Address: "0.0.0.0", Port: 51820},
+		{Protocol: "udp", Address: "192.0.2.10", Port: 8053, Process: "example-dns"},
+		{Protocol: "udp6", Address: "2001:db8::10", Port: 8053},
+		{Protocol: "udp6", Address: "::", Port: 41641},
 	}
-	if !slices.Equal(inv.Services, want) {
-		t.Fatalf("services = %+v\nwant %+v", inv.Services, want)
+	if !slices.Equal(services, want) {
+		t.Fatalf("services = %+v\nwant %+v", services, want)
 	}
-	raw, err := json.Marshal(inv.Services)
+	raw, err := json.Marshal(services)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +74,103 @@ func TestServicesCollectorListsListeningSocketsWithOwners(t *testing.T) {
 	for _, service := range decoded {
 		if _, ok := service["pid"]; ok {
 			t.Fatalf("service %v has a pid, which changes on every restart", service)
+		}
+	}
+}
+
+func TestServicesCollectorUsesConfiguredEphemeralPortRange(t *testing.T) {
+	root := procRoot(t)
+	dir := filepath.Join(root, "proc/sys/net/ipv4")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ip_local_port_range"), []byte("8053\t9000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	services := collectServices(t, root)
+	want := []Service{
+		{Protocol: "tcp", Address: "0.0.0.0", Port: 8080, Process: "nginx"},
+		{Protocol: "tcp", Address: "127.0.0.1", Port: 3306},
+		{Protocol: "tcp6", Address: "::1", Port: 6379, Process: "redis-server"},
+		{Protocol: "udp", Address: "0.0.0.0", Port: 32768},
+		{Protocol: "udp", Address: "0.0.0.0", Port: 51820},
+		{Protocol: "udp", Address: "0.0.0.0", Port: 60999},
+		{Protocol: "udp6", Address: "::", Port: 41641},
+	}
+	if !slices.Equal(services, want) {
+		t.Fatalf("services = %+v\nwant %+v", services, want)
+	}
+}
+
+func TestServicesCollectorFallsBackAndIgnoresChangingEphemeralPorts(t *testing.T) {
+	root := procRoot(t)
+	before := collectServices(t, root)
+	if err := os.MkdirAll(filepath.Join(root, "proc/sys/net/ipv4/ip_local_port_range"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "proc/net/udp")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(data), "00000000:8000", "00000000:8001", 1)
+	if changed == string(data) {
+		t.Fatal("fixture has no ephemeral port 32768")
+	}
+	if err := os.WriteFile(path, []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if after := collectServices(t, root); !slices.Equal(before, after) {
+		t.Fatalf("services after ephemeral port changed = %+v\nwant %+v", after, before)
+	}
+}
+
+func TestServicesCollectorWithoutUDP6Table(t *testing.T) {
+	root := procRoot(t)
+	want := slices.DeleteFunc(collectServices(t, root), func(s Service) bool { return s.Protocol == "udp6" })
+	if err := os.Remove(filepath.Join(root, "proc/net/udp6")); err != nil {
+		t.Fatal(err)
+	}
+	if got := collectServices(t, root); !slices.Equal(got, want) {
+		t.Fatalf("services = %+v\nwant %+v", got, want)
+	}
+}
+
+func TestDefaultCollectorsSkipUDPWhenServiceCollectionIsOff(t *testing.T) {
+	root := procRoot(t)
+	collectors, err := Defaults(Options{Root: root, CollectServices: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectors[0] = OSCollector{Root: root, Uname: fixedUname}
+	inv, err := Run(context.Background(), collectors...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Services) != 0 {
+		t.Fatalf("services = %+v, want none", inv.Services)
+	}
+}
+
+func TestParseProcNetRequiresUnconnectedBoundUDP(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "proc", "net", "udp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const listener = "0A0200C0:1F75 00000000:0000 07"
+	for _, row := range []string{
+		"0A0200C0:1F75 140200C0:0000 07",
+		"0A0200C0:1F75 00000000:0035 07",
+		"0A0200C0:0000 00000000:0000 07",
+		"0A0200C0:1F75 00000000:0000 01",
+	} {
+		input := strings.ReplaceAll(string(data), listener, row)
+		sockets, err := parseProcNet(strings.NewReader(input), "udp", portRange{32768, 60999})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sockets) != 1 || sockets[0].port != 51820 {
+			t.Errorf("sockets for %q = %+v, want only port 51820", row, sockets)
 		}
 	}
 }
