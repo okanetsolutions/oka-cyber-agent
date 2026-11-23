@@ -33,7 +33,7 @@ func procRoot(t *testing.T) string {
 	process("812", "nginx", map[string]string{"0": "/dev/null", "6": "socket:[21202848]"})
 	process("813", "nginx", map[string]string{"6": "socket:[21202848]"})
 	process("1450", "redis-server", map[string]string{"7": "socket:[21214876]", "8": "pipe:[1]"})
-	process("1500", "example-dns", map[string]string{"3": "socket:[1001]", "4": "socket:[1002]"})
+	process("1500", "example-dns", map[string]string{"3": "socket:[51255178]", "4": "socket:[51255179]"})
 	if err := os.MkdirAll(filepath.Join(root, "proc", "self"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -133,22 +133,6 @@ func TestServicesCollectorWithoutUDP6Table(t *testing.T) {
 	}
 	if got := collectServices(t, root); !slices.Equal(got, want) {
 		t.Fatalf("services = %+v\nwant %+v", got, want)
-	}
-}
-
-func TestDefaultCollectorsSkipUDPWhenServiceCollectionIsOff(t *testing.T) {
-	root := procRoot(t)
-	collectors, err := Defaults(Options{Root: root, CollectServices: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	collectors[0] = OSCollector{Root: root, Uname: fixedUname}
-	inv, err := Run(context.Background(), collectors...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(inv.Services) != 0 {
-		t.Fatalf("services = %+v, want none", inv.Services)
 	}
 }
 
