@@ -2,10 +2,12 @@ package logs
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 const (
@@ -13,12 +15,25 @@ const (
 	ReasonNotFound         = "not_found"
 	ReasonSymlink          = "symlink"
 	ReasonNotRegularFile   = "not_regular_file"
+	// ReasonHardLink is an application log with another name somewhere (see errHardLink).
+	ReasonHardLink = "hard_link"
+	// ReasonTooManyFiles is listed once for a glob pattern, with the pattern as its path, when it matches more
+	// files than are followed.
+	ReasonTooManyFiles = "too_many_files"
 
 	// reasonCompressed marks a glob match that is a compressed rotated log. It is left out of the plan
 	// without being reported, since every rotation makes one.
 	reasonCompressed = "compressed"
 
 	MaxAppPaths = 10
+	// MaxGlobFiles is how many files of one glob pattern are followed: the most recently modified ones. Every
+	// followed file costs an open descriptor, a poll per second and an entry in every checkpoint, and whoever
+	// can write to a log directory decides how many files a pattern matches there.
+	MaxGlobFiles = 200
+	// maxPlannedPathBytes bounds the paths of all the files found by glob patterns in one plan, as JSON writes
+	// them (a byte of a file name takes up to six), so that the checkpoint, which holds a position per followed
+	// file, stays far below what the agent reads back (4 MB).
+	maxPlannedPathBytes = 512 << 10
 )
 
 var (
@@ -68,6 +83,9 @@ type Plan struct {
 	Journal bool
 	Files   []FilePlan
 	Skipped []SkippedSource
+
+	// globPathBytes is how much of maxPlannedPathBytes the files found by glob patterns have used.
+	globPathBytes int
 }
 
 type Options struct {
@@ -112,11 +130,11 @@ func (o Options) planAuth(p *Plan) {
 		return
 	}
 	for _, path := range authFiles {
-		switch reason := o.readable(path, ""); reason {
+		switch reason := o.readable(SourceAuth, path, ""); reason {
 		case "":
 			p.Files = append(p.Files, FilePlan{Source: SourceAuth, Path: path})
 			for _, cron := range cronFiles {
-				if o.readable(cron, "") == "" {
+				if o.readable(SourceAuth, cron, "") == "" {
 					p.Files = append(p.Files, FilePlan{Source: SourceAuth, Path: cron})
 				}
 			}
@@ -159,20 +177,7 @@ func (o Options) journalAccess() (reason, dir string) {
 func (o Options) planWeb(p *Plan) {
 	var found bool
 	for _, pattern := range webPatterns {
-		matches, _ := filepath.Glob(o.path(pattern))
-		for _, match := range matches {
-			hostPath := o.hostPath(match)
-			found = true
-			reason := o.readable(hostPath, pattern)
-			if reason == reasonCompressed {
-				continue
-			}
-			if reason != "" {
-				p.Skipped = append(p.Skipped, SkippedSource{SourceWeb, hostPath, reason})
-				continue
-			}
-			p.Files = append(p.Files, FilePlan{Source: SourceWeb, Path: hostPath, Vhost: VhostFromPath(hostPath), Pattern: pattern})
-		}
+		found = o.planGlob(p, SourceWeb, pattern) || found
 	}
 	if !found {
 		p.Skipped = append(p.Skipped, SkippedSource{SourceWeb, "/var/log/nginx", ReasonNotFound})
@@ -182,7 +187,8 @@ func (o Options) planWeb(p *Plan) {
 // planApp follows every configured path, also the ones that do not exist yet (they are read from the start
 // once created). Glob patterns, such as Laravel's daily laravel-*.log files, are expanded. A file that is a
 // symlink is never read, nor one found through a directory a wildcard matched that is a symlink: the
-// directories of log files are often writable by the application's user (see openLogFile).
+// directories of log files are often writable by the application's user (see openLogFile). For the same reason
+// a file with a second hard link is not read either (see errHardLink).
 func (o Options) planApp(p *Plan) {
 	paths := o.AppPaths
 	if len(paths) > MaxAppPaths {
@@ -193,43 +199,92 @@ func (o Options) planApp(p *Plan) {
 			continue
 		}
 		if !hasGlobMeta(configured) {
-			if reason := o.readable(configured, ""); reason != "" {
+			if reason := o.readable(SourceApp, configured, ""); reason != "" {
 				p.Skipped = append(p.Skipped, SkippedSource{SourceApp, configured, reason})
-				if reason == ReasonPermissionDenied {
+				if reason == ReasonPermissionDenied || reason == ReasonHardLink {
 					continue
 				}
 			}
 			p.Files = append(p.Files, FilePlan{Source: SourceApp, Path: configured})
 			continue
 		}
-		pattern := filepath.Clean(configured)
-		matches, _ := filepath.Glob(o.path(pattern))
-		if len(matches) == 0 {
+		if !o.planGlob(p, SourceApp, filepath.Clean(configured)) {
 			p.Skipped = append(p.Skipped, SkippedSource{SourceApp, configured, ReasonNotFound})
 		}
-		for _, match := range matches {
-			hostPath := o.hostPath(match)
-			reason := o.readable(hostPath, pattern)
-			if reason == reasonCompressed {
-				continue
-			}
-			if reason != "" {
-				p.Skipped = append(p.Skipped, SkippedSource{SourceApp, hostPath, reason})
-				continue
-			}
-			p.Files = append(p.Files, FilePlan{Source: SourceApp, Path: hostPath, Pattern: pattern})
+	}
+}
+
+// planGlob plans the files the glob pattern (a host path) matches and tells whether it matches any. Compressed
+// rotated logs are left out, a file that cannot be read is listed as skipped, and of more than MaxGlobFiles
+// matches only the most recently modified ones are looked at: the pattern is then listed once as
+// ReasonTooManyFiles, as it is when the paths of the planned files use up maxPlannedPathBytes.
+func (o Options) planGlob(p *Plan, source, pattern string) (found bool) {
+	matches, _ := filepath.Glob(o.path(pattern))
+	found = len(matches) > 0
+	matches = slices.DeleteFunc(matches, func(match string) bool {
+		return slices.Contains(compressedExtensions, strings.ToLower(filepath.Ext(match)))
+	})
+	tooMany := len(matches) > MaxGlobFiles
+	if tooMany {
+		matches = latestModified(matches, MaxGlobFiles)
+	}
+	for _, match := range matches {
+		hostPath := o.hostPath(match)
+		reason := o.readable(source, hostPath, pattern)
+		if reason == reasonCompressed {
+			continue
+		}
+		if reason != "" {
+			p.Skipped = append(p.Skipped, SkippedSource{source, hostPath, reason})
+			continue
+		}
+		encoded, _ := json.Marshal(hostPath)
+		if p.globPathBytes+len(encoded) > maxPlannedPathBytes {
+			tooMany = true
+			break
+		}
+		p.globPathBytes += len(encoded)
+		file := FilePlan{Source: source, Path: hostPath, Pattern: pattern}
+		if source == SourceWeb {
+			file.Vhost = VhostFromPath(hostPath)
+		}
+		p.Files = append(p.Files, file)
+	}
+	if tooMany {
+		p.Skipped = append(p.Skipped, SkippedSource{source, pattern, ReasonTooManyFiles})
+	}
+	return found
+}
+
+// latestModified returns the n most recently modified of paths, in the order they came in. A path that is gone
+// counts as the oldest.
+func latestModified(paths []string, n int) []string {
+	modified := make(map[string]time.Time, len(paths))
+	for _, path := range paths {
+		if info, err := os.Lstat(path); err == nil {
+			modified[path] = info.ModTime()
 		}
 	}
+	latest := slices.Clone(paths)
+	slices.SortStableFunc(latest, func(a, b string) int { return modified[b].Compare(modified[a]) })
+	keep := make(map[string]bool, n)
+	for _, path := range latest[:n] {
+		keep[path] = true
+	}
+	return slices.DeleteFunc(slices.Clone(paths), func(path string) bool { return !keep[path] })
 }
 
 // readable reports why the log file at hostPath, found by the glob pattern (a host path, "" for a file named
 // in full), cannot be read, or "" when it can. A glob match that is a compressed rotated log (by its
 // extension or its first bytes, logrotate's compress option) is reasonCompressed: it is never parsed as text.
-func (o Options) readable(hostPath, pattern string) string {
+func (o Options) readable(source, hostPath, pattern string) string {
 	if pattern != "" && slices.Contains(compressedExtensions, strings.ToLower(filepath.Ext(hostPath))) {
 		return reasonCompressed
 	}
 	f, err := openLogFile(o.path(hostPath), o.patternPath(pattern))
+	if err == nil && source == SourceApp {
+		err = refuseHardLink(f)
+	}
 	if err != nil {
 		return skipReason(err)
 	}

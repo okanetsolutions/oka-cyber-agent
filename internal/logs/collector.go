@@ -3,6 +3,8 @@ package logs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -282,6 +284,13 @@ func (c *Collector) plan(ctx context.Context) {
 		if w.planned = ok; ok {
 			w.plan = f
 			w.tailer.Pattern = c.options.patternPath(f.Pattern)
+			continue
+		}
+		// A file a glob pattern found that is still there but no longer planned (refused, or one more than
+		// MaxGlobFiles) is let go at once, or the files once followed would add up without a limit. One that is
+		// gone was rotated away: its tailer reads what it still holds and is dropped by Poll.
+		if _, err := os.Lstat(c.options.path(path)); err == nil && w.plan.Pattern != "" {
+			c.dropWatch(path)
 		}
 	}
 	for path, f := range planned {
@@ -298,6 +307,7 @@ func (c *Collector) plan(ctx context.Context) {
 			t.bootID = c.boot.id
 		}
 		t.Pattern = c.options.patternPath(f.Pattern)
+		t.RefuseHardLinks = f.Source == SourceApp
 		t.Now = c.now
 		t.files = c.files
 		c.watches[path] = &watch{plan: f, tailer: t, planned: true}
@@ -373,6 +383,12 @@ func (c *Collector) listWatchedDirs() {
 	}
 }
 
+// maxListedNames is how many names of a watched directory are remembered. A directory with more counts as one
+// that cannot be listed, so the list a user can grow at will is never kept in memory.
+const maxListedNames = 20000
+
+var errTooManyNames = errors.New("too many names")
+
 // readDirNames opens dir with O_DIRECTORY and O_NONBLOCK, so a FIFO put in its place cannot block the open.
 func readDirNames(dir string) (map[string]bool, error) {
 	f, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NONBLOCK, 0)
@@ -380,15 +396,21 @@ func readDirNames(dir string) (map[string]bool, error) {
 		return nil, err
 	}
 	defer f.Close()
-	names, err := f.Readdirnames(-1)
-	if err != nil {
-		return nil, err
+	set := map[string]bool{}
+	for {
+		names, err := f.Readdirnames(1024)
+		for _, name := range names {
+			set[name] = true
+		}
+		switch {
+		case len(set) > maxListedNames:
+			return nil, fmt.Errorf("%s: %w", dir, errTooManyNames)
+		case errors.Is(err, io.EOF):
+			return set, nil
+		case err != nil:
+			return nil, err
+		}
 	}
-	set := make(map[string]bool, len(names))
-	for _, name := range names {
-		set[name] = true
-	}
-	return set, nil
 }
 
 // createdSince reports whether path was missing from its directory when the directory was listed.

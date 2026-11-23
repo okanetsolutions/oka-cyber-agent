@@ -275,8 +275,10 @@ func TestSudoKeyOrder(t *testing.T) {
 			t.Errorf("%q: target_user=%q command=%q, want %q and %q", tc.message, user, command, tc.targetUser, tc.command)
 		}
 	}
-	if _, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/x ; COMMAND=/bin/ls", testNow, ""); ok {
-		t.Error("a line without USER is not a sudo command")
+	// Without USER the line is not one sudo writes whole, so nothing of its command is read.
+	e, ok := ParseAuth("sudo", "alice : TTY=pts/0 ; PWD=/x ; COMMAND=/bin/ls", testNow, "")
+	if _, hasUser := e.Fields["target_user"]; !ok || hasUser || e.Fields["command"] != unparsedCommand || e.Message != "alice : TTY=pts/0 ; PWD=/x ; COMMAND=[unparsed]" {
+		t.Errorf("a line without USER = %+v, %v", e, ok)
 	}
 }
 
@@ -365,7 +367,7 @@ func TestSudoContinuedCommandLines(t *testing.T) {
 }
 
 // Only sudo's own fields and the failures it is known to log reach an event: a line of any other shape is
-// dropped, or keeps only its fields when it has those of a command, so its text can never carry an argument.
+// dropped, or keeps only its fields when it has one or was cut short, so its text can never carry an argument.
 func TestSudoShipsNoUnparsedText(t *testing.T) {
 	for _, tc := range []struct{ line, kind, reason, message string }{
 		{line: "   alice : (command continued) -D cn=admin -w S3cretPass -f /tmp/x.ldif"},
@@ -373,8 +375,12 @@ func TestSudoShipsNoUnparsedText(t *testing.T) {
 		{line: "alice : (command continued) 3 incorrect password attempts -w S3cretPass"},
 		{line: "alice : unable to execute /usr/bin/ldapmodify -w S3cretPass: Permission denied"},
 		{line: "alice : S3cretPass"},
-		{line: "alice : PWD=/ ; S3cretPass"},
-		{line: "alice : 3 incorrect password attempts -w S3cretPass ; TTY=pts/0"},
+		{"alice : PWD=/ ; S3cretPass", KindSudoCommand, "", "alice : PWD=/ ; COMMAND=[unparsed]"},
+		{"alice : 3 incorrect password attempts -w S3cretPass ; TTY=pts/0", KindSudoFailed, "other", "alice : [unparsed] ; TTY=pts/0"},
+		{"alice : TTY=pts/0 ;", KindSudoCommand, "", "alice : TTY=pts/0 ; COMMAND=[unparsed]"},
+		{"alice : TTY=pts/0 ; PWD=/tmp ; USER=root ; COMMAND=/usr/bin/cat -w S3cretPass\n", KindSudoCommand, "", "alice : TTY=pts/0 ; PWD=/tmp ; USER=root ; COMMAND=/usr/bin/cat [2 args]"},
+		{"alice : TTY=pts/0 ; PWD=/tmp/a\nS3cretPass ; USER=root ; COMMAND=/usr/bin/cat x", KindSudoCommand, "", "alice : TTY=pts/0 ; PWD=/tmp/a S3cretPass ; USER=root ; COMMAND=/usr/bin/cat [1 arg]"},
+		{"alice : a password is required -w S3cretPass ;", KindSudoFailed, "other", "alice : [unparsed]"},
 		{
 			"alice : command not found -w S3cretPass ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ldapmodify -w S3cretPass",
 			KindSudoFailed, "other", "alice : [unparsed] ; PWD=/ ; USER=root ; COMMAND=/usr/bin/ldapmodify [2 args]",
@@ -614,10 +620,79 @@ func TestTrustedAuthEntry(t *testing.T) {
 		{"sshd", "0", "", "logger", false},
 		{"cron", "0", "/usr/sbin/cron", "cron", false},
 	} {
-		entry := JournalEntry{Identifier: tc.identifier, UID: tc.uid, Exe: tc.exe, Comm: tc.comm}
+		entry := JournalEntry{Transport: authTransport(tc.identifier), Identifier: tc.identifier, UID: tc.uid, Exe: tc.exe, Comm: tc.comm}
 		if got := TrustedAuthEntry(entry); got != tc.want {
 			t.Errorf("TrustedAuthEntry(%+v) = %v, want %v", entry, got, tc.want)
 		}
+		for _, transport := range []string{"", "stdout", "journal", "syslog", "kernel", "audit"} {
+			entry.Transport = transport
+			if got, want := TrustedAuthEntry(entry), tc.want && transport == authTransport(tc.identifier); got != want {
+				t.Errorf("TrustedAuthEntry(%+v) = %v, want %v", entry, got, want)
+			}
+		}
+	}
+}
+
+// The rocky-9 journal samples were captured on 2026-11-23 in a disposable rockylinux/rockylinux:9-ubi-init
+// container (systemd 252-79.el9_9.1, sudo 1.9.17p2, util-linux 2.37.4) and keep the fields the parser reads.
+//
+// rocky-9.jsonl holds what the real programs logged for root (uid 0) and for the users alice (1000) and mallory
+// (1001): useradd, sudo, su, passwd, gpasswd and crontab, every entry with _TRANSPORT=syslog and, for the
+// set-user-ID programs, the UID of the user who ran them.
+//
+// rocky-9-forged.jsonl holds what mallory made the journal record under these names:
+//   - systemd-cat -t sudo sudo -p 'root : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/id' -S true:
+//     the real sudo printing its prompt, _EXE=/usr/bin/sudo and _TRANSPORT=stdout. Before the transport was
+//     checked this entry was trusted and became a sudo_command of root.
+//   - lines a second process wrote to the stream of a process that became sudo, su or passwd, which journald
+//     records as the writer (sh, cat), and syslog messages sent just before execve("/usr/bin/sudo") that
+//     journald handled before the exec (python3).
+//
+// rocky-9-exec-race.jsonl holds three of the nine messages out of thirty that mallory sent to the syslog socket
+// just before execve("/usr/bin/sudo") while four other processes flooded journald: it read _EXE after the exec
+// (and _COMM before it). They are trusted, and nothing in them tells them from a real entry: see
+// TrustedAuthEntry.
+func TestTrustedAuthEntryRocky9(t *testing.T) {
+	trusted := func(file string) (yes, no []JournalEntry) {
+		for _, line := range readLines(t, filepath.Join("testdata", "journal", file)) {
+			entry, err := ParseJournalEntry([]byte(line))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if TrustedAuthEntry(entry) {
+				yes = append(yes, entry)
+			} else {
+				no = append(no, entry)
+			}
+		}
+		return yes, no
+	}
+	real, rejected := trusted("rocky-9.jsonl")
+	if len(real) != 21 || len(rejected) != 0 {
+		t.Errorf("real entries: %d trusted, rejected %+v", len(real), rejected)
+	}
+	kinds := map[string]int{}
+	for _, entry := range real {
+		if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
+			kinds[e.Kind]++
+		}
+	}
+	if want := map[string]int{KindUserCreated: 2, KindSudoFailed: 3, KindSuSession: 2, KindPasswordChanged: 1, KindUserGroupChanged: 1}; !maps.Equal(kinds, want) {
+		t.Errorf("events of the real entries = %v, want %v", kinds, want)
+	}
+
+	accepted, forged := trusted("rocky-9-forged.jsonl")
+	if len(accepted) != 0 || len(forged) != 7 {
+		t.Errorf("forged entries: trusted %+v, %d rejected", accepted, len(forged))
+	}
+	prompt := forged[0]
+	if _, ok := ParseAuth(prompt.Identifier, prompt.Message, prompt.At, prompt.PID); !ok || prompt.Transport != "stdout" || !trustedSender(prompt) {
+		t.Errorf("the first forged entry is sudo printing its prompt to a stream: %+v", prompt)
+	}
+
+	raced, _ := trusted("rocky-9-exec-race.jsonl")
+	if len(raced) != 3 {
+		t.Errorf("entries of the exec race: %d trusted, a known limit that this test records", len(raced))
 	}
 }
 
@@ -724,4 +799,109 @@ func TestMonolog(t *testing.T) {
 	if laravel := count("laravel.log"); len(laravel) != 1 || laravel[0].FirstAt.Hour() != 19 {
 		t.Fatalf("laravel events = %+v", laravel)
 	}
+}
+
+// nginx.auth-user.access.log and apache2.auth-user.access.log were captured on 2026-11-23 in disposable
+// nginx:1.28-alpine (nginx 1.28.3) and httpd:2.4-alpine (Apache 2.4.71, combined format, /private behind
+// AuthType Basic) containers. The requests carried the Basic authentication users "a b", "alice" and
+// `a b  c [x] "q"`: nginx logs the user of any request, Apache of a protected one, blanks included. Such a line
+// used to give no event, which hid every request of a client that sent such a user name.
+func TestParseAccessLogUserWithBlanks(t *testing.T) {
+	for file, want := range map[string][]string{
+		"nginx.auth-user.access.log":   {"/wp-login.php", "/", "/a%20b?q=1", "/plain"},
+		"apache2.auth-user.access.log": {"/private/x", "/private/y", "/open"},
+	} {
+		lines := readLines(t, filepath.Join("testdata", "web", file))
+		if len(lines) != len(want) {
+			t.Fatalf("%s: %d lines, want %d", file, len(lines), len(want))
+		}
+		for i, line := range lines {
+			e, ok := ParseAccessLog(line, "")
+			if !ok {
+				t.Errorf("%s line %d gives no event: %q", file, i+1, line)
+				continue
+			}
+			if e.SrcIP != "127.0.0.1" || e.Fields["path"] != want[i] || e.Fields["method"] != "GET" || e.FirstAt.IsZero() {
+				t.Errorf("%s line %d = %+v", file, i+1, e)
+			}
+		}
+	}
+
+	const rest = `[23/Nov/2026:19:05:48 +0000] "GET /x HTTP/1.1" 200 5 "-" "curl"`
+	for line, wantIP := range map[string]string{
+		"203.0.113.9 - a b " + rest:                                       "203.0.113.9",
+		"203.0.113.9 - 198.51.100.1 - x " + rest:                          "203.0.113.9",
+		"203.0.113.9 - x [01/Jan/2020:00:00:00 +0000] " + rest:            "203.0.113.9",
+		`203.0.113.9 - x [01/Jan/2020:00:00:00 +0000] \"GET /y\" ` + rest: "203.0.113.9",
+		"shop.example:443 203.0.113.9 - a b " + rest:                      "203.0.113.9",
+		"2001:db8::1 - a b " + rest:                                       "2001:db8::1",
+	} {
+		e, ok := ParseAccessLog(line, "")
+		if !ok || e.SrcIP != wantIP || e.Fields["path"] != "/x" || e.FirstAt.Year() != 2026 {
+			t.Errorf("ParseAccessLog(%q) = %+v, %v", line, e, ok)
+		}
+	}
+	// Two addresses before the user are another log format (a forwarded address first), not a user with blanks.
+	if e, ok := ParseAccessLog("198.51.100.1 203.0.113.9 - alice "+rest, ""); ok {
+		t.Errorf("a line with two addresses gave %+v", e)
+	}
+}
+
+// debian-12.sudo-long-cwd.log was captured on 2026-11-23 in a disposable debian:12 container (sudo 1.9.13p3,
+// rsyslog) and is unchanged. alice ran sudo cat /etc/hostname from a working directory of 1008 bytes, sudo -u
+// nobody id -u from one as long with a blank in its second name, and sudo id -u from /srv; mallory, who is
+// not in sudoers, ran sudo id from the first directory. sudo breaks the line before USER and COMMAND, which
+// follow in "(command continued)" lines. Every run must still give an event: the cut ones used to give none.
+//
+// ../journal/rocky-9.sudo-long-cwd.jsonl holds the same from the Rocky 9 container of
+// TestTrustedAuthEntryRocky9 (sudo 1.9.17p2), where PAM refused every account, so its first lines carry a
+// status the agent does not know.
+func TestSudoLinesCutShortStillGiveEvents(t *testing.T) {
+	check := func(name string, events []Event, want []Event) {
+		t.Helper()
+		if len(events) != len(want) {
+			t.Fatalf("%s: %d events, want %d: %+v", name, len(events), len(want), events)
+		}
+		for i, e := range events {
+			redacted := Redact(e)
+			data, err := json.Marshal(redacted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, hasCommand := e.Fields["command"]; e.Kind != want[i].Kind || e.Username != want[i].Username || redacted.Message != want[i].Message ||
+				hasCommand != (want[i].Kind == KindSudoCommand) || hasCommand && e.Fields["command"] != want[i].Fields["command"] {
+				t.Errorf("%s event %d = %s", name, i, data)
+			}
+			for _, text := range []string{"aaaa", "dddd", "hhhh", "blank", "hostname", "nobody", "retrieve"} {
+				if strings.Contains(string(data), text) {
+					t.Errorf("%s event %d keeps %q: %s", name, i, text, data)
+				}
+			}
+		}
+	}
+	command := func(user, message, command string) Event {
+		return Event{Kind: KindSudoCommand, Username: user, Message: message, Fields: map[string]any{"command": command}}
+	}
+	check("debian-12.sudo-long-cwd.log", authEvents(t, "debian-12.sudo-long-cwd.log"), []Event{
+		command("alice", "   alice : PWD=[redacted] ; COMMAND=[unparsed]", unparsedCommand),
+		command("alice", "   alice : PWD=[redacted] ; COMMAND=[unparsed]", unparsedCommand),
+		command("alice", "   alice : PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/id [1 arg]", "/usr/bin/id [1 arg]"),
+		{Kind: KindSudoFailed, Username: "mallory", Message: " mallory : user NOT in sudoers"},
+	})
+
+	var journal []Event
+	for _, line := range readLines(t, filepath.Join("testdata", "journal", "rocky-9.sudo-long-cwd.jsonl")) {
+		entry, err := ParseJournalEntry([]byte(line))
+		if err != nil || !TrustedAuthEntry(entry) {
+			t.Fatalf("entry %+v: %v", entry, err)
+		}
+		if e, ok := ParseAuth(entry.Identifier, entry.Message, entry.At, entry.PID); ok {
+			journal = append(journal, e)
+		}
+	}
+	check("rocky-9.sudo-long-cwd.jsonl", journal, []Event{
+		{Kind: KindSudoFailed, Username: "root", Message: "    root : [unparsed]"},
+		{Kind: KindSudoFailed, Username: "root", Message: "    root : [unparsed] ; PWD=[redacted]"},
+		{Kind: KindSudoFailed, Username: "mallory", Message: " mallory : user NOT in sudoers"},
+	})
 }

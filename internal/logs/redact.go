@@ -3,6 +3,7 @@ package logs
 import (
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -17,6 +18,10 @@ const (
 
 	// maxNestedQueries bounds how deep a query parameter value is searched for a nested query, decoded or not.
 	maxNestedQueries = 4
+
+	// minPathSecretLength is how long a segment of a web request path must be to be redacted after a segment
+	// with a secret name (/reset-password/<token>). Shorter ones are page names and numbers (/password/reset).
+	minPathSecretLength = 16
 )
 
 // A name is secret (see secretName) when, lower cased and without leading dashes and separators, it contains one
@@ -24,6 +29,9 @@ const (
 // and PHP array keys and HTTP headers, so a new place a secret can hide only needs a new way to find names.
 var (
 	secretWords = []string{"pass", "pwd", "secret", "token", "key", "cred", "auth", "cookie", "session", "sessid"}
+	// shortSecretWords make a name secret only as one of its words (pw, user_pw, otpCode, X-CSRF): as a
+	// substring they are part of too many other words (shipping, inside, consider).
+	shortSecretWords = []string{"pw", "psw", "otp", "totp", "pin", "sid", "csrf", "xsrf", "ticket", "signature"}
 
 	// notSecretParts are words that contain a secret word by chance, public keys, and the keytool and openssl
 	// commands that make a key or key store. They are cut out of a name before it is checked, so --keyring stays
@@ -52,15 +60,32 @@ var (
 	queryParameter = regexp.MustCompile(`([?&;])([^=&;#\s"?]+)=([^&;#\s"]*)`)
 	jwtShaped      = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+`)
 	emailAddress   = regexp.MustCompile(`[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
-	// urlScheme ends where the authority of a URL starts, after scheme://.
-	urlScheme = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://`)
+	// urlScheme ends where the authority of a URL starts, after scheme://. Each slash may be escaped with
+	// backslashes, as PHP's json_encode writes it (https:\/\/user:password@host) and a JSON string inside
+	// another repeats it.
+	urlScheme = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*:(?:\\*/){2}`)
 	// secretKeyValue finds a key and the separator after it: key=value, key: value, 'key' => value,
-	// [key] => value and "key": with its quotes escaped to any depth (\"key\": inside a JSON string), or a key
-	// followed by blanks or a parenthesis, which counts only when a quoted value follows (SQL PASSWORD 'x',
-	// PASSWORD('x'), token "x").
-	secretKeyValue = regexp.MustCompile(`(\\*["']|\[)?([A-Za-z0-9_][A-Za-z0-9_.-]*)(\\*["']|\])?(\s*(?:=>|[:=])\s*|\s*\(\s*|\s+)`)
-	identifiedBy   = regexp.MustCompile(`(?i)\bidentified(?:\s+with\s+\S+)?\s+$`)
+	// [key] => value, a MySQL identifier in backticks and "key": with its quotes escaped to any depth
+	// (\"key\": inside a JSON string), or a key followed by blanks or a parenthesis, which counts only when a
+	// quoted value follows (SQL PASSWORD 'x', PASSWORD('x'), token "x").
+	secretKeyValue = regexp.MustCompile("(\\\\*[\"'`]|\\[)?([A-Za-z0-9_][A-Za-z0-9_.-]*)(\\\\*[\"'`]|\\])?(\\s*(?:=>|[:=])\\s*|\\s*\\(\\s*|\\s+)")
 	sshUserName    = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
+	// xmlElement opens an XML element: an optional namespace prefix, the name and any attributes.
+	xmlElement = regexp.MustCompile(`<(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)(?:\s[^<>]*)?>`)
+	// serializedKey is a string key of PHP's serialize(), its quotes escaped to any depth: s:8:"password";
+	serializedKey = regexp.MustCompile(`s:\d+:\\*"([^";]*?)\\*";`)
+	// sqlInsert is an INSERT up to its VALUES, with the column list the values are matched against by position.
+	sqlInsert = regexp.MustCompile(`(?i)\b(?:insert|replace)\s+(?:ignore\s+)?into\s+[^\s(]+\s*\(([^()]*)\)\s*values\s*`)
+	// knownTokens are credentials recognized by their own format, with no name next to them: GitHub, Stripe,
+	// Slack and GitLab tokens and AWS access key IDs.
+	knownTokens = regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{10,}|xox[a-z]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`)
+	// knownTokenParts are in every text knownTokens matches, to look for them before the pattern runs.
+	knownTokenParts = []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "k_live_", "k_test_", "xox", "glpat-", "AKIA", "ASIA"}
+	// slackWebhook and telegramBot hold their secret in the path of a URL, whose slashes may be JSON escaped.
+	slackWebhook = regexp.MustCompile(`(hooks\.slack\.com\\*/services\\*/)[A-Za-z0-9/\\]+`)
+	telegramBot  = regexp.MustCompile(`(/bot)\d+:[A-Za-z0-9_-]{20,}`)
+	// privateKey is a PEM private key block, to its END line or to the end of the text when that is cut off.
+	privateKey = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)`)
 	// phpArray starts an array as print_r (Array) and var_export (array) write it, the parenthesis after blanks,
 	// line breaks or line breaks escaped in a JSON string.
 	phpArray = regexp.MustCompile(`^(?i:array)(?:\s|\\+[nrt])*\(`)
@@ -99,6 +124,12 @@ func Redact(e Event) Event {
 		}
 	case KindHTTPRequest:
 		e.Suspicious = Suspicious(e)
+		e.Message = redactSpans(e.Message, pathSecretSpans(e.Message))
+		for k, v := range e.Fields {
+			if s, ok := v.(string); ok {
+				e.Fields[k] = redactSpans(s, pathSecretSpans(s))
+			}
+		}
 	case KindAppError:
 		e.Message = RedactText(e.Message)
 	}
@@ -117,17 +148,190 @@ func Redact(e Event) Event {
 // a password in a referer or a user agent is redacted like one in an application error.
 func redactEverywhere(s string) string {
 	s = RedactQuery(redactURLUserinfo(s))
-	s = redactSpans(s, keyValueSpans(s))
+	s = redactSpans(s, textSpans(s)...)
 	s = jwtShaped.ReplaceAllString(s, Redacted)
+	s = redactKnownTokens(s)
 	return emailAddress.ReplaceAllString(s, Redacted)
 }
 
+// redactKnownTokens replaces the credentials that need no name to be recognized (see knownTokens).
+func redactKnownTokens(s string) string {
+	if containsAny(s, knownTokenParts) {
+		s = knownTokens.ReplaceAllString(s, Redacted)
+	}
+	if strings.Contains(s, "hooks.slack.com") {
+		s = slackWebhook.ReplaceAllString(s, "${1}"+Redacted)
+	}
+	if strings.Contains(s, "/bot") {
+		s = telegramBot.ReplaceAllString(s, "${1}"+Redacted)
+	}
+	if strings.Contains(s, "PRIVATE KEY-----") {
+		s = privateKey.ReplaceAllString(s, Redacted)
+	}
+	return s
+}
+
+// pathSecretSpans finds, in every path of s (the request, the referer), the segments of at least
+// minPathSecretLength bytes that come after a segment with a secret name: the token of /reset-password/<token>
+// or /password/reset/<token>. A path runs from one blank, quote, ?, # or ; to the next.
+func pathSecretSpans(s string) []span {
+	var spans []span
+	afterSecret := false
+	for start := 0; start <= len(s); {
+		end := start
+		for end < len(s) && s[end] != '/' && strings.IndexByte(" \t\r\n\"'?#;<>", s[end]) < 0 {
+			end++
+		}
+		switch segment := s[start:end]; {
+		case afterSecret && len(segment) >= minPathSecretLength && !strings.HasPrefix(segment, Redacted):
+			spans = append(spans, span{start, end})
+		case segment != "" && secretName(percentDecode(segment)):
+			afterSecret = true
+		}
+		if end < len(s) && s[end] != '/' {
+			afterSecret = false
+		}
+		start = end + 1
+	}
+	return spans
+}
+
+// textSpans are the secret values every rule that reads names finds in s: key and value pairs, XML elements,
+// PHP serialized entries and SQL INSERT values.
+func textSpans(s string) [][]span {
+	return [][]span{keyValueSpans(s), xmlTextSpans(s), serializedSpans(s), sqlInsertSpans(s)}
+}
+
+// xmlTextSpans finds the content of every XML element with a secret name, whatever its namespace prefix and
+// attributes (<wsse:Password Type="PasswordText">x</wsse:Password>): everything up to its closing tag, child
+// elements included, or to the end of s when it is not closed. The search goes on after the closing tag, so
+// each part of s is read once.
+func xmlTextSpans(s string) []span {
+	if !strings.Contains(s, "<") || !mayHoldSecretName(s) {
+		return nil
+	}
+	var spans []span
+	for pos := 0; pos < len(s); {
+		loc := xmlElement.FindStringSubmatchIndex(s[pos:])
+		if loc == nil {
+			break
+		}
+		content, name := pos+loc[1], s[pos+loc[2]:pos+loc[3]]
+		pos = content
+		if s[content-2] == '/' || !secretName(name) {
+			continue
+		}
+		end := xmlClosingTag(s, content, name)
+		if !harmlessValue(strings.TrimSpace(s[content:end])) {
+			spans = append(spans, span{content, end})
+		}
+		pos = end
+	}
+	return spans
+}
+
+// xmlClosingTag is where the closing tag of the element name starts at or after from, len(s) without one. Its
+// slash may be escaped, as PHP's json_encode writes <\/password>.
+func xmlClosingTag(s string, from int, name string) int {
+	for i := from; i < len(s); i++ {
+		next := strings.IndexByte(s[i:], '<')
+		if next < 0 {
+			break
+		}
+		i += next
+		tag := strings.TrimLeft(s[i+1:], `\`)
+		if !strings.HasPrefix(tag, "/") {
+			continue
+		}
+		tag = tag[1:]
+		end := 0
+		for end < len(tag) && (isWordByte(tag[end]) || tag[end] == '.' || tag[end] == '-' || tag[end] == ':') {
+			end++
+		}
+		if tag = tag[:end]; tag[strings.LastIndexByte(tag, ':')+1:] == name {
+			return i
+		}
+	}
+	return len(s)
+}
+
+// serializedSpans finds the value after every secret string key of PHP's serialize(), as a failed queue job
+// or a session dump holds it (s:8:"password";s:7:"hunter2";). A string is as long as it says and a number or a
+// boolean ends at its semicolon. Anything else, an array, an object or a string whose length does not lead to
+// its closing quote (JSON escaping changes it), is redacted to the end of s.
+func serializedSpans(s string) []span {
+	if !strings.Contains(s, `";`) || !mayHoldSecretName(s) {
+		return nil
+	}
+	var spans []span
+	pos := 0
+	for _, loc := range serializedKey.FindAllStringSubmatchIndex(s, -1) {
+		if loc[0] < pos || !secretName(s[loc[2]:loc[3]]) {
+			continue
+		}
+		start, end := serializedValue(s, loc[1])
+		if !harmlessValue(s[start:end]) {
+			spans = append(spans, span{start, end})
+		}
+		pos = end
+	}
+	return spans
+}
+
+// serializedValue is where the content of the serialized value at s[at:] lies.
+func serializedValue(s string, at int) (start, end int) {
+	rest := s[at:]
+	switch {
+	case strings.HasPrefix(rest, "N;"):
+		return at, at
+	case strings.HasPrefix(rest, "i:") || strings.HasPrefix(rest, "d:") || strings.HasPrefix(rest, "b:"):
+		if semicolon := strings.IndexByte(rest, ';'); semicolon >= 0 {
+			return at + 2, at + semicolon
+		}
+	case strings.HasPrefix(rest, "s:"):
+		digits := 2
+		for digits < len(rest) && isDigit(rest[digits]) {
+			digits++
+		}
+		length, err := strconv.Atoi(rest[2:digits])
+		body := strings.TrimLeft(strings.TrimPrefix(rest[digits:], ":"), `\`)
+		if err != nil || !strings.HasPrefix(body, `"`) || len(body)-1 < length {
+			break
+		}
+		start = len(s) - len(body) + 1
+		if strings.HasPrefix(strings.TrimLeft(s[start+length:], `\`), `";`) {
+			return start, start + length
+		}
+		return start, len(s)
+	}
+	return at, len(s)
+}
+
+// sqlInsertSpans finds the values of an INSERT whose column list holds a secret name, as Laravel writes a failed
+// statement with its bindings in place: insert into `users` (`email`, `password`) values (a@b.c, $2y$12$...).
+// The values are matched to the columns by position only and a binding is written as it is, quotes, commas and
+// parentheses included, so which one is the secret cannot be told: everything after VALUES is redacted.
+func sqlInsertSpans(s string) []span {
+	if !mayHoldSecretName(s) || !strings.Contains(strings.ToLower(s), "values") {
+		return nil
+	}
+	for _, loc := range sqlInsert.FindAllStringSubmatchIndex(s, -1) {
+		for _, column := range strings.Split(s[loc[2]:loc[3]], ",") {
+			column = strings.Trim(column, " \t\r\n\\\"'`[]")
+			if secretName(column[strings.LastIndexAny(column, ".`\"]")+1:]) && loc[1] < len(s) {
+				return []span{{loc[1], len(s)}}
+			}
+		}
+	}
+	return nil
+}
+
 // secretName tells whether a name (an option, variable, parameter, key or header) holds a secret: it contains
-// one of secretWords once lower cased, its leading dashes and its separators (- _ . and blanks) removed, and
-// it is not one of the known exceptions above.
+// one of secretWords once lower cased, its leading dashes and its separators (- _ . and blanks) removed, or one
+// of its words is one of shortSecretWords, and it is not one of the known exceptions above.
 func secretName(name string) bool {
-	lower := strings.ToLower(strings.TrimLeft(name, "-"))
-	n := normalizedName(lower)
+	name = strings.TrimLeft(name, "-")
+	n := normalizedName(strings.ToLower(name))
 	if slices.Contains(notSecretNames, n) {
 		return false
 	}
@@ -142,19 +346,57 @@ func secretName(name string) bool {
 			return false
 		}
 	}
-	return holdsSecretWord(n)
+	return holdsSecretWord(n) || holdsShortSecretWord(name)
 }
 
-// holdsSecretWord is the test secretName ends with, on a normalized name.
+// holdsSecretWord is the first test secretName ends with, on a normalized name.
 func holdsSecretWord(normalized string) bool {
 	return containsAny(normalized, secretWords)
 }
 
+// holdsShortSecretWord tells whether one of the words of name is one of shortSecretWords. A word ends at
+// anything but a letter or a digit, between a letter and a digit, and where camel case starts a new one
+// (userPw, OTPCode).
+func holdsShortSecretWord(name string) bool {
+	start := -1
+	for i := 0; i <= len(name); i++ {
+		alnum := i < len(name) && (isLetter(name[i]) || isDigit(name[i]))
+		if start >= 0 && (!alnum || wordBreak(name, i)) {
+			if i-start <= len("signature") && slices.Contains(shortSecretWords, strings.ToLower(name[start:i])) {
+				return true
+			}
+			start = -1
+		}
+		if alnum && start < 0 {
+			start = i
+		}
+	}
+	return false
+}
+
+// wordBreak tells whether a new word starts at name[i], which follows a letter or a digit and is one itself.
+func wordBreak(name string, i int) bool {
+	prev, c := name[i-1], name[i]
+	switch {
+	case isDigit(prev) != isDigit(c):
+		return true
+	case isUpper(c):
+		return !isUpper(prev) || i+1 < len(name) && isLetter(name[i+1]) && !isUpper(name[i+1])
+	}
+	return false
+}
+
+func isUpper(c byte) bool { return 'A' <= c && c <= 'Z' }
+
+func isDigit(c byte) bool { return '0' <= c && c <= '9' }
+
 // mayHoldSecretName is false only when no name in s can be secret, so a rule may skip such a text. It runs
 // secretName's own normalization and word test on the whole text: a name is a run of s, its normalized form is a
-// run of the normalized s, so a secret word secretName finds in it is found here too.
+// run of the normalized s, so a secret word secretName finds in it is found here too. A short secret word is a
+// run of letters of the name, which the normalization leaves in one piece.
 func mayHoldSecretName(s string) bool {
-	return holdsSecretWord(normalizedName(s))
+	n := normalizedName(s)
+	return holdsSecretWord(n) || containsAny(n, shortSecretWords)
 }
 
 func normalizedName(name string) string {
@@ -171,8 +413,12 @@ func normalizedName(name string) string {
 // else is: PWD=/x is redacted like pwd=x, since a password may start with / (ODBC's PWD=/x) and the value alone
 // cannot tell a working directory from one.
 func harmlessValue(value string) bool {
-	v := strings.ToLower(value)
-	return strings.Trim(v, "*") == "" || slices.Contains(notSecretValues, v)
+	if strings.Trim(value, "*") == "" {
+		return true
+	}
+	// Only a value as short as the longest of notSecretValues is lower cased: a text of nothing but keys asks
+	// about the same long value once per key.
+	return len(value) <= len("false") && slices.Contains(notSecretValues, strings.ToLower(value))
 }
 
 // RedactQuery replaces the values of sensitive query parameters in every URL of s. A value that holds a query
@@ -266,7 +512,7 @@ func sensitiveParameter(name, value string) bool {
 // (a failed process).
 func RedactText(s string) string {
 	s = RedactQuery(redactURLUserinfo(s))
-	return redactSpans(s, keyValueSpans(s), secretArgumentSpans(s, 0, maxQuotedCommands))
+	return redactSpans(s, append(textSpans(s), secretArgumentSpans(s, 0, maxQuotedCommands), quotedOptionSpans(s))...)
 }
 
 // redactSpans replaces the union of the spans every rule found in s, each run of overlapping or touching spans
@@ -389,7 +635,19 @@ func secretArgumentSpans(s string, offset, depth int) []span {
 				tool = name
 			}
 		}
-		next, from := secretArgument(arg, tool)
+		// Symfony's Process writes every argument in single quotes ('mysql' '-uroot' '-pS3cret'), so an option
+		// is also read behind an opening quote, without the closing one when the quoted part is the whole argument.
+		option, quoted := arg, 0
+		if len(t.quoted) > 0 && t.quoted[0].start == t.start && strings.HasPrefix(arg[1:], "-") {
+			option, quoted = arg[1:], 1
+			if t.quoted[0].end == t.end {
+				option = arg[1 : len(arg)-1]
+			}
+		}
+		next, from := secretArgument(option, tool)
+		if from >= 0 {
+			from += quoted
+		}
 		switch {
 		case expect == argSecret:
 			from = 0
@@ -422,6 +680,70 @@ const (
 	argSecret
 	argUser
 )
+
+// quotedOptionSpans reads every quoted word that starts with a dash as an option, wherever it stands: '-pS3cret',
+// '--password' 'x', '-u' 'admin:x'. commandTokens pairs quotes from the start of the text, so one stray quote
+// before such a word would pair with its opening quote and hide the option. The value of an option that takes
+// one is the rest of its quoted string, or the next word, quoted or not.
+func quotedOptionSpans(s string) []span {
+	var spans []span
+	for i := 0; i+1 < len(s); i++ {
+		quote := s[i]
+		if quote != '\'' && quote != '"' || s[i+1] != '-' {
+			continue
+		}
+		end := i + 1
+		for end < len(s) && s[end] != quote && s[end] != ' ' && s[end] != '\t' {
+			end++
+		}
+		next, from := secretArgument(s[i+1:end], "")
+		if from >= 0 && i+1+from < end {
+			spans = append(spans, span{i + 1 + from, end})
+		}
+		if next != argPlain {
+			start, stop := quotedOptionValue(s, end, quote)
+			if colon := strings.IndexByte(s[start:stop], ':'); next == argUser {
+				start = max(start+colon+1, start)
+				if colon < 0 {
+					start = stop
+				}
+			}
+			if start < stop {
+				spans = append(spans, span{start, stop})
+			}
+		}
+		i = end - 1
+	}
+	return spans
+}
+
+// quotedOptionValue is where the value of the option that ends at s[end] lies: up to the quote that closes the
+// option's own string when a blank ended the option, and else the next word.
+func quotedOptionValue(s string, end int, quote byte) (start, stop int) {
+	closed := end < len(s) && s[end] == quote
+	if closed {
+		end++
+	}
+	for end < len(s) && (s[end] == ' ' || s[end] == '\t') {
+		end++
+	}
+	start, stop = end, end
+	switch {
+	case !closed:
+	case end < len(s) && (s[end] == '\'' || s[end] == '"'):
+		quote = s[end]
+		start, stop = end+1, end+1
+	default:
+		for stop < len(s) && s[stop] != ' ' && s[stop] != '\t' {
+			stop++
+		}
+		return start, stop
+	}
+	for stop < len(s) && s[stop] != quote {
+		stop++
+	}
+	return start, stop
+}
 
 // secretArgument tells what the argument after arg is (a secret, a user:password or anything) and where the
 // secret inside arg starts, -1 when it holds none. Any option, with one dash or two, whose name is secret takes
@@ -590,6 +912,7 @@ func keyValueSpans(s string) []span {
 	}
 	var spans []span
 	structures := structureEnds{}
+	var values *valueEnds
 	for pos := 0; pos < len(s); {
 		loc := secretKeyValue.FindStringSubmatchIndex(s[pos:])
 		if loc == nil {
@@ -615,18 +938,65 @@ func keyValueSpans(s string) []span {
 		case loc[2] < 0 && loc[6] >= 0 && strings.TrimSpace(sep) == "":
 			// A quoted string that ends in a secret word and the quoted string after it, as a referer ending in
 			// /auth and the user agent of an access log line, are not a key and its value.
-		case secretName(key) || strings.EqualFold(key, "by") && identifiedBy.MatchString(s[:keyStart]):
+		case secretName(key) || strings.EqualFold(key, "by") && afterIdentified(s, keyStart):
 			if end, ok := structures.valueEnd(s, sepEnd, strings.TrimSpace(sep), level); ok {
 				if !emptyStructure.MatchString(s[sepEnd:end]) {
 					spans = append(spans, span{sepEnd, end})
 				}
-			} else if start, end := secretValue(s[sepEnd:], key, strings.TrimSpace(sep)); end > start {
-				spans = append(spans, span{sepEnd + start, sepEnd + end})
+				break
+			}
+			if values == nil {
+				values = newValueEnds(s)
+			}
+			if start, end := values.secretValue(sepEnd, key, strings.TrimSpace(sep)); end > start {
+				spans = append(spans, span{start, end})
 			}
 		}
 		pos = sepEnd
 	}
 	return spans
+}
+
+// afterIdentified tells whether s[:at] ends with SQL's "identified" or "identified with <plugin>" and blanks,
+// in any case, as before the BY of IDENTIFIED BY 'x'. It reads backwards from at over those three words at
+// most, never the whole text: a line of nothing but "by" would otherwise cost quadratic time.
+func afterIdentified(s string, at int) bool {
+	end := beforeSpaces(s, at)
+	if end == at {
+		return false
+	}
+	if endsWithWord(s[:end], "identified") {
+		return true
+	}
+	plugin := end
+	for plugin > 0 && !isSpace(s[plugin-1]) {
+		plugin--
+	}
+	with := beforeSpaces(s, plugin)
+	if with == plugin || len(s[:with]) < len("with") || !strings.EqualFold(s[with-len("with"):with], "with") {
+		return false
+	}
+	with -= len("with")
+	identified := beforeSpaces(s, with)
+	return identified != with && endsWithWord(s[:identified], "identified")
+}
+
+// beforeSpaces is the start of the white space that ends s[:at].
+func beforeSpaces(s string, at int) int {
+	for at > 0 && isSpace(s[at-1]) {
+		at--
+	}
+	return at
+}
+
+func isSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r'
+}
+
+// endsWithWord tells whether s ends with word, in any case, and no letter, digit or underscore before it.
+func endsWithWord(s, word string) bool {
+	start := len(s) - len(word)
+	return start >= 0 && strings.EqualFold(s[start:], word) && (start == 0 || !isWordByte(s[start-1]))
 }
 
 // pamServiceType tells whether s[keyStart:sepEnd] is the service in a PAM module's (service:type), as in
@@ -635,24 +1005,88 @@ func pamServiceType(s string, keyStart, sepStart, sepEnd int) bool {
 	if keyStart == 0 || s[keyStart-1] != '(' || s[sepStart:sepEnd] != ":" {
 		return false
 	}
-	group, _, ok := strings.Cut(s[sepEnd:], ")")
-	return ok && slices.Contains(pamGroups, group)
+	for _, group := range pamGroups {
+		if rest, ok := strings.CutPrefix(s[sepEnd:], group); ok && strings.HasPrefix(rest, ")") {
+			return true
+		}
+	}
+	return false
 }
 
 func isWordByte(c byte) bool {
 	return isLetter(c) || '0' <= c && c <= '9' || c == '_'
 }
 
-// secretValue is where the value at the start of s after a secret key lies, start == end to keep it. A quoted
-// value keeps its quotes, escaped to any depth: the value of \"key\":\"x\" is closed by the next quote preceded by
-// the same escaping. After a blank or a parenthesis (sep "" or "(") only a quoted value counts. An authorization
-// scheme such as Bearer is kept.
-func secretValue(s, key, sep string) (start, end int) {
-	if strings.HasPrefix(s, Redacted) {
+// valueEnds finds where the unquoted values of one text end. A text of nothing but keys (pass=pass=pass=...)
+// asks for the end of the same value once per key, so every search remembers what it found: each goes forward
+// from positions that never decrease and reads every part of the text at most once.
+type valueEnds struct {
+	s string
+	// bare and cookie are asked from the start of a value, restBare and restCookie from the credentials after
+	// an authorization scheme, word from the end of a value and clause from a value that ends at a blank.
+	bare, cookie, restBare, restCookie, word, clause func(i int) int
+}
+
+func newValueEnds(s string) *valueEnds {
+	bare := func(i int) bool { return valueStop(s, i) || strings.IndexByte(" \t,;&}])<", s[i]) >= 0 }
+	cookie := func(i int) bool { return valueStop(s, i) }
+	return &valueEnds{
+		s:    s,
+		bare: nextWhere(s, bare), cookie: nextWhere(s, cookie),
+		restBare: nextWhere(s, bare), restCookie: nextWhere(s, cookie),
+		word:   nextWhere(s, func(i int) bool { return s[i] != ' ' && s[i] != '\t' }),
+		clause: nextWhere(s, func(i int) bool { return valueStop(s, i) || s[i] == ';' }),
+	}
+}
+
+// valueStop tells whether no unquoted value goes past s[i]: a quote, a line break, or one of them escaped.
+func valueStop(s string, i int) bool {
+	switch s[i] {
+	case '"', '\'', '\n':
+		return true
+	case '\\':
+		return i+1 < len(s) && strings.IndexByte(`"'nrt`, s[i+1]) >= 0
+	}
+	return false
+}
+
+// nextWhere returns a function giving the first index at or after i where stop holds (len(s) when there is
+// none). What it found last answers every i up to there, so calls with an i that never decreases read each part
+// of s at most once.
+func nextWhere(s string, stop func(i int) bool) func(i int) int {
+	from, found := 0, -1
+	return func(i int) int {
+		if i < from || found < i {
+			from, found = i, i
+			for found < len(s) && !stop(found) {
+				found++
+			}
+		}
+		return found
+	}
+}
+
+// secretValue is where the value at s[at:] after a secret key lies, start == end to keep it. A quoted value
+// keeps its quotes, escaped to any depth: the value of \"key\":\"x\" is closed by the next quote preceded by the
+// same escaping. After a blank or a parenthesis (sep "" or "(") only a quoted value counts. An unquoted value
+// ends at a blank or punctuation, with three exceptions that fail closed:
+//   - a cookie runs to the end of its string,
+//   - an authorization scheme such as Bearer is kept and the credentials after it, behind any blanks or tabs,
+//     are the value, while an Authorization header with any other scheme (SSWS x, Bot x) is redacted whole,
+//     as far as a cookie would be,
+//   - a value with blanks in it that a semicolon closes, as in a connection string
+//     (Password=correct horse battery;), runs to that semicolon.
+func (v *valueEnds) secretValue(at int, key, sep string) (start, end int) {
+	s := v.s
+	if strings.HasPrefix(s[at:], Redacted) {
+		// The query rule already took the first word of ;Password=correct horse battery; for a parameter.
+		if end := v.clauseEnd(at + len(Redacted)); end > 0 {
+			return at, end
+		}
 		return 0, 0
 	}
-	if open, quote := openingQuote(s); quote != 0 {
-		start := open + 1
+	if open, quote := openingQuote(s[at:]); quote != 0 {
+		start := at + open + 1
 		end := len(s)
 		for i := start; i < len(s); i++ {
 			if s[i] == quote && closesQuote(backslashesBefore(s, i, start), open) {
@@ -660,28 +1094,55 @@ func secretValue(s, key, sep string) (start, end int) {
 				break
 			}
 		}
-		if value := s[start:max(end, start)]; strings.HasPrefix(value, Redacted) || harmlessValue(value) {
+		end = max(end, start)
+		if value := s[start:end]; strings.HasPrefix(value, Redacted) || harmlessValue(value) {
 			return 0, 0
 		}
-		return start, max(end, start)
+		return start, end
 	}
 	if sep == "" || sep == "(" {
 		return 0, 0
 	}
-	end = bareValueEnd(s, key)
-	value := s[:end]
-	if end == 0 || harmlessValue(value) {
+	name := normalizedName(key)
+	cookie := strings.Contains(name, "cookie")
+	valueEnd, restEnd := v.bare, v.restBare
+	if cookie {
+		valueEnd, restEnd = v.cookie, v.restCookie
+	}
+	end = valueEnd(at)
+	value := s[at:end]
+	if end == at || harmlessValue(value) {
 		return 0, 0
 	}
-	if rest, ok := strings.CutPrefix(s[end:], " "); ok && isAuthScheme(value) {
-		if strings.HasPrefix(rest, Redacted) {
+	if rest := v.word(end); rest > end && isAuthScheme(value) {
+		if strings.HasPrefix(s[rest:], Redacted) {
 			return 0, 0
 		}
-		if n := bareValueEnd(rest, key); n > 0 {
-			return end + 1, end + 1 + n
+		if credentials := restEnd(rest); credentials > rest {
+			return rest, credentials
 		}
 	}
-	return 0, end
+	if strings.Contains(name, "authorization") {
+		return at, v.cookie(at)
+	}
+	if clause := v.clauseEnd(end); clause > 0 && !cookie {
+		end = clause
+	}
+	return at, end
+}
+
+// clauseEnd is where a value whose first word ends at the blank s[end] ends when a semicolon closes it before
+// any quote or line break, without the blanks before that semicolon, and 0 otherwise.
+func (v *valueEnds) clauseEnd(end int) int {
+	s := v.s
+	if end >= len(s) || s[end] != ' ' && s[end] != '\t' {
+		return 0
+	}
+	stop := v.clause(end)
+	if stop == len(s) || s[stop] != ';' {
+		return 0
+	}
+	return len(strings.TrimRight(s[:stop], " \t"))
 }
 
 // openingQuote finds a quote at the start of s after open backslashes, 0 when s does not start with one.
@@ -795,24 +1256,6 @@ func afterBlank(s string, i int) bool {
 		return i >= 2 && s[i-2] == '\\'
 	}
 	return false
-}
-
-// bareValueEnd is the length of an unquoted value at the start of s: a run up to a blank, punctuation or an
-// escaped quote, and for a cookie the rest of its string.
-func bareValueEnd(s, key string) int {
-	cookie := strings.Contains(normalizedName(key), "cookie")
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '\\' && i+1 < len(s) && strings.IndexByte(`"'nrt`, s[i+1]) >= 0:
-			return i
-		case c == '"' || c == '\'' || c == '\n':
-			return i
-		case !cookie && strings.IndexByte(" \t,;&}])<", c) >= 0:
-			return i
-		}
-	}
-	return len(s)
 }
 
 // cut returns s as valid UTF-8 of at most max bytes. Log lines are not always UTF-8 (a Latin-1 byte in an

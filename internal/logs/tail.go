@@ -51,6 +51,8 @@ type Tailer struct {
 	// Pattern is the glob pattern Path was found by, "" for a path named in full.
 	Pattern string
 	Now     func() time.Time
+	// RefuseHardLinks makes a file with more than one name count as no file (see errHardLink).
+	RefuseHardLinks bool
 
 	files        *readFiles
 	file         *os.File
@@ -134,7 +136,7 @@ func (t *Tailer) Poll() PollResult {
 	if t.file == nil {
 		info, err = t.open()
 		switch {
-		case errors.Is(err, fs.ErrNotExist) || errors.Is(err, errSymlink) || errors.Is(err, errNotRegular):
+		case errors.Is(err, fs.ErrNotExist) || errors.Is(err, errSymlink) || errors.Is(err, errNotRegular) || errors.Is(err, errHardLink):
 			return t.missing(r)
 		case errors.Is(err, errHeld):
 			return r
@@ -147,6 +149,11 @@ func (t *Tailer) Poll() PollResult {
 		t.liveFrom = info.Size()
 		t.moveTo(0)
 		t.skipping = false
+	}
+	// A file with nothing new is not read: every read takes a buffer of maxLineBytes, once a second for every
+	// file a glob pattern matches.
+	if info.Size() == t.offset {
+		return r
 	}
 	lines, live, _ := t.read()
 	r.Lines = append(r.Lines, lines...)
@@ -180,6 +187,9 @@ var errHeld = errors.New("held by another tailer")
 // latest Lstat saw.
 func (t *Tailer) open() (fs.FileInfo, error) {
 	f, err := openLogFile(t.Path, t.Pattern)
+	if err == nil && t.RefuseHardLinks {
+		err = refuseHardLink(f)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -15,7 +15,26 @@ import (
 var (
 	errSymlink    = errors.New("symlink")
 	errNotRegular = errors.New("not a regular file")
+	// errHardLink refuses an application log that has another name. Whoever owns the log directory of an
+	// application can link a file of another source into it (ln /var/log/nginx/access.log storage/logs/x.log,
+	// which the kernel allows to the owner of the access log, www-data on Debian). The tailers of a Collector
+	// share a file by device and inode, so the tailer of that name could hold the web server's log and its own
+	// tailer would wait for it forever, while the lines were read as application errors. The built in sources
+	// never refuse a file for its links, so they keep reading whatever is linked elsewhere.
+	errHardLink = errors.New("hard link")
 )
+
+// refuseHardLink closes f and returns errHardLink when the open file has more than one name.
+func refuseHardLink(f *os.File) error {
+	info, err := f.Stat()
+	if err == nil && nlinkOf(info) > 1 {
+		err = &fs.PathError{Op: "open", Path: f.Name(), Err: errHardLink}
+	}
+	if err != nil {
+		f.Close()
+	}
+	return err
+}
 
 // openLogFile opens the log file at path for reading. pattern is the glob pattern the path was found by, or ""
 // for a path named in full (both with Options.Root). A directory written literally in the configured path may
@@ -102,6 +121,8 @@ func skipReason(err error) string {
 		return ReasonSymlink
 	case errors.Is(err, errNotRegular):
 		return ReasonNotRegularFile
+	case errors.Is(err, errHardLink):
+		return ReasonHardLink
 	default:
 		return ReasonNotFound
 	}

@@ -125,18 +125,28 @@ func parseSSH(program, message string, at time.Time) (Event, bool) {
 // "alice : 3 incorrect password attempts ; ..." and "bob : user NOT in sudoers ; ...". The arguments of the
 // command and the values of ENV are never kept, in the fields or in the message (see sudoCommand). Only what is
 // read is kept: sudo's own fields and a failure in sudoFailures. A line with an unknown status is kept only when
-// it has the fields of a command, with the status replaced by unparsedStatus, and any other line is dropped.
+// it has one of sudo's fields or was cut short, with the status replaced by unparsedStatus, and any other line
+// is dropped.
+//
+// sudo breaks a line longer than its limit (980 bytes) at a blank, or anywhere when there is none, and logs the
+// rest as "alice : (command continued) ...". Those later lines are dropped: they hold arguments, and what looks
+// like sudo's fields in them may as well be an argument the user chose. With a long working directory the break
+// comes before USER and COMMAND ("alice : TTY=pts/0 ;", "alice : PWD=/srv/with"), so a first line that has
+// sudo's fields but no command is still a sudo run, reported with the command unparsedCommand. Dropping it let
+// a user hide every command by running sudo from a directory with a long path.
 func parseSudo(message string, at time.Time) (Event, bool) {
+	// sudo before 1.9.13 writes a line break in a working directory or an argument as it is, and journald keeps
+	// it in the message. It is read as a blank, or a line break would hide a sudo run.
+	message = lineBreaks.Replace(message)
 	m := sudoLine.FindStringSubmatchIndex(message)
 	if m == nil || strings.HasPrefix(message, "pam_") {
 		return Event{}, false
 	}
 	body := message[m[4]:m[5]]
-	// sudo logs a command longer than its syslog line limit in several lines, the later ones
-	// "alice : (command continued) <more arguments>", which hold nothing but arguments.
 	if strings.HasPrefix(body, "(command continued)") {
 		return Event{}, false
 	}
+	body, cutShort := strings.CutSuffix(body, " ;")
 	parts := strings.Split(body, " ; ")
 	var status []string
 	if !isSudoField(parts[0]) {
@@ -150,16 +160,20 @@ func parseSudo(message string, at time.Time) (Event, bool) {
 			status[0], reason = unparsedStatus, "other"
 		}
 	}
-	if len(splits) == 0 && (status == nil || status[0] == unparsedStatus) {
+	if status != nil && status[0] == unparsedStatus && !cutShort && !slices.ContainsFunc(parts, isSudoField) {
 		return Event{}, false
 	}
 	command := sudoCommand(splits)
-	e := authEvent(kind, "sudo", message[:m[4]]+strings.Join(append(status, withoutArguments(parts, command)...), " ; "), at)
+	kept := withoutArguments(parts, command)
+	if status == nil && !slices.ContainsFunc(parts, isCommandPart) {
+		kept = append(kept, "COMMAND="+command)
+	}
+	e := authEvent(kind, "sudo", message[:m[4]]+strings.Join(append(status, kept...), " ; "), at)
 	e.Username = message[m[2]:m[3]]
 	if user, ok := agreed(splits, func(s sudoSplit) string { return s.user }); ok && user != "" {
 		e.set("target_user", user)
 	}
-	if slices.ContainsFunc(parts, isCommandPart) {
+	if status == nil || slices.ContainsFunc(parts, isCommandPart) {
 		e.set("command", command)
 	}
 	if tsid, ok := agreed(splits, func(s sudoSplit) string { return s.tsid }); ok && tsid != "" {
@@ -173,6 +187,8 @@ func parseSudo(message string, at time.Time) (Event, bool) {
 	}
 	return e, true
 }
+
+var lineBreaks = strings.NewReplacer("\n", " ", "\r", " ")
 
 // unparsedStatus replaces the status of a sudo line that is not one of sudoFailures, whose text could be anything.
 const unparsedStatus = "[unparsed]"

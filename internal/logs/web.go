@@ -10,8 +10,11 @@ import (
 )
 
 // The combined log format, optionally prefixed by "host:port " (Apache vhost_combined) and followed by extra
-// fields (nginx adds "$http_x_forwarded_for"). Quoted fields may contain escaped quotes.
-var combinedLog = regexp.MustCompile(`^(?:(\S+) )?(\S+) \S+ (\S+) \[([^\]]+)\] "((?:[^"\\]|\\.)*)" (\d{3}) (\d+|-)(?: "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)")?`)
+// fields (nginx adds "$http_x_forwarded_for"). Quoted fields may contain escaped quotes. The user is whatever
+// the client sent as the user name of HTTP Basic authentication, which nginx logs for every request and Apache
+// for a protected one, blanks and brackets included (curl -u 'a b:x'), so it runs up to the last " [" that a
+// date and a quoted request follow. Both servers escape a quote in it, so it cannot hold that sequence itself.
+var combinedLog = regexp.MustCompile(`^(?:(\S+) )?(\S+) (\S+) (.*?) \[([^\]]+)\] "((?:[^"\\]|\\.)*)" (\d{3}) (\d+|-)(?: "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)")?`)
 
 // ParseAccessLog turns one combined format access log line into an http_request event. vhost is the virtual
 // host taken from the file name; a vhost_combined prefix in the line takes precedence.
@@ -22,32 +25,38 @@ func ParseAccessLog(line, vhost string) (Event, bool) {
 	}
 	prefix, client := m[1], m[2]
 	if prefix != "" {
-		if _, err := netip.ParseAddr(prefix); err == nil {
+		if _, err := netip.ParseAddr(prefix); err != nil {
+			host, _, _ := strings.Cut(prefix, ":")
+			vhost = host
+		} else if client == "-" {
+			// An address is no vhost_combined prefix (host:port). With a blank in the user the line has one
+			// word more, and the pattern took the client for a prefix and the identity, which both servers log
+			// as "-", for the client: 203.0.113.9 - a b [...].
+			client = prefix
+		} else {
 			return Event{}, false
 		}
-		host, _, _ := strings.Cut(prefix, ":")
-		vhost = host
 	}
 	address, err := netip.ParseAddr(client)
 	if err != nil {
 		return Event{}, false
 	}
-	at, err := time.Parse("02/Jan/2006:15:04:05 -0700", m[4])
+	at, err := time.Parse("02/Jan/2006:15:04:05 -0700", m[5])
 	if err != nil {
 		return Event{}, false
 	}
 	e := newEvent(SourceWeb, KindHTTPRequest, at, line)
 	e.SrcIP = address.String()
-	method, path := splitRequest(m[5])
+	method, path := splitRequest(m[6])
 	e.set("method", method)
 	e.set("path", path)
-	status, _ := strconv.Atoi(m[6])
+	status, _ := strconv.Atoi(m[7])
 	e.set("status", status)
-	if m[7] != "-" {
-		bytes, _ := strconv.ParseInt(m[7], 10, 64)
+	if m[8] != "-" {
+		bytes, _ := strconv.ParseInt(m[8], 10, 64)
 		e.set("bytes", bytes)
 	}
-	if ua := unescape(m[9]); ua != "" && ua != "-" {
+	if ua := unescape(m[10]); ua != "" && ua != "-" {
 		e.set("user_agent", ua)
 	}
 	if vhost != "" {

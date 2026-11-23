@@ -188,7 +188,7 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 		}
 		key := auditSessionKey(e, f["ses"])
 		if kind == "USER_END" {
-			if TrustedAuthEntry(JournalEntry{Identifier: "sshd", UID: "0", Exe: f["exe"]}) {
+			if trustedSender(JournalEntry{Identifier: "sshd", UID: "0", Exe: f["exe"]}) {
 				delete(p.sessions, key)
 			}
 			return Event{}, false
@@ -199,7 +199,7 @@ func (p *auditParser) add(e JournalEntry) (Event, bool) {
 			return Event{}, false
 		}
 		exe := JournalEntry{Identifier: "sshd", UID: e.UID, Exe: f["exe"]}
-		if f["res"] != "success" || !TrustedAuthEntry(exe) || f["terminal"] == "" || f["terminal"] == "cron" {
+		if f["res"] != "success" || !trustedSender(exe) || f["terminal"] == "" || f["terminal"] == "cron" {
 			return Event{}, false
 		}
 		uid, _ := strconv.ParseUint(f["auid"], 10, 32)
