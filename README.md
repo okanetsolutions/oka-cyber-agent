@@ -25,7 +25,7 @@ oka-cyber-agent inventory
 
 - The contents of your files, other than the package databases, local APT metadata, the dnf history database, the dependency lock files, the application details and the log files listed above.
 - Your source code or your git history. Under `.git` the agent opens only `HEAD`, `config`, the one ref file `HEAD` names and `packed-refs`. It never lists that directory and never reads objects, logs, hooks, the index or stashes.
-- Git credentials. A user or password written in the address of the `origin` remote is removed on your server before it is sent, and an address the agent cannot clean with certainty is not sent at all. Nothing else in `.git/config` is sent, and credential stores such as `.git-credentials` are never opened.
+- Git credentials. The agent removes URL-form userinfo from the `origin` remote on your server and keeps the user in an scp-style `user@host:path` address. The agent omits addresses it cannot clean with certainty. Nothing else in `.git/config` is sent, and credential stores such as `.git-credentials` are never opened.
 - Secrets, passwords, keys or tokens, environment variables, shell history or command line arguments of other processes.
 - The arguments of commands run with sudo and the variables sudo passes them: a sudo event carries only the executable and the number of arguments (`/usr/bin/ldapmodify [5 args]`).
 - Your users' data: databases, uploads, mail or application data.

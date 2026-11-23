@@ -236,21 +236,30 @@ func (inv *Inventory) Normalize() error {
 	return nil
 }
 
-// fitSkippedFiles applies the count and byte limits. Records for paths with stored packages come first. Among the
-// rest, reasons that could retain packages come first in case local state was lost.
-func (inv *Inventory) fitSkippedFiles(budget int, stored func(path string) bool) (int, error) {
+// fitSkippedFiles applies the count limit to all records and the byte limit to optional records. A negative
+// remaining budget means Marshal must free package space for the records that preserve stored packages.
+func (inv *Inventory) fitSkippedFiles(budget int, stored func(path string) bool, cut map[string]bool) (remaining int, trimmedForSize bool, err error) {
+	const (
+		storedPath = iota
+		cutManifest
+		retainingReason
+		otherReason
+	)
 	type ranked struct {
 		file SkippedFile
 		rank int
 	}
 	records := make([]ranked, 0, len(inv.SkippedFiles))
 	for _, f := range inv.SkippedFiles {
-		rank := 2
+		rank := otherReason
 		switch {
 		case stored != nil && stored(f.Path):
-			rank = 0
+			rank = storedPath
+		case cut[f.Path]:
+			rank = cutManifest
 		case retainsStoredPackages(f.Reason):
-			rank = 1
+			// Prefer records that could retain packages if local state was lost.
+			rank = retainingReason
 		}
 		records = append(records, ranked{f, rank})
 	}
@@ -260,22 +269,24 @@ func (inv *Inventory) fitSkippedFiles(budget int, stored func(path string) bool)
 	kept := inv.SkippedFiles[:0]
 	keptPaths := make(map[string]bool)
 	for _, r := range records {
-		if len(kept) < MaxSkippedFiles {
-			size, err := jsonRowSize(r.file, len(kept))
-			if err != nil {
-				return 0, err
+		if len(kept) == MaxSkippedFiles {
+			if r.rank == storedPath {
+				inv.DroppedManifests = append(inv.DroppedManifests, r.file.Path)
 			}
-			if size <= budget {
-				budget -= size
-				kept = append(kept, r.file)
-				if r.rank == 0 {
-					keptPaths[r.file.Path] = true
-				}
-				continue
-			}
+			continue
 		}
-		if r.rank == 0 {
-			inv.DroppedManifests = append(inv.DroppedManifests, r.file.Path)
+		size, err := jsonRowSize(r.file, len(kept))
+		if err != nil {
+			return 0, false, err
+		}
+		if size > budget && r.rank > cutManifest {
+			trimmedForSize = true
+			continue
+		}
+		budget -= size
+		kept = append(kept, r.file)
+		if r.rank == storedPath {
+			keptPaths[r.file.Path] = true
 		}
 	}
 	inv.DroppedManifests = slices.DeleteFunc(inv.DroppedManifests, func(path string) bool { return keptPaths[path] })
@@ -283,7 +294,7 @@ func (inv *Inventory) fitSkippedFiles(budget int, stored func(path string) bool)
 	inv.DroppedManifests = slices.Compact(inv.DroppedManifests)
 	inv.SkippedFiles = kept
 	slices.SortFunc(inv.SkippedFiles, compareSkippedFiles)
-	return budget, nil
+	return budget, trimmedForSize, nil
 }
 
 // retainsStoredPackages tells whether a skip record would keep packages stored for that path. A no_lock_file record
@@ -369,9 +380,9 @@ func (a packageIdentity) compare(b packageIdentity) int {
 	)
 }
 
-// Marshal encodes a normalized inventory within the server limits. Packages get the byte budget first, followed by
-// skipped files (with priority for paths in stored) and then application details. If the packages still exceed
-// the budget, the largest dependency manifests are left out and become candidates for skipped_files.
+// Marshal encodes a normalized inventory within the server limits. To fit the body, it trims application details
+// first, then optional skip records, then the largest dependency manifests. Skip records for stored paths and
+// manifests cut here share the byte budget with packages and are subject to the skipped_files count limit.
 func (inv *Inventory) Marshal(limit int, stored func(path string) bool) ([]byte, error) {
 	if len(inv.SkippedFiles) <= MaxSkippedFiles {
 		data, err := json.Marshal(inv)
@@ -380,31 +391,34 @@ func (inv *Inventory) Marshal(limit int, stored func(path string) bool) ([]byte,
 		}
 	}
 
-	base := *inv
-	base.Applications = nil
-	base.SkippedFiles = inv.SkippedFiles[:0]
+	cut := make(map[string]bool)
 	var budget int
 	for {
+		base := *inv
+		base.Applications = nil
+		base.SkippedFiles = inv.SkippedFiles[:0]
 		data, err := json.Marshal(&base)
 		if err != nil {
 			return nil, err
 		}
-		budget = limit - len(data)
+		var trimmedForSize bool
+		budget, trimmedForSize, err = inv.fitSkippedFiles(limit-len(data), stored, cut)
+		if err != nil {
+			return nil, err
+		}
+		if trimmedForSize || budget < 0 {
+			inv.Applications = nil
+		}
 		if budget >= 0 {
 			break
 		}
 		largest := largestManifest(inv.Packages)
 		if largest == "" {
-			return nil, fmt.Errorf("inventory is %d bytes, over the %d byte limit, without dependency files to leave out", len(data), limit)
+			return nil, fmt.Errorf("inventory is %d bytes, over the %d byte limit, without dependency files to leave out", limit-budget, limit)
 		}
 		inv.Packages = slices.DeleteFunc(inv.Packages, func(p Package) bool { return p.ManifestPath == largest })
-		base.Packages = inv.Packages
+		cut[largest] = true
 		inv.Skip(largest, ReasonPackageLimit)
-		base.SkippedFiles = inv.SkippedFiles[:0]
-	}
-	budget, err := inv.fitSkippedFiles(budget, stored)
-	if err != nil {
-		return nil, err
 	}
 	budget -= len(`,"applications":[]`)
 	for i, app := range inv.Applications {
