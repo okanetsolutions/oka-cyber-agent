@@ -16,7 +16,12 @@ import (
 	"strings"
 )
 
-const tcpListen = "0A"
+const (
+	tcpListen        = "0A"
+	udpUnconnected   = "07"
+	udpWireGuardPort = 51820
+	udpTailscalePort = 41641
+)
 
 type ServicesCollector struct {
 	Root string
@@ -24,12 +29,13 @@ type ServicesCollector struct {
 
 func (ServicesCollector) Name() string { return "services" }
 
-// Collect lists listening TCP sockets. Process names are only known for sockets whose owning process the agent
-// may inspect; the rest are reported without one.
+// Collect lists listening TCP and UDP sockets. Process names are only known for sockets whose owning process
+// the agent may inspect.
 func (c ServicesCollector) Collect(ctx context.Context, inv *Inventory) error {
+	ephemeral := c.ephemeralPortRange()
 	var sockets []listeningSocket
-	for _, protocol := range []string{"tcp", "tcp6"} {
-		found, err := c.readTable(protocol)
+	for _, protocol := range []string{"tcp", "tcp6", "udp", "udp6"} {
+		found, err := c.readTable(protocol, ephemeral)
 		if err != nil {
 			return err
 		}
@@ -53,7 +59,29 @@ type listeningSocket struct {
 	inode    string
 }
 
-func (c ServicesCollector) readTable(protocol string) ([]listeningSocket, error) {
+type portRange struct {
+	first, last uint64
+}
+
+func (c ServicesCollector) ephemeralPortRange() portRange {
+	fallback := portRange{32768, 60999}
+	data, err := os.ReadFile(filepath.Join(c.Root, "proc/sys/net/ipv4/ip_local_port_range"))
+	if err != nil {
+		return fallback
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) != 2 {
+		return fallback
+	}
+	first, firstErr := strconv.ParseUint(fields[0], 10, 16)
+	last, lastErr := strconv.ParseUint(fields[1], 10, 16)
+	if firstErr != nil || lastErr != nil || last < first {
+		return fallback
+	}
+	return portRange{first, last}
+}
+
+func (c ServicesCollector) readTable(protocol string, ephemeral portRange) ([]listeningSocket, error) {
 	f, err := os.Open(filepath.Join(c.Root, "proc/net", protocol))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -62,19 +90,27 @@ func (c ServicesCollector) readTable(protocol string) ([]listeningSocket, error)
 		return nil, fmt.Errorf("/proc/net/%s: %w", protocol, err)
 	}
 	defer f.Close()
-	sockets, err := parseProcNetTCP(f, protocol)
+	sockets, err := parseProcNet(f, protocol, ephemeral)
 	if err != nil {
 		return nil, fmt.Errorf("/proc/net/%s: %w", protocol, err)
 	}
 	return sockets, nil
 }
 
-func parseProcNetTCP(r io.Reader, protocol string) ([]listeningSocket, error) {
+func parseProcNet(r io.Reader, protocol string, ephemeral portRange) ([]listeningSocket, error) {
+	state := tcpListen
+	var udpRemote string
+	switch protocol {
+	case "udp":
+		state, udpRemote = udpUnconnected, "00000000:0000"
+	case "udp6":
+		state, udpRemote = udpUnconnected, "00000000000000000000000000000000:0000"
+	}
 	var sockets []listeningSocket
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) < 10 || fields[3] != tcpListen {
+		if len(fields) < 10 || fields[3] != state || (udpRemote != "" && fields[2] != udpRemote) {
 			continue
 		}
 		hexAddress, hexPort, ok := strings.Cut(fields[1], ":")
@@ -87,6 +123,9 @@ func parseProcNetTCP(r io.Reader, protocol string) ([]listeningSocket, error) {
 		}
 		port, err := strconv.ParseUint(hexPort, 16, 16)
 		if err != nil || port == 0 {
+			continue
+		}
+		if udpRemote != "" && ephemeral.first <= port && port <= ephemeral.last && port != udpWireGuardPort && port != udpTailscalePort {
 			continue
 		}
 		sockets = append(sockets, listeningSocket{protocol: protocol, address: address, port: int(port), inode: fields[9]})
