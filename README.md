@@ -9,7 +9,7 @@ It is a single static binary with no runtime dependencies for inventory; optiona
 ## What it collects
 
 - OS facts: hostname, OS family, name and version, kernel version, CPU architecture.
-- Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine). On Red Hat Enterprise Linux it also reads which repository each package was installed from in the dnf history database, never the commands recorded there.
+- Installed OS packages: name, version, architecture and source package, read from the package database (dpkg on Debian and Ubuntu, rpm on Rocky Linux, AlmaLinux and Red Hat, apk on Alpine). For dpkg packages it reports the repository's `Origin` from local APT metadata when available. It uses an exact name, version and architecture match, or the highest listed version of the package name if there is no exact match. On Red Hat Enterprise Linux it also reads which repository each package was installed from in the dnf history database, never the commands recorded there.
 - Application dependencies: name and resolved version of the libraries listed in common lock files, with the path of the file each one came from (see [Dependency files](#dependency-files)). You can turn this off.
 - For each folder it reports a lock file from, the agent reports the application name and PHP or Node.js requirements from `composer.json` and `package.json`. It also reports the checked-out branch and commit and the `origin` remote without passwords or tokens from `.git`. The agent strips URL-form userinfo and keeps the user in an scp-style `user@host:path` address (see [Application details](#application-details)). You can turn this off.
 - Listening services: protocol, address and port of listening TCP sockets, plus the process name when the agent is allowed to see it. The process ID is not sent, so restarting a service does not count as an inventory change. You can turn this off.
@@ -23,7 +23,7 @@ oka-cyber-agent inventory
 
 ## What it never collects
 
-- The contents of your files, other than the package databases, the dnf history database, the dependency lock files, the application details and the log files listed above.
+- The contents of your files, other than the package databases, local APT metadata, the dnf history database, the dependency lock files, the application details and the log files listed above.
 - Your source code or your git history. Under `.git` the agent opens only `HEAD`, `config`, the one ref file `HEAD` names and `packed-refs`. It never lists that directory and never reads objects, logs, hooks, the index or stashes.
 - Git credentials. A user or password written in the address of the `origin` remote is removed on your server before it is sent, and an address the agent cannot clean with certainty is not sent at all. Nothing else in `.git/config` is sent, and credential stores such as `.git-credentials` are never opened.
 - Secrets, passwords, keys or tokens, environment variables, shell history or command line arguments of other processes.
