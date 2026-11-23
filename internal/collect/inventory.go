@@ -58,6 +58,7 @@ type Package struct {
 	Architecture  string `json:"architecture,omitempty"`
 	SourcePackage string `json:"source_package,omitempty"`
 	SourceVersion string `json:"source_version,omitempty"`
+	Origin        string `json:"origin,omitempty"`
 	ManifestPath  string `json:"manifest_path,omitempty"`
 	Direct        *bool  `json:"direct,omitempty"`
 }

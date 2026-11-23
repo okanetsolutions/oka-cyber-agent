@@ -17,7 +17,7 @@ type DpkgCollector struct {
 
 func (DpkgCollector) Name() string { return "dpkg" }
 
-func (c DpkgCollector) Collect(_ context.Context, inv *Inventory) error {
+func (c DpkgCollector) Collect(ctx context.Context, inv *Inventory) error {
 	ok, err := packageDatabase(c.Root, dpkgStatusPath, FamilyDebian, inv)
 	if !ok || err != nil {
 		return err
@@ -31,6 +31,7 @@ func (c DpkgCollector) Collect(_ context.Context, inv *Inventory) error {
 	if err != nil {
 		return fmt.Errorf("dpkg status: %w", err)
 	}
+	setAPTOrigins(ctx, c.Root, packages)
 	inv.Packages = append(inv.Packages, packages...)
 	return nil
 }

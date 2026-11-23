@@ -1,0 +1,15 @@
+Package: kubectl
+Version: 1.30.9-1.1
+Architecture: amd64
+Maintainer: Kubernetes Authors <dev@kubernetes.io>
+Installed-Size: 50291
+Filename: amd64/kubectl_1.30.9-1.1_amd64.deb
+Size: 10774972
+MD5sum: 4e6c14aa3b32bf925eca461c1f66d1b6
+SHA1: 9683acb5a4306ed979b5f9385cbc52f2ea2a4cd0
+SHA256: 872e584099865372f10c2e8b4096503ee7a7657781d738055dd8aced615d954f
+Section: admin
+Priority: optional
+Homepage: https://kubernetes.io
+Description: Command-line utility for interacting with a Kubernetes cluster
+ Command-line utility for interacting with a Kubernetes cluster.
