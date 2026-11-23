@@ -20,23 +20,25 @@ import (
 // SD_MESSAGE_SESSION_START from systemd's sd-messages.h.
 const logindSessionStart = "8d45620c1a4348dbb17410da57c60c66"
 
-// JournalEntry is one journald entry. UID, Exe, Comm, PID and BootID are trusted fields
-// journald fills in; Identifier, MessageID, SessionID and Leader are chosen by the sender.
+// JournalEntry is one journald entry. UID, Exe, Comm, PID, BootID, SystemdSession and AuditSession
+// are trusted fields journald fills in; Identifier, MessageID, SessionID and Leader are chosen by the sender.
 type JournalEntry struct {
-	Cursor     string
-	Transport  string
-	AuditID    string
-	Identifier string
-	Message    string
-	At         time.Time
-	UID        string
-	Exe        string
-	Comm       string
-	PID        string
-	MessageID  string
-	SessionID  string
-	Leader     string
-	BootID     string
+	Cursor         string
+	Transport      string
+	AuditID        string
+	Identifier     string
+	Message        string
+	At             time.Time
+	UID            string
+	Exe            string
+	Comm           string
+	PID            string
+	MessageID      string
+	SessionID      string
+	Leader         string
+	BootID         string
+	SystemdSession string
+	AuditSession   string
 }
 
 // ParseJournalEntry reads one line of journalctl --output=json. MESSAGE is a string, or an array of bytes
@@ -58,12 +60,15 @@ func ParseJournalEntry(line []byte) (JournalEntry, error) {
 		SessionID      string          `json:"SESSION_ID"`
 		Leader         string          `json:"LEADER"`
 		BootID         string          `json:"_BOOT_ID"`
+		SystemdSession string          `json:"_SYSTEMD_SESSION"`
+		AuditSession   string          `json:"_AUDIT_SESSION"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return JournalEntry{}, err
 	}
 	e := JournalEntry{Transport: raw.Transport, AuditID: raw.AuditID, Cursor: raw.Cursor, Identifier: raw.Identifier, UID: raw.UID, Exe: raw.Exe, Comm: raw.Comm, PID: raw.PID,
-		MessageID: raw.MessageID, SessionID: raw.SessionID, Leader: raw.Leader, BootID: raw.BootID}
+		MessageID: raw.MessageID, SessionID: raw.SessionID, Leader: raw.Leader, BootID: raw.BootID,
+		SystemdSession: raw.SystemdSession, AuditSession: raw.AuditSession}
 	if raw.Transport == "audit" && raw.SourceRealtime != "" {
 		raw.Realtime = raw.SourceRealtime
 	}
