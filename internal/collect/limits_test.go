@@ -236,6 +236,38 @@ func TestMarshalLeavesOutTheRecordOfAnUnstoredCutManifestThatDoesNotFit(t *testi
 	checkMarshaledInventory(t, inv, record, record, notStored)
 }
 
+// After a manifest is cut, the records whose reason keeps stored packages are still sent while they fit, also when
+// the local state does not know their path (state.json lost): the server would otherwise delete what it stored for
+// a lock file that only failed to parse. Records that keep nothing are given up for the cut.
+func TestMarshalKeepsRetainingRecordsThatFitAfterACut(t *testing.T) {
+	const big, small = "/srv/big/package-lock.json", "/srv/small/package-lock.json"
+	broken := SkippedFile{Path: "/srv/broken/composer.lock", Reason: ReasonParseError}
+	noLock := SkippedFile{Path: "/srv/site/package.json", Reason: ReasonNoLockFile}
+	cutRecord := SkippedFile{Path: big, Reason: ReasonPackageLimit}
+	newInventory := func(skipped ...SkippedFile) *Inventory {
+		return &Inventory{Packages: slices.Concat(dependencyPackages(big, 200), dependencyPackages(small, 1)), SkippedFiles: skipped, Services: []Service{}}
+	}
+	want := &Inventory{Packages: dependencyPackages(small, 1), SkippedFiles: []SkippedFile{cutRecord, broken}, Services: []Service{}}
+
+	checkMarshaledInventory(t, newInventory(broken), want, copyInventory(want), notStored)
+	checkMarshaledInventory(t, newInventory(broken, noLock), want, copyInventory(want), notStored)
+
+	// With more room than the cut leaves, the record is kept and the snapshot stays under the limit.
+	for _, limit := range []int{8000, 12000} {
+		inv := newInventory(broken)
+		if err := inv.Normalize(); err != nil {
+			t.Fatal(err)
+		}
+		data, err := inv.Marshal(limit, notStored)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(data) > limit || len(inv.Packages) != 1 || !slices.Equal(inv.SkippedFiles, want.SkippedFiles) {
+			t.Fatalf("limit %d: %d bytes, %d packages, skipped %v, want the big manifest cut and %v", limit, len(data), len(inv.Packages), inv.SkippedFiles, want.SkippedFiles)
+		}
+	}
+}
+
 // Above MaxPackages the manifests with the most packages are cut first. They used to be cut from the last path, so
 // one file of 20 000 packages under /home took the place of every application under /srv and /var/www.
 func TestNormalizeCutsTheManifestsWithTheMostPackagesFirst(t *testing.T) {

@@ -22,6 +22,12 @@ const (
 	// minPathSecretLength is how long a segment of a web request path must be to be redacted after a segment
 	// with a secret name (/reset-password/<token>). Shorter ones are page names and numbers (/password/reset).
 	minPathSecretLength = 16
+
+	// maxEscapeDepth is how many backslashes may escape the quote of a serialized string: seven is a JSON string
+	// inside another two times over.
+	maxEscapeDepth = 32
+	// maxHarmlessSerializedValue is how long a serialized value may be and still be kept as a placeholder (***).
+	maxHarmlessSerializedValue = 64
 )
 
 // A name is secret (see secretName) when, lower cased and without leading dashes and separators, it contains one
@@ -255,25 +261,31 @@ func xmlClosingTag(s string, from int, name string) int {
 	return len(s)
 }
 
-// serializedSpans finds the value after every secret string key of PHP's serialize(), as a failed queue job
-// or a session dump holds it (s:8:"password";s:7:"hunter2";). A string is as long as it says and a number or a
-// boolean ends at its semicolon. Anything else, an array, an object or a string whose length does not lead to
-// its closing quote (JSON escaping changes it), is redacted to the end of s.
+// serializedSpans finds the value after every secret string of PHP's serialize(), as a failed queue job or a
+// session dump holds it (s:8:"password";s:7:"hunter2";). Keys and values are not told apart: a value that is
+// itself a secret name (s:4:"type";s:8:"password";) hides the string after it too, which may be the next key,
+// and the string after that key is still read, so no value before a key can shift which string counts as the
+// key. A string is as long as it says and a number or a boolean ends at its semicolon. Anything else, an array,
+// an object or a string whose length does not lead to its closing quote (JSON escaping changes it), is redacted
+// to the end of s, and so is everything after it.
 func serializedSpans(s string) []span {
 	if !strings.Contains(s, `";`) || !mayHoldSecretName(s) {
 		return nil
 	}
 	var spans []span
-	pos := 0
 	for _, loc := range serializedKey.FindAllStringSubmatchIndex(s, -1) {
-		if loc[0] < pos || !secretName(s[loc[2]:loc[3]]) {
+		if !secretName(s[loc[2]:loc[3]]) {
 			continue
 		}
 		start, end := serializedValue(s, loc[1])
-		if !harmlessValue(s[start:end]) {
+		// Only a short value is asked whether it is harmless: many keys whose values end at the same place would
+		// otherwise read the same long run of stars once each.
+		if end-start > maxHarmlessSerializedValue || !harmlessValue(s[start:end]) {
 			spans = append(spans, span{start, end})
 		}
-		pos = end
+		if end == len(s) {
+			break
+		}
 	}
 	return spans
 }
@@ -294,17 +306,30 @@ func serializedValue(s string, at int) (start, end int) {
 			digits++
 		}
 		length, err := strconv.Atoi(rest[2:digits])
-		body := strings.TrimLeft(strings.TrimPrefix(rest[digits:], ":"), `\`)
-		if err != nil || !strings.HasPrefix(body, `"`) || len(body)-1 < length {
+		body, ok := trimEscapes(strings.TrimPrefix(rest[digits:], ":"))
+		if err != nil || !ok || !strings.HasPrefix(body, `"`) || len(body)-1 < length {
 			break
 		}
 		start = len(s) - len(body) + 1
-		if strings.HasPrefix(strings.TrimLeft(s[start+length:], `\`), `";`) {
+		if closing, ok := trimEscapes(s[start+length:]); ok && strings.HasPrefix(closing, `";`) {
 			return start, start + length
 		}
 		return start, len(s)
 	}
 	return at, len(s)
+}
+
+// trimEscapes removes the backslashes that escape a quote, as deep as maxEscapeDepth: many values that end at
+// the same place would otherwise read the same long run of backslashes once each. A deeper run is not a
+// serialized quote, and the value it is in is redacted to the end of the text.
+func trimEscapes(s string) (string, bool) {
+	n := 0
+	for n < len(s) && s[n] == '\\' {
+		if n++; n > maxEscapeDepth {
+			return s, false
+		}
+	}
+	return s[n:], true
 }
 
 // sqlInsertSpans finds the values of an INSERT whose column list holds a secret name, as Laravel writes a failed

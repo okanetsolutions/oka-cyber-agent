@@ -1070,6 +1070,25 @@ func TestRedactSerializedValues(t *testing.T) {
 	}, "hunter2", "tok123", "4321")
 }
 
+// A value that is itself a secret name is taken as a key too, so the string after it (often the real key) is
+// redacted, and the real key is still read: no value placed before a key can shift which string is its value.
+// Nested arrays, objects, integer keys, strings that hold fake entries and any depth of JSON escaping included.
+func TestRedactSerializedValuesThatLookLikeKeys(t *testing.T) {
+	deepEscape := strings.Repeat(`\`, maxEscapeDepth+1)
+	redactTable(t, map[string]string{
+		`a:2:{s:4:"type";s:8:"password";s:8:"password";s:7:"hunter2";}`:                                                     `a:2:{s:4:"type";s:8:"password";s:8:"[redacted]";s:7:"[redacted]";}`,
+		`{"payload":"a:2:{s:4:\"type\";s:8:\"password\";s:8:\"password\";s:7:\"hunter2\";}"}`:                               `{"payload":"a:2:{s:4:\"type\";s:8:\"password\";s:8:\"[redacted]\";s:7:\"[redacted]\";}"}`,
+		`{"job":"{\"payload\":\"a:2:{s:4:\\\"type\\\";s:8:\\\"password\\\";s:8:\\\"password\\\";s:7:\\\"hunter2\\\";}\"}"}`: `{"job":"{\"payload\":\"a:2:{s:4:\\\"type\\\";s:8:\\\"password\\\";s:8:\\\"[redacted]\\\";s:7:\\\"[redacted]\\\";}\"}"}`,
+		`a:2:{i:0;s:6:"secret";s:8:"password";s:7:"hunter2";}`:                                                              `a:2:{i:0;s:6:"secret";s:8:"[redacted]";s:7:"[redacted]";}`,
+		`a:3:{s:4:"type";s:5:"token";s:4:"type";s:8:"password";s:8:"password";s:7:"hunter2";}`:                              `a:3:{s:4:"type";s:5:"token";s:4:"[redacted]";s:8:"password";s:8:"[redacted]";s:7:"[redacted]";}`,
+		`a:2:{s:4:"type";s:6:"secret";i:5;s:8:"password";s:7:"hunter2";}`:                                                   `a:2:{s:4:"type";s:6:"secret";i:[redacted];s:8:"password";s:7:"[redacted]";}`,
+		`O:8:"stdClass":2:{s:4:"kind";s:6:"apikey";s:5:"token";s:6:"tok123";}`:                                              `O:8:"stdClass":2:{s:4:"kind";s:6:"apikey";s:5:"[redacted]";s:6:"[redacted]";}`,
+		`a:2:{s:4:"list";a:1:{i:0;s:5:"token";}s:8:"password";s:7:"hunter2";}`:                                              `a:2:{s:4:"list";a:1:{i:0;s:5:"token";[redacted]`,
+		`a:2:{s:4:"note";s:12:"";s:3:"pin";";s:8:"password";s:7:"hunter2";}`:                                                `a:2:{s:4:"note";s:12:"";s:3:"pin";[redacted]`,
+		`a:1:{s:8:"password";s:7:` + deepEscape + `"hunter2` + deepEscape + `";}`:                                           `a:1:{s:8:"password";[redacted]`,
+	}, "hunter2", "tok123")
+}
+
 // A value with blanks in it that a semicolon closes is a connection string entry.
 func TestRedactValueUpToSemicolon(t *testing.T) {
 	redactTable(t, map[string]string{
@@ -1241,6 +1260,7 @@ func TestRedactLongLinesInLinearTime(t *testing.T) {
 		"serialized":          {"", `s:4:"pass";s:1:"a";`},
 		"serialized long":     {"", `s:4:"pass";s:9:"a";`},
 		"serialized numbers":  {"", `s:4:"pass";i:`},
+		"serialized names":    {"", `s:4:"pass";`},
 		"insert":              {"", "insert into t (pass) values "},
 		"backtick keys":       {"", "`pass`=`pass`="},
 		"quoted options":      {"", `'-pa' '-u' 'a:b' `},

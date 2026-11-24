@@ -502,16 +502,18 @@ func (inv *Inventory) fit(limit int, stored func(path string) bool) error {
 		droppedForSize = true
 	}
 
-	// With a manifest cut, the records that keep nothing were given up before it, and only those of the manifests
-	// cut are added. Otherwise the other records are, those whose reason could keep packages if the state was lost
-	// first.
+	// The other records are added while they fit, those whose reason could keep packages if the state was lost
+	// first. With a manifest cut, the records that keep nothing were given up before it: the records of the
+	// manifests cut come first, then those that could keep packages.
 	trimmed := len(cut) > 0 || droppedForSize
-	if trimmed {
-		optional = cutUnstored
-	}
 	slices.SortStableFunc(optional, func(a, b sizedSkip) int {
 		return cmp.Or(cmp.Compare(retainingRank(a.file.Reason), retainingRank(b.file.Reason)), compareSizedSkips(a, b))
 	})
+	if trimmed {
+		slices.SortFunc(cutUnstored, compareSizedSkips)
+		retaining := slices.DeleteFunc(optional, func(r sizedSkip) bool { return !retainsStoredPackages(r.file.Reason) })
+		optional = append(cutUnstored, retaining...)
+	}
 	records := requiredRows
 	kept := make([]SkippedFile, 0, min(len(required)+len(optional), MaxSkippedFiles))
 	for _, r := range required {
