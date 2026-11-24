@@ -98,6 +98,21 @@ func (t *Tailer) Position() Position {
 	return pos
 }
 
+// handOver is where a new tailer of Path goes on when this one is let go: its position in the file it has
+// open, the saved position it has not used yet, or the start of the file when it was going to read the file from
+// its start. ok is false when it was going to start at the end of the file.
+func (t *Tailer) handOver() (pos Position, ok bool) {
+	switch {
+	case t.file != nil:
+		return t.Position(), true
+	case t.resume != nil:
+		return *t.resume, true
+	case !t.startAtEnd:
+		return Position{}, true
+	}
+	return Position{}, false
+}
+
 func (t *Tailer) Close() {
 	if t.file != nil {
 		t.files.release(t.id, t)

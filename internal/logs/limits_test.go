@@ -112,6 +112,145 @@ func TestCollectorLetsGoOfAGlobFileThatIsRefused(t *testing.T) {
 	}
 }
 
+func vhostLog(i int) string { return fmt.Sprintf("/var/log/nginx/site%04d.access.log", i) }
+
+func (h hostTree) modified(path string, at time.Time) {
+	h.t.Helper()
+	if err := os.Chtimes(filepath.Join(h.root, path), at, at); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// followQuietVhost starts a web collector on MaxGlobFiles+1 vhost logs, site0199 the least recently modified of
+// those followed, then lets a request to site0200 push site0199 out of the plan. site0199 holds one request
+// from before it was followed.
+func followQuietVhost(t *testing.T) (hostTree, *fakeClock, *Collector) {
+	h := newHost(t)
+	for i := range MaxGlobFiles + 1 {
+		content := ""
+		if i == MaxGlobFiles-1 {
+			content = accessLine("/before")
+		}
+		h.write(vhostLog(i), content)
+		h.modified(vhostLog(i), testNow.Add(-time.Duration(i+1)*time.Minute))
+	}
+	clock := &fakeClock{now: testNow}
+	c := NewCollector([]string{SourceWeb}, h.options(false), Checkpoint{}, nil, clock.Now)
+	t.Cleanup(c.Close)
+	pollWithin(t, c)
+	if _, ok := c.watches[vhostLog(MaxGlobFiles-1)]; !ok || len(c.watches) != MaxGlobFiles {
+		t.Fatalf("%d files followed, site0199 among them %v", len(c.watches), ok)
+	}
+	h.append(vhostLog(MaxGlobFiles), accessLine("/push"))
+	h.modified(vhostLog(MaxGlobFiles), testNow.Add(time.Hour))
+	clock.now = clock.now.Add(replanEvery)
+	pollWithin(t, c)
+	if _, ok := c.watches[vhostLog(MaxGlobFiles-1)]; ok {
+		t.Fatal("site0199 is still followed")
+	}
+	return h, clock, c
+}
+
+func requestPaths(t *testing.T, h hostTree, clock *fakeClock, c *Collector, polls int) []string {
+	t.Helper()
+	var paths []string
+	for range polls {
+		clock.now = clock.now.Add(replanEvery)
+		for _, e := range pollWithin(t, c) {
+			if e.Kind == KindHTTPRequest {
+				paths = append(paths, fmt.Sprint(e.Fields["path"]))
+			}
+		}
+	}
+	return paths
+}
+
+// A quiet vhost's log drops out of the MaxGlobFiles followed when other logs are written to. Its first requests
+// in a while (a /.env scan) make it the newest file again, and the next plan follows it again. It used to start
+// at its end, as if it had never been followed, so the whole burst written before that plan was never read.
+func TestCollectorReadsWhatALetGoGlobFileGotMeanwhile(t *testing.T) {
+	h, clock, c := followQuietVhost(t)
+	for range 20 {
+		h.append(vhostLog(MaxGlobFiles-1), accessLine("/.env"))
+	}
+	h.modified(vhostLog(MaxGlobFiles-1), testNow.Add(2*time.Hour))
+	paths := requestPaths(t, h, clock, c, 3)
+	if want := slices.Repeat([]string{"/.env"}, 20); !slices.Equal(paths, want) {
+		t.Errorf("requests read = %q, want the 20 written while the file was not followed, and nothing else", paths)
+	}
+	if len(c.watches) != MaxGlobFiles {
+		t.Errorf("%d files followed", len(c.watches))
+	}
+}
+
+// A file that was replaced while it was not followed (rotated to a name no pattern matches) is another file:
+// the position where the old one was let go must not be used in it, and it is read from its start, as following
+// it would have read it.
+func TestCollectorReadsAFileThatReplacedALetGoOneFromItsStart(t *testing.T) {
+	h, clock, c := followQuietVhost(t)
+	old := filepath.Join(h.root, vhostLog(MaxGlobFiles-1))
+	if err := os.Rename(old, old+".1"); err != nil {
+		t.Fatal(err)
+	}
+	// Longer than the old file, so that a stale offset would skip the first request.
+	h.write(vhostLog(MaxGlobFiles-1), accessLine("/new-0")+accessLine("/new-1")+accessLine("/new-2"))
+	h.modified(vhostLog(MaxGlobFiles-1), testNow.Add(2*time.Hour))
+	paths := requestPaths(t, h, clock, c, 3)
+	if want := []string{"/new-0", "/new-1", "/new-2"}; !slices.Equal(paths, want) {
+		t.Errorf("requests read = %q, want %q", paths, want)
+	}
+}
+
+// A file that was let go and then rotated to a name the pattern matches goes on, under its new name, from where
+// it was let go, and the file created under its old name is read from its start.
+func TestCollectorFindsALetGoFileUnderItsNewName(t *testing.T) {
+	h, clock, c := followQuietVhost(t)
+	old := filepath.Join(h.root, vhostLog(MaxGlobFiles-1))
+	rotated := "/var/log/nginx/site0199-rotated.access.log"
+	if err := os.Rename(old, filepath.Join(h.root, rotated)); err != nil {
+		t.Fatal(err)
+	}
+	h.append(rotated, accessLine("/late"))
+	h.write(vhostLog(MaxGlobFiles-1), accessLine("/new"))
+	h.modified(rotated, testNow.Add(2*time.Hour))
+	h.modified(vhostLog(MaxGlobFiles-1), testNow.Add(2*time.Hour))
+	paths := requestPaths(t, h, clock, c, 3)
+	slices.Sort(paths)
+	if want := []string{"/late", "/new"}; !slices.Equal(paths, want) {
+		t.Errorf("requests read = %q, want %q", paths, want)
+	}
+}
+
+// The positions of let go files are bounded by number and by path bytes, the oldest forgotten first.
+func TestLetGoPositionsAreBounded(t *testing.T) {
+	c := &Collector{letGo: map[string]letGoPosition{}}
+	for i := range maxLetGoFiles * 2 {
+		c.letGoSeq++
+		c.letGo[fmt.Sprintf("/var/log/nginx/%06d.log", i)] = letGoPosition{Position{Inode: uint64(i + 1)}, c.letGoSeq}
+		c.boundLetGo()
+	}
+	if len(c.letGo) > maxLetGoFiles {
+		t.Errorf("%d positions kept", len(c.letGo))
+	}
+	if _, ok := c.letGo[fmt.Sprintf("/var/log/nginx/%06d.log", maxLetGoFiles*2-1)]; !ok {
+		t.Error("the newest position was forgotten")
+	}
+	c = &Collector{letGo: map[string]letGoPosition{}}
+	long := strings.Repeat("x", 4000)
+	for i := range maxLetGoFiles {
+		c.letGoSeq++
+		c.letGo[fmt.Sprintf("/%s/%06d.log", long, i)] = letGoPosition{Position{Inode: uint64(i + 1)}, c.letGoSeq}
+		c.boundLetGo()
+	}
+	size := 0
+	for path := range c.letGo {
+		size += len(path)
+	}
+	if size > maxLetGoPathBytes {
+		t.Errorf("%d bytes of paths kept", size)
+	}
+}
+
 // The checkpoint holds a position per followed file and the agent reads at most 4 MB of it back. File names a
 // user chose take up to six bytes each in JSON, so the paths of the planned files have a budget of their own.
 func TestCheckpointStaysSmallWhateverTheFileNames(t *testing.T) {

@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -61,9 +62,13 @@ type Collector struct {
 	resume      Checkpoint
 	watches     map[string]*watch
 	files       *readFiles
-	skipped     []SkippedSource
-	lastPlan    time.Time
-	boot        bootIdentity
+	// letGo holds where the files a glob pattern found but that were let go while still there stopped (see
+	// letGoWatch), by path.
+	letGo    map[string]letGoPosition
+	letGoSeq uint64
+	skipped  []SkippedSource
+	lastPlan time.Time
+	boot     bootIdentity
 	// listed holds the file names in the directories of the watched files, read just before the latest plan.
 	listed map[string]map[string]bool
 
@@ -259,7 +264,8 @@ func (c *Collector) parseLine(plan FilePlan, line string) (Event, bool) {
 // vhost log in /var/log/nginx): one whose directory was listed before the previous plan without it. A file
 // that is new only by name, because a rotation renamed it to a name a glob pattern matches (app.log.1), is
 // the same file another tailer is reading or just read to its end: its tailer waits for that one and goes on
-// from where it stopped (see readFiles), so no line is read twice.
+// from where it stopped (see readFiles), so no line is read twice. A file that was let go while still there
+// (one more than MaxGlobFiles) goes on from where it was let go (see letGoWatch).
 func (c *Collector) plan(ctx context.Context) {
 	startup := c.lastPlan.IsZero()
 	if startup && slices.Contains(c.sources, SourceAuth) {
@@ -290,15 +296,21 @@ func (c *Collector) plan(ctx context.Context) {
 		// MaxGlobFiles) is let go at once, or the files once followed would add up without a limit. One that is
 		// gone was rotated away: its tailer reads what it still holds and is dropped by Poll.
 		if _, err := os.Lstat(c.options.path(path)); err == nil && w.plan.Pattern != "" {
-			c.dropWatch(path)
+			c.letGoWatch(path)
 		}
 	}
-	for path, f := range planned {
-		if _, ok := c.watches[path]; ok {
-			continue
+	var added []string
+	for path := range planned {
+		if _, ok := c.watches[path]; !ok {
+			added = append(added, path)
 		}
-		var resume *Position
-		if !c.firstEnable[f.Source] {
+	}
+	slices.Sort(added)
+	letGo := c.takeLetGo(added)
+	for _, path := range added {
+		f := planned[path]
+		resume, wasLetGo := letGo[path]
+		if !wasLetGo && !c.firstEnable[f.Source] {
 			resume = c.savedPosition(path, startup)
 		}
 		startAtEnd := resume == nil && !createdSince(previous, path)
@@ -320,6 +332,11 @@ func (c *Collector) plan(ctx context.Context) {
 		}
 		if _, err := os.Lstat(c.options.path(path)); errors.Is(err, fs.ErrNotExist) {
 			delete(c.resume.Files, path)
+		}
+	}
+	for path := range c.letGo {
+		if _, err := os.Lstat(c.options.path(path)); errors.Is(err, fs.ErrNotExist) {
+			delete(c.letGo, path)
 		}
 	}
 	// A directory watched for the first time is listed now, so that a file created in it before the next
@@ -425,6 +442,111 @@ func (c *Collector) dropWatch(path string) {
 	c.watches[path].tailer.Close()
 	delete(c.watches, path)
 	delete(c.resume.Files, path)
+	delete(c.letGo, path)
+}
+
+const (
+	// maxLetGoFiles and maxLetGoPathBytes bound the positions kept for files let go while still there. Whoever
+	// can write to a log directory decides how many files a pattern matches, so the oldest are forgotten first.
+	maxLetGoFiles     = 5000
+	maxLetGoPathBytes = 1 << 20
+)
+
+type letGoPosition struct {
+	pos Position
+	seq uint64
+}
+
+// letGoWatch stops following a file a glob pattern found that is still there but no longer planned: one more
+// than MaxGlobFiles, or refused. Where its tailer stopped is kept, so that when the file is planned again
+// (a quiet vhost's log that becomes the newest because it is attacked) it goes on from there and what was
+// written meanwhile is read. The Tailer takes the position only for the same device, inode and bytes before
+// the offset; another file at that name is read from its start (see takeLetGo). The positions are kept in
+// memory only: the checkpoint, which every spooled batch carries, holds the followed files alone, so after a
+// restart a file that was let go starts at its end when it is planned again, like any file without a saved
+// position.
+func (c *Collector) letGoWatch(path string) {
+	pos, ok := c.watches[path].tailer.handOver()
+	c.dropWatch(path)
+	if !ok {
+		return
+	}
+	if c.letGo == nil {
+		c.letGo = map[string]letGoPosition{}
+	}
+	c.letGoSeq++
+	c.letGo[path] = letGoPosition{pos, c.letGoSeq}
+	c.boundLetGo()
+}
+
+// boundLetGo forgets the oldest let go positions beyond maxLetGoFiles or maxLetGoPathBytes, a tenth more than
+// needed at once so that a stream of let go files does not sort the map on every one.
+func (c *Collector) boundLetGo() {
+	size := 0
+	for path := range c.letGo {
+		size += len(path)
+	}
+	if len(c.letGo) <= maxLetGoFiles && size <= maxLetGoPathBytes {
+		return
+	}
+	paths := slices.SortedFunc(maps.Keys(c.letGo), func(a, b string) int {
+		return cmp.Compare(c.letGo[a].seq, c.letGo[b].seq)
+	})
+	for _, path := range paths {
+		if len(c.letGo) <= maxLetGoFiles*9/10 && size <= maxLetGoPathBytes*9/10 {
+			return
+		}
+		size -= len(path)
+		delete(c.letGo, path)
+	}
+}
+
+// takeLetGo returns where the files at paths, about to be followed, start when they were let go before, and
+// forgets those positions. A position goes to the path that holds its device and inode now, so a file that
+// was rotated to another name a pattern matches goes on where it was let go. A path whose let go file was
+// replaced by another (a rotation while it was not followed) starts at the beginning of the new file, an
+// empty Position, which is what following it would have read; the name a file was renamed away from keeps
+// that empty Position for when it is planned later.
+func (c *Collector) takeLetGo(paths []string) map[string]*Position {
+	starts := map[string]*Position{}
+	if len(c.letGo) == 0 {
+		return starts
+	}
+	byID := map[fileID]string{}
+	for _, path := range slices.Sorted(maps.Keys(c.letGo)) {
+		pos := c.letGo[path].pos
+		id := fileID{pos.Dev, pos.Inode}
+		if _, ok := byID[id]; !ok && pos.Inode != 0 {
+			byID[id] = path
+		}
+	}
+	moved := map[string]bool{}
+	for _, path := range paths {
+		id, ok := c.fileIDAt(path)
+		if !ok {
+			continue
+		}
+		if from, ok := byID[id]; ok {
+			pos := c.letGo[from].pos
+			starts[path] = &pos
+			delete(byID, id)
+			moved[from] = from != path
+		}
+	}
+	for _, path := range paths {
+		if _, ok := c.letGo[path]; ok && starts[path] == nil {
+			starts[path] = &Position{}
+		}
+	}
+	for _, path := range paths {
+		delete(c.letGo, path)
+	}
+	for from, renamed := range moved {
+		if e, ok := c.letGo[from]; ok && renamed {
+			c.letGo[from] = letGoPosition{seq: e.seq}
+		}
+	}
+	return starts
 }
 
 func (c *Collector) startJournal(ctx context.Context, cursor string) {
