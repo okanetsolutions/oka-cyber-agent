@@ -146,8 +146,15 @@ func parseSudo(message string, at time.Time) (Event, bool) {
 	if strings.HasPrefix(body, "(command continued)") {
 		return Event{}, false
 	}
-	body, cutShort := strings.CutSuffix(body, " ;")
 	parts := strings.Split(body, " ; ")
+	// A line cut short before USER and COMMAND ends with sudo's separator. Once COMMAND is there, a trailing ";"
+	// is the command's last argument (find -exec rm {} \;), not a cut.
+	cutShort := false
+	if !slices.ContainsFunc(parts, isCommandPart) {
+		if trimmed, ok := strings.CutSuffix(body, " ;"); ok {
+			cutShort, parts = true, strings.Split(trimmed, " ; ")
+		}
+	}
 	var status []string
 	if !isSudoField(parts[0]) {
 		status, parts = []string{parts[0]}, parts[1:]

@@ -428,6 +428,21 @@ func TestSudoShipsNoUnparsedText(t *testing.T) {
 	}
 }
 
+// A trailing ";" after COMMAND is the command's last argument, as in find -exec rm {} \;, not a line cut short
+// before USER and COMMAND.
+func TestSudoTrailingSemicolonArgument(t *testing.T) {
+	for line, want := range map[string]string{
+		`alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/bin/find /tmp -name x -exec rm {} ;`: "/usr/bin/find [7 args]",
+		`alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/bin/echo ;`:                          "/usr/bin/echo [1 arg]",
+		`alice :  PWD=/ ; USER=root ; COMMAND=/usr/bin/find / -exec true {} ;`:                               "/usr/bin/find [5 args]",
+	} {
+		e, ok := ParseAuth("sudo", line, testNow, "")
+		if !ok || e.Kind != KindSudoCommand || e.Fields["command"] != want || e.Fields["target_user"] != "root" {
+			t.Errorf("%q = %+v, %v, want command %q", line, e, ok, want)
+		}
+	}
+}
+
 // FuzzSudoKeepsNoArguments checks that whatever a user puts in the working directory, the variables and the
 // arguments of a sudo command, no argument reaches the event, and the command reported is the one sudo ran or
 // [unparsed].
@@ -839,6 +854,30 @@ func TestParseAccessLogUserWithBlanks(t *testing.T) {
 		e, ok := ParseAccessLog(line, "")
 		if !ok || e.SrcIP != wantIP || e.Fields["path"] != "/x" || e.FirstAt.Year() != 2026 {
 			t.Errorf("ParseAccessLog(%q) = %+v, %v", line, e, ok)
+		}
+	}
+	// A plain line whose Referer or User-Agent holds a date and a quote must not be read with its client taken
+	// for a vhost_combined prefix and the user running to the planted date.
+	const real = `[24/Nov/2026:10:00:00 +0000] "GET /.env HTTP/1.1" 404 10 `
+	for _, line := range []string{
+		`203.0.113.9 - - ` + real + `"x [01/Jan/2020:00:00:00 +0000] " " 200 0"`,
+		`203.0.113.9 - - ` + real + `"-" "x [01/Jan/2020:00:00:00 +0000] " " 200 0"`,
+		`203.0.113.9 - - ` + real + `"x [01/Jan/2020:00:00:00 +0000] " " 200 0" "-"`,
+		`203.0.113.9 - - ` + real + `"-" "x [01/Jan/2020:00:00:00 +0000] \"GET / HTTP/1.1\" 200 0"`,
+		`203.0.113.9 - a b ` + real + `"x [01/Jan/2020:00:00:00 +0000] " " 200 0"`,
+		`2001:db8::1 - - ` + real + `"x [01/Jan/2020:00:00:00 +0000] " " 200 0"`,
+		`shop.example:443 203.0.113.9 - - ` + real + `"x [01/Jan/2020:00:00:00 +0000] " " 200 0"`,
+		`shop.example:443 203.0.113.9 - a b ` + real + `"-" "x [01/Jan/2020:00:00:00 +0000] " " 200 0"`,
+	} {
+		e, ok := ParseAccessLog(line, "")
+		if !ok || !e.FirstAt.Equal(time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)) || e.Fields["method"] != "GET" || e.Fields["path"] != "/.env" || e.Fields["status"] != 404 || e.Fields["bytes"] != int64(10) {
+			t.Errorf("ParseAccessLog(%q) = %+v, %v", line, e, ok)
+		}
+		if strings.HasPrefix(line, "shop.example") != (e.Fields["vhost"] == "shop.example") {
+			t.Errorf("ParseAccessLog(%q) vhost = %v", line, e.Fields["vhost"])
+		}
+		if !strings.Contains(line, e.SrcIP) || e.SrcIP == "" {
+			t.Errorf("ParseAccessLog(%q) client = %q", line, e.SrcIP)
 		}
 	}
 	// Two addresses before the user are another log format (a forwarded address first), not a user with blanks.
