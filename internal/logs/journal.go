@@ -122,13 +122,37 @@ var (
 )
 
 // TrustedAuthEntry reports whether an entry that claims an auth identifier was really logged by that
-// program. Any local user can pick SYSLOG_IDENTIFIER (logger -t sshd), so it is checked against _EXE and
-// _UID. The executable must be the expected binary in a system directory, and the sender must run as root
-// unless the program is set-user-ID: a user can load code into a binary that is not (LD_PRELOAD=x.so
+// program. Any local user can pick SYSLOG_IDENTIFIER (logger -t sshd), so it is checked against _TRANSPORT,
+// _EXE and _UID. The executable must be the expected binary in a system directory, and the sender must run as
+// root unless the program is set-user-ID: a user can load code into a binary that is not (LD_PRELOAD=x.so
 // /usr/sbin/sshd) and make it log anything. journald cannot read _EXE when a short lived process exited
 // first; such an entry is accepted only from root with the expected _COMM, because a user could exit early
 // on purpose.
+//
+// The entry must also have arrived the way the program logs: these programs call syslog(3), and logind uses
+// journald's own protocol. A user chooses what the real binary prints (sudo -p 'root : ... COMMAND=/bin/x' as
+// its prompt, crontab -l), and with its output connected to the journal (systemd-cat -t sudo sudo -p ...) that
+// text is an entry of the real sudo under the name sudo, with _TRANSPORT=stdout.
+//
+// One forgery remains: _UID is taken when a message is sent, but journald reads _EXE when it handles the
+// message. A process that sends a line to the syslog socket and at once becomes sudo (execve) is recorded as
+// /usr/bin/sudo when journald is kept busy long enough, which a flood of messages from other processes
+// achieves about one time in three (see testdata/journal/rocky-9-exec-race.jsonl). Nothing journald records
+// tells such an entry from a real one of a set-user-ID program.
 func TrustedAuthEntry(e JournalEntry) bool {
+	return e.Transport == authTransport(e.Identifier) && trustedSender(e)
+}
+
+func authTransport(identifier string) string {
+	if identifier == "systemd-logind" {
+		return "journal"
+	}
+	return "syslog"
+}
+
+// trustedSender is TrustedAuthEntry without the transport: whether the executable, the user and the command
+// name are those of the program the identifier names.
+func trustedSender(e JournalEntry) bool {
 	binaries, ok := authBinaries[e.Identifier]
 	if !ok {
 		return false

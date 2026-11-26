@@ -1,7 +1,6 @@
 package lockfile
 
 import (
-	"encoding/json"
 	"strings"
 )
 
@@ -27,7 +26,7 @@ func ParseComposerLock(data []byte) (Result, error) {
 		Packages    []composerPackage `json:"packages"`
 		PackagesDev []composerPackage `json:"packages-dev"`
 	}
-	if err := json.Unmarshal(data, &lock); err != nil {
+	if err := UnmarshalJSON(data, &lock); err != nil {
 		return Result{}, err
 	}
 	var r Result

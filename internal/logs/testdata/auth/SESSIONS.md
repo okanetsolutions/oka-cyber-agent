@@ -35,6 +35,17 @@ pam_unix, so logind's New session 4 (LEADER=75) is logged 28 ms before
 pam_unix(sshd:session) session opened from PID 75: the reverse of Debian.
 The pam_sss.so warnings come from the missing sssd package and are unchanged.
 
+_TRANSPORT was not among the fields retained in the two session captures above
+and was added to their lines on 2026-11-23, when the agent started to require
+it: "syslog" for sshd, sshd-session and sudo, "journal" for systemd-logind.
+The syslog value is what the same programs carry in ../journal/debian-12.jsonl
+and in ../journal/rocky-9.jsonl (captured that day, see parsers_test.go). The
+logind lines were not captured again: their MESSAGE_ID, SESSION_ID and LEADER
+are structured fields, which only journald's own protocol can carry.
+The hand built entries of ../journal/debian-12.auth-sessions.jsonl got
+"syslog" the same day, the forged logger entry included: logger writes to the
+syslog socket too, and that entry must still be refused for its sender.
+
 Existing *.sudo.* fixtures contain real sudo I/O log TSIDs (01 or 000001).
 They are sudo log identifiers, not SSH PIDs or logind IDs. No fixture asserts
 that sudo has an SSH session key: the agent preserves TTY/TSID for the server's

@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/okanetsolutions/oka-cyber-agent/internal/collect/lockfile"
 	"github.com/okanetsolutions/oka-cyber-agent/internal/safeopen"
 )
 
@@ -62,6 +63,9 @@ func (s *scan) application(dir *os.File, hostDir string) {
 		app.Branch, app.Commit = s.gitHead(git, gitPath)
 	}
 	s.inv.Applications = append(s.inv.Applications, app)
+	if len(s.inv.Applications) >= 2*MaxApplications {
+		s.inv.Applications = firstApplications(s.inv.Applications)
+	}
 }
 
 // detailFile reads the file name of dir, a directory reported at hostDir, with the checks of a lock file, unless
@@ -106,26 +110,32 @@ func (s *scan) isExcludedName(dir *os.File, name string) bool {
 
 // manifest is what the agent reads of a composer.json or package.json: the declared name and the runtime
 // requirement (require.php in composer.json, engines.node in package.json).
+// The values are kept as written and decoded by text only when they are strings: decoding whatever a manifest of
+// the size limit holds there would take a hundred times its size in memory.
 type manifest struct {
-	Name    any            `json:"name"`
-	Require map[string]any `json:"require"`
-	Engines map[string]any `json:"engines"`
+	Name    json.RawMessage            `json:"name"`
+	Require map[string]json.RawMessage `json:"require"`
+	Engines map[string]json.RawMessage `json:"engines"`
 }
 
-// manifest reads the manifest name of dir. One that is missing or is not JSON gives nothing, and a key of another
-// type than expected (PHP writes an empty require as []) is left out without losing the others.
+// manifest reads the manifest name of dir. One that is missing, is not JSON or holds more entries than a manifest
+// is read with gives nothing, and a key of another type than expected (PHP writes an empty require as []) is left
+// out without losing the others.
 func (s *scan) manifest(dir *os.File, hostDir, name string) manifest {
 	data, _ := s.detailFile(dir, hostDir, name)
 	var m manifest
 	var wrongType *json.UnmarshalTypeError
-	if err := json.Unmarshal(data, &m); err != nil && !errors.As(err, &wrongType) {
+	if err := lockfile.UnmarshalJSON(data, &m); err != nil && !errors.As(err, &wrongType) {
 		return manifest{}
 	}
 	return m
 }
 
-func text(value any) string {
-	s, _ := value.(string)
+func text(value json.RawMessage) string {
+	var s string
+	if json.Unmarshal(value, &s) != nil {
+		return ""
+	}
 	return s
 }
 

@@ -504,7 +504,10 @@ func TestMarshalReservesSpaceForItsPackageLimitRecords(t *testing.T) {
 	}
 }
 
-func TestMarshalFailsWhenStoredSkipsAndOSPackagesAloneExceedTheBody(t *testing.T) {
+// A record that keeps stored packages is only left out when the OS packages leave no room for it, and its manifest is
+// then reported: failing instead would stop every report for as long as a local user keeps such records too large
+// for the body (see TestStoredRecordsCannotFailTheSnapshot).
+func TestMarshalDropsStoredSkipsTheOSPackagesLeaveNoRoomFor(t *testing.T) {
 	const path = "/srv/a/package-lock.json"
 	inv := &Inventory{
 		Packages:     osPackages(1),
@@ -515,8 +518,16 @@ func TestMarshalFailsWhenStoredSkipsAndOSPackagesAloneExceedTheBody(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if data, err := inv.Marshal(len(full)-1, storedSet(path)); err == nil || len(data) != 0 {
-		t.Fatalf("Marshal = %s, %v; want an error without a snapshot", data, err)
+	data, err := inv.Marshal(len(full)-1, storedSet(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(&Inventory{Packages: osPackages(1), SkippedFiles: []SkippedFile{}, Services: []Service{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(want) || !slices.Equal(inv.DroppedManifests, []string{path}) {
+		t.Fatalf("Marshal = %s, dropped %v; want %s and the manifest reported as dropped", data, inv.DroppedManifests, want)
 	}
 }
 

@@ -348,6 +348,30 @@ func TestEnrollTokenFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestEnrollTokenFromFile(t *testing.T) {
+	useFixtureHost(t)
+	tenant, srv := newFakeTenant(t)
+	tokenFile := filepath.Join(t.TempDir(), "enrollment-token")
+	if err := os.WriteFile(tokenFile, []byte("from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := runCLI(t, "", "enroll", "--url", srv.URL, "--token-file", tokenFile, "--insecure-dev", "--config-dir", t.TempDir()); r.code != exitOK {
+		t.Fatalf("enroll = %+v", r)
+	}
+	if tenant.bodies["/cyber-agent/v1/enroll"]["enrollment_token"] != "from-file" {
+		t.Fatal("the enrollment token must be read from the file, without its trailing newline")
+	}
+
+	configDir := t.TempDir()
+	r := runCLI(t, "", "enroll", "--url", srv.URL, "--token-file", filepath.Join(t.TempDir(), "missing"), "--insecure-dev", "--config-dir", configDir)
+	if r.code != exitFailure {
+		t.Fatalf("enroll with a missing token file = %+v, want a failure", r)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, config.FileName)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("a token file that cannot be read must not write configuration")
+	}
+}
+
 func TestEnrollWithRejectedTokenWritesNothing(t *testing.T) {
 	useFixtureHost(t)
 	tenant, srv := newFakeTenant(t)

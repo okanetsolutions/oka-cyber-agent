@@ -30,6 +30,9 @@ type yarnClassicEntry struct {
 // package.json can ask for it. When the project's range is also one a dependency uses, yarn merges both into
 // one descriptor and the lock file cannot tell, so the highest version is kept.
 func parseYarnClassic(data []byte) (Result, error) {
+	if err := checkLines(data); err != nil {
+		return Result{}, err
+	}
 	var r Result
 	var entries []yarnClassicEntry
 	dependedOn := map[string]bool{}
@@ -144,14 +147,37 @@ func validYarnName(name string) bool {
 	return name != "" && !strings.ContainsAny(name, "@:")
 }
 
+type yarnBerryEntry struct {
+	Version      string
+	Resolution   string
+	Dependencies map[string]string
+}
+
+func decodeYarnBerry(data []byte) (map[string]yarnBerryEntry, error) {
+	root, err := parseYAML(data)
+	if err != nil {
+		return nil, err
+	}
+	return yamlMap(root, func(n *yaml.Node) (entry yarnBerryEntry, err error) {
+		err = yamlPairs(n, func(key string, value *yaml.Node) (err error) {
+			switch key {
+			case "version":
+				entry.Version, err = yamlString(value)
+			case "resolution":
+				entry.Resolution, err = yamlString(value)
+			case "dependencies":
+				entry.Dependencies, err = yamlMap(value, yamlString)
+			}
+			return err
+		})
+		return entry, err
+	})
+}
+
 // parseYarnBerry ranks first the entries a workspace (the project or one of its packages) depends on.
 func parseYarnBerry(data []byte) (Result, error) {
-	var entries map[string]struct {
-		Version      string            `yaml:"version"`
-		Resolution   string            `yaml:"resolution"`
-		Dependencies map[string]string `yaml:"dependencies"`
-	}
-	if err := yaml.Unmarshal(data, &entries); err != nil {
+	entries, err := decodeYarnBerry(data)
+	if err != nil {
 		return Result{}, err
 	}
 	fromWorkspace := map[string]bool{}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -26,17 +25,26 @@ func enrollCommand(ctx context.Context, args []string, io streams) int {
 	flags.SetOutput(io.stderr)
 	tenantURL := flags.String("url", "", "your Oka Cyber tenant URL, for example https://acme.oka.example")
 	token := flags.String("token", "", "enrollment token from the dashboard (or set "+enrollmentTokenEnv+")")
+	tokenFile := flags.String("token-file", "", "file that holds the enrollment token, so it does not show up in the process list")
 	insecureDev := flags.Bool("insecure-dev", false, "allow a plain http URL, for local development only")
 	force := flags.Bool("force", false, "enroll again even if this server is already enrolled")
 	configDir := flags.String("config-dir", config.DefaultDir, "configuration directory")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
+	if *token == "" && *tokenFile != "" {
+		data, err := os.ReadFile(*tokenFile)
+		if err != nil {
+			fmt.Fprintf(io.stderr, "enroll: read the enrollment token file: %v\n", err)
+			return exitFailure
+		}
+		*token = strings.TrimSpace(string(data))
+	}
 	if *token == "" {
 		*token = os.Getenv(enrollmentTokenEnv)
 	}
 	if *tenantURL == "" || *token == "" {
-		fmt.Fprintln(io.stderr, "enroll: --url and --token are required")
+		fmt.Fprintln(io.stderr, "enroll: --url and --token (or --token-file) are required")
 		flags.Usage()
 		return exitUsage
 	}
@@ -152,7 +160,11 @@ func tokenAccess(ctx context.Context) config.TokenAccess {
 // systemdVersion works without a running systemd (a chroot or an image build), where the unit still runs on the
 // installed systemd at the next boot. It returns 0 when systemctl is missing.
 func systemdVersion(ctx context.Context) int {
-	out, err := exec.CommandContext(ctx, "systemctl", "--version").Output()
+	cmd, err := trustedCommand(ctx, "systemctl", "--version")
+	if err != nil {
+		return 0
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return 0
 	}

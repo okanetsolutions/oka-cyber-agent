@@ -12,6 +12,9 @@ import (
 
 // ParseGradleLockfile reads gradle.lockfile lines of the form group:artifact:version=configurations.
 func ParseGradleLockfile(data []byte) (Result, error) {
+	if err := checkLines(data); err != nil {
+		return Result{}, err
+	}
 	var r Result
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)

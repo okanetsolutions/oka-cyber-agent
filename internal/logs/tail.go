@@ -51,6 +51,8 @@ type Tailer struct {
 	// Pattern is the glob pattern Path was found by, "" for a path named in full.
 	Pattern string
 	Now     func() time.Time
+	// RefuseHardLinks makes a file with more than one name count as no file (see errHardLink).
+	RefuseHardLinks bool
 
 	files        *readFiles
 	file         *os.File
@@ -96,6 +98,21 @@ func (t *Tailer) Position() Position {
 	return pos
 }
 
+// handOver is where a new tailer of Path goes on when this one is let go: its position in the file it has
+// open, the saved position it has not used yet, or the start of the file when it was going to read the file from
+// its start. ok is false when it was going to start at the end of the file.
+func (t *Tailer) handOver() (pos Position, ok bool) {
+	switch {
+	case t.file != nil:
+		return t.Position(), true
+	case t.resume != nil:
+		return *t.resume, true
+	case !t.startAtEnd:
+		return Position{}, true
+	}
+	return Position{}, false
+}
+
 func (t *Tailer) Close() {
 	if t.file != nil {
 		t.files.release(t.id, t)
@@ -134,7 +151,7 @@ func (t *Tailer) Poll() PollResult {
 	if t.file == nil {
 		info, err = t.open()
 		switch {
-		case errors.Is(err, fs.ErrNotExist) || errors.Is(err, errSymlink) || errors.Is(err, errNotRegular):
+		case errors.Is(err, fs.ErrNotExist) || errors.Is(err, errSymlink) || errors.Is(err, errNotRegular) || errors.Is(err, errHardLink):
 			return t.missing(r)
 		case errors.Is(err, errHeld):
 			return r
@@ -147,6 +164,11 @@ func (t *Tailer) Poll() PollResult {
 		t.liveFrom = info.Size()
 		t.moveTo(0)
 		t.skipping = false
+	}
+	// A file with nothing new is not read: every read takes a buffer of maxLineBytes, once a second for every
+	// file a glob pattern matches.
+	if info.Size() == t.offset {
+		return r
 	}
 	lines, live, _ := t.read()
 	r.Lines = append(r.Lines, lines...)
@@ -180,6 +202,9 @@ var errHeld = errors.New("held by another tailer")
 // latest Lstat saw.
 func (t *Tailer) open() (fs.FileInfo, error) {
 	f, err := openLogFile(t.Path, t.Pattern)
+	if err == nil && t.RefuseHardLinks {
+		err = refuseHardLink(f)
+	}
 	if err != nil {
 		return nil, err
 	}

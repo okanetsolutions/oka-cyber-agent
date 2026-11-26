@@ -34,7 +34,7 @@ These are product promises written in the README. A change that breaks one is a 
 - `cmd/oka-cyber-agent`: the CLI entry point and subcommand wiring only. No business logic.
 - `internal/auditcontrol`: the fixed audit rule template and isolated rule helper, driven only by the presence of the command-source flag; it cannot take paths, rule text or command arguments.
 - `internal/collect` contains collectors for OS facts, package databases, TCP and UDP listening services, and dependency files with application details. Each collector implements the collector interface and is tested against fixture files.
-- `internal/collect/lockfile`: one parser per dependency file format, pure functions from bytes to resolved versions. Fixtures under its `testdata` were produced by the real tools (composer, npm, yarn, pnpm, poetry, pipenv, uv, bundler, go, cargo, gradle, dotnet).
+- `internal/collect/lockfile`: one parser per dependency file format, pure functions from bytes to resolved versions. Fixtures under its `testdata` were produced by the real tools (composer, npm, yarn, pnpm, poetry, pipenv, uv, bundler, go, cargo, gradle, dotnet). Every parser bounds a file before a library builds anything from it (`toml.go`, `yaml.go`, `json.go`, `maxLines`, `maxDependencies`): never hand a YAML mapping to `yaml.v3` to decode (read it with `yamlPairs`), nor TOML to the library without `unmarshalTOML`.
 - `internal/logs`: log sources (journald through `journalctl`, auth and cron log files, nginx and Apache access logs, configured application logs), the polling file tailer and the parsers that turn lines into the event kinds of okanetsolutions/oka-core#3779. Parsers are tested against real lines captured per distribution under `testdata`. It also holds redaction (`redact.go`, every rule with before and after tests), aggregation and the suspicious web request tokens (`testdata/suspicious_tokens.txt`, embedded in the binary), and the on disk spool.
 - `internal/api`: the HTTP client for the Oka Cyber agent API and the wire types.
 - `internal/config`: the local configuration file and token storage.
@@ -45,7 +45,7 @@ These are product promises written in the README. A change that breaks one is a 
 - `testdata` directories next to the code they feed: real sample files, never generated at test time.
 - `install.sh`: the one line installer (POSIX `sh`, it runs as `curl ... | sudo sh -s --`), also kept on the host as the daily updater (`--update`). It embeds the systemd unit, which must stay identical to `packaging/oka-cyber-agent.service` apart from the binary path (`test/install/check-unit.sh` enforces it).
 - `packaging`: the main systemd unit, the command audit helper service and path unit and the `.deb`/`.rpm` maintainer scripts used by `.goreleaser.yaml`.
-- `.github/workflows`: CI, `tag.yml` with `tag.sh` (tags every merge to main that passes CI with the next patch version, or the head of main with the next minor or major version when run by hand, using the deploy key of the `release-tagging` environment, the only identity the tag ruleset lets create tags; the tag push starts the release; tested by `test/release/tag.sh`) and `release.yml` (goreleaser, cosign signature).
+- `.github/workflows`: CI, `tag.yml` with `tag.sh` (tags every merge to main that passes CI with the next patch version, or the head of main with the next minor or major version when run by hand, using the deploy key of the `release-tagging` environment, the only identity the tag ruleset lets create tags; the tag push starts the release; tested by `test/release/tag.sh`) `release.yml` (goreleaser at an exact version, cosign signature) and `vulncheck.yml` (govulncheck on every push and pull request and once a day, with the Go version of `go.mod`).
 - `test/faketenant` and `test/install`: a stand in for the agent API and the CI scripts that install, rerun, update, upgrade and uninstall the agent (script and packages) on Ubuntu, Debian, Rocky and RHEL 8 (systemd 239, without `LoadCredential`).
 
 Update this section in the same PR when a package is added, moved or removed.
@@ -59,11 +59,11 @@ The agent talks to `https://<tenant host>/cyber-agent/v1`. The source of truth i
 - `PUT /inventory`: bearer agent token, full snapshot `{os, packages, skipped_files, services}` plus the optional `applications` (okanetsolutions/oka-core#4660); validated by `InventorySnapshotValidator`.
 - `POST /logs` (okanetsolutions/oka-core#3779): batches of normalized log events.
 
-Server limits the agent must respect, because a violation rejects the whole request: 5 MB request body measured both compressed and decompressed, 20 000 packages, 1000 `skipped_files`, 4096 `services`, 1000 `applications` with unique paths (each with `name` and `branch` up to 255 characters, `repository` up to 1024 and without credentials, `commit` of 40 or 64 hexadecimal characters, 20 `runtimes`), unique `(ecosystem, name, architecture, manifest_path)` per snapshot, no whitespace or control characters in package names and versions, absolute `manifest_path` up to 1024 characters. A 401 from the bearer authenticated endpoints (`/heartbeat`, `/inventory`, `/logs`) means the server was revoked: stop, do not retry. A 401 from `POST /enroll` means the enrollment token was rejected (invalid or expired): report that clearly to the user and do not treat it as a revocation.
+Server limits the agent must respect, because a violation rejects the whole request: 5 MB request body measured both compressed and decompressed, 20 000 packages, 1000 `skipped_files`, 4096 `services`, 1000 `applications` with unique paths (each with `name` and `branch` up to 255 characters, `repository` up to 1024 and without credentials, `commit` of 40 or 64 hexadecimal characters, 20 `runtimes`), unique `(ecosystem, name, architecture, manifest_path)` per snapshot, no whitespace or control characters in package names and versions, absolute `manifest_path` up to 1024 characters. A 401 from the bearer authenticated endpoints (`/heartbeat`, `/inventory`, `/logs`) means the server was revoked: stop, do not retry. A 401 from `POST /enroll` means the enrollment token was rejected (invalid or expired): report that clearly to the user and do not treat it as a revocation. The agent also bounds what one walk holds and reads whatever is planted under a scan path: see the limits at the top of `internal/collect/dependencies.go`.
 
 ## Go Conventions
 
-- Go version from `go.mod`; builds use `CGO_ENABLED=0` and produce one static binary for Linux amd64 and arm64.
+- Go version from `go.mod`, which CI and the release use exactly as written: keep the `go` directive at the latest patch release, since an older one ships the standard library vulnerabilities fixed since (`vulncheck.yml` fails when the agent's code reaches one). Builds use `CGO_ENABLED=0` and produce one static binary for Linux amd64 and arm64.
 - Standard library first. A new dependency needs a reason in the PR description (for example a YAML or TOML parser); never add a dependency for something the standard library already does.
 - Linux specific code sits behind `_linux.go` files with a portable fallback, so `go test ./...` and `go vet ./...` also pass on macOS for contributors.
 - Accept a `context.Context` on anything that does I/O, and pass it through.
@@ -88,6 +88,7 @@ gofmt -l .
 go vet ./...
 staticcheck ./...
 go test -race ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./cmd/... ./internal/...   # when go.mod changed
 shellcheck -s sh install.sh packaging/*.sh test/install/*.sh .github/workflows/tag.sh test/release/*.sh   # when shell scripts changed
 ```
 

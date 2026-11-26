@@ -81,8 +81,16 @@ func streamTag(b Batch) string {
 // Spool keeps batches on disk until the server acknowledges them, so nothing is lost when the server is
 // unreachable or the agent restarts. Each batch is one gzip file named "<sequence>-<events>.json.gz", where the
 // parts that replace a batch add ".<part>" to its sequence, and a command batch or an acknowledged one adds
-// "-commands" or "-acked" to the event count. When the spool grows over MaxBytes the oldest
-// batches are dropped and their events counted in Dropped.
+// "-commands" or "-acked" to the event count. When the spool grows over MaxBytes batches are dropped and
+// their events counted in Dropped: the oldest of those that hold only web requests and application errors
+// first, and the oldest of the others (logins, sudo, commands) only when none of those is left. Anyone on the
+// internet decides how many web events there are, so while uploads are stalled a flood of requests must not
+// push the logins out of the spool.
+//
+// Which batches may go first is written in the gzip header of the file (see lowPriorityMark), where an agent
+// without this rule does not look: both read the files of the other, and a file without the mark is kept as
+// long as one with logins. Append writes the web and application events of a batch apart from its other
+// events, as a part of their own, so that the mark can apply.
 //
 // Dir is a directory inside the agent's state directory, which the service user can write to. Every file is
 // reached through an os.Root on the state directory, so a symlink planted there never leads outside it, and a
@@ -109,10 +117,53 @@ func (s Spool) Append(b Batch) error {
 	if len(entries) > 0 {
 		sequence = entries[len(entries)-1].sequence[0] + 1
 	}
+	if low, rest := byPriority(b.Events); len(low) > 0 && len(rest) > 0 {
+		// The checkpoint also covers the events of the second part, so only that one may commit it, and Newest
+		// never resumes from it: a stop before the second write must not skip the events left out of the spool.
+		part := Batch{ID: NewBatchID(), Events: low, Checkpoint: b.Checkpoint, Partial: true, CreatedAt: b.CreatedAt}
+		if err := s.writeBatch(dir, fmt.Sprintf("%020d", sequence), part, streamTag(part)); err != nil {
+			return err
+		}
+		sequence++
+		b.Events = rest
+	}
 	if err := s.writeBatch(dir, fmt.Sprintf("%020d", sequence), b, streamTag(b)); err != nil {
 		return err
 	}
 	return s.enforceLimit(dir)
+}
+
+// lowPriorityMark is the gzip header comment of a batch that holds nothing but web and application events.
+const lowPriorityMark = "oka-cyber-agent: web and app events only"
+
+func lowPriorityEvent(e Event) bool {
+	return e.Source == SourceWeb || e.Source == SourceApp
+}
+
+// byPriority splits events, in order, into the web and application events and the others.
+func byPriority(events []Event) (low, rest []Event) {
+	for _, e := range events {
+		if lowPriorityEvent(e) {
+			low = append(low, e)
+		} else {
+			rest = append(rest, e)
+		}
+	}
+	return low, rest
+}
+
+// lowPriority reads the gzip header of the spooled batch name and tells whether it carries lowPriorityMark.
+func lowPriority(dir *os.Root, name string) bool {
+	f, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	zr, err := gzip.NewReader(f)
+	return err == nil && zr.Comment == lowPriorityMark
 }
 
 // Replace puts parts in place of the batch Oldest returned under name, in the same order: a batch split in
@@ -192,6 +243,9 @@ func (s Spool) IsOldest(name string) bool {
 func (s Spool) writeBatch(dir *os.Root, sequence string, b Batch, tag string) error {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
+	if low, rest := byPriority(b.Events); len(low) > 0 && len(rest) == 0 {
+		zw.Comment = lowPriorityMark
+	}
 	if err := json.NewEncoder(zw).Encode(b); err != nil {
 		return err
 	}
@@ -236,7 +290,10 @@ func (s Spool) OldestIn(skip func(Stream) bool) (Batch, string, bool, error) {
 	}
 }
 
-// Newest is the latest batch, whose checkpoint is where collection resumes after a restart.
+// Newest is the latest batch that is not Partial, whose checkpoint is where collection resumes after a restart.
+// A Partial batch is skipped: its checkpoint also covers the events of the part written after it, which a stop
+// between the two writes (see Append) leaves unspooled, so resuming there would never read those events again.
+// The lines of the Partial batch are read again instead and sent twice, rather than lose the others.
 func (s Spool) Newest() (Batch, bool) {
 	dir, err := s.open(false)
 	if err != nil || dir == nil {
@@ -248,7 +305,7 @@ func (s Spool) Newest() (Batch, bool) {
 		return Batch{}, false
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
-		if b, err := readBatch(dir, entries[i].name); err == nil {
+		if b, err := readBatch(dir, entries[i].name); err == nil && !b.Partial {
 			return b, true
 		}
 	}
@@ -435,12 +492,24 @@ func (s Spool) enforceLimit(dir *os.Root) error {
 	for _, e := range entries {
 		total += e.size
 	}
+	// The newest batch always stays, and the header of a file is read once, only while the spool is over its
+	// limit and only until a batch that may go first is found.
+	protected := 0
 	for len(entries) > 1 && total > limit {
-		if err := s.drop(dir, entries[0]); err != nil {
+		for protected < len(entries)-1 && !lowPriority(dir, entries[protected].name) {
+			protected++
+		}
+		victim := 0
+		if protected < len(entries)-1 {
+			victim = protected
+		} else {
+			protected--
+		}
+		if err := s.drop(dir, entries[victim]); err != nil {
 			return err
 		}
-		total -= entries[0].size
-		entries = entries[1:]
+		total -= entries[victim].size
+		entries = slices.Delete(entries, victim, victim+1)
 	}
 	return nil
 }

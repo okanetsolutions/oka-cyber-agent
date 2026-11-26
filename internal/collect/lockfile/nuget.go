@@ -1,7 +1,5 @@
 package lockfile
 
-import "encoding/json"
-
 // ParseNuGetLock reads packages.lock.json. Project references are the solution's own code and are left out.
 func ParseNuGetLock(data []byte) (Result, error) {
 	var lock struct {
@@ -10,7 +8,7 @@ func ParseNuGetLock(data []byte) (Result, error) {
 			Resolved string `json:"resolved"`
 		} `json:"dependencies"`
 	}
-	if err := json.Unmarshal(data, &lock); err != nil {
+	if err := UnmarshalJSON(data, &lock); err != nil {
 		return Result{}, err
 	}
 	var r Result

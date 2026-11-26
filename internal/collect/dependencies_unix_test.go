@@ -88,10 +88,10 @@ func TestGoBinaryIsNotReadWhenSwappedAfterTheWalk(t *testing.T) {
 		return listedEntry{name, fi}
 	}
 	read := func(entry listedEntry) int {
-		s := &scan{hostRoot: "/opt", inv: &Inventory{}, seen: map[string]bool{}}
+		s := &scan{hostRoot: "/opt", inv: &Inventory{}, seen: map[string]bool{}, budget: &walkBudget{}}
 		done := make(chan struct{})
 		go func() {
-			s.goBinary(dir, "/opt/tool/"+entry.name, entry)
+			s.goBinary(context.Background(), dir, "/opt/tool/"+entry.name, entry)
 			close(done)
 		}()
 		select {
@@ -140,7 +140,7 @@ func TestEntriesSwappedForSymlinksAfterTheWalkAreNotFollowed(t *testing.T) {
 	}
 	tr.symlink("secret", "/srv/web")
 
-	s := &scan{hostRoot: "/srv", options: DependencyOptions{MaxDepth: 6, MaxFileSize: DefaultMaxFileSize, ExcludePaths: []string{"/srv/secret"}}, inv: &Inventory{}, seen: map[string]bool{}, dirs: map[string][]string{}}
+	s := &scan{hostRoot: "/srv", options: DependencyOptions{MaxDepth: 6, MaxFileSize: DefaultMaxFileSize, ExcludePaths: []string{"/srv/secret"}}, inv: &Inventory{}, seen: map[string]bool{}, budget: &walkBudget{}, dirs: map[string][]string{}}
 	cargo, _ := lockfile.ForFile("Cargo.lock")
 	s.lockFile(appDir, "/srv/app/Cargo.lock", cargo, lock)
 	if err := s.directory(context.Background(), openDirectory(t, srv), "web", "/srv/web", web); err != nil {

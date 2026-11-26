@@ -2,8 +2,6 @@ package lockfile
 
 import (
 	"strings"
-
-	"github.com/BurntSushi/toml"
 )
 
 // ParseCargoLock reads Cargo.lock. Only crates from crates.io are reported; workspace members have no source
@@ -19,7 +17,7 @@ func ParseCargoLock(data []byte) (Result, error) {
 			Dependencies []string `toml:"dependencies"`
 		} `toml:"package"`
 	}
-	if err := toml.Unmarshal(data, &lock); err != nil {
+	if err := unmarshalTOML(data, &lock); err != nil {
 		return Result{}, err
 	}
 	declared := map[string]bool{}

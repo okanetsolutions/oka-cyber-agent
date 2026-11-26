@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -75,7 +76,7 @@ func TestRedactTextCommandLines(t *testing.T) {
 		"/usr/bin/env API_KEY=xyz /app":                                                                                "/usr/bin/env API_KEY=[redacted] /app",
 		"/usr/bin/env aws_secret_access_key=abc123 AWS_REGION=eu-west-1 /app":                                          "/usr/bin/env aws_secret_access_key=[redacted] AWS_REGION=eu-west-1 /app",
 		"/usr/bin/env DB_PASS='two words' GITHUB_AUTH=g OAUTH_CREDENTIALS=c /a":                                        "/usr/bin/env DB_PASS='[redacted]' GITHUB_AUTH=[redacted] OAUTH_CREDENTIALS=[redacted] /a",
-		"alice : PWD=/srv ; USER=root ; ENV=AWS_SECRET_ACCESS_KEY=abc123 HOME=/root ; COMMAND=/usr/bin/aws s3 ls":      "alice : PWD=[redacted] ; USER=root ; ENV=AWS_SECRET_ACCESS_KEY=[redacted] HOME=/root ; COMMAND=/usr/bin/aws s3 ls",
+		"alice : PWD=/srv ; USER=root ; ENV=AWS_SECRET_ACCESS_KEY=abc123 HOME=/root ; COMMAND=/usr/bin/aws s3 ls":      "alice : PWD=[redacted] ; USER=root ; ENV=AWS_SECRET_ACCESS_KEY=[redacted] ; COMMAND=/usr/bin/aws s3 ls",
 		"/usr/bin/kubeadm join 10.0.0.1:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:ab": "/usr/bin/kubeadm join 10.0.0.1:6443 --token [redacted] --discovery-token-ca-cert-hash sha256:ab",
 		"/usr/local/bin/tool --api-key=k1 --client-secret s2 --secret=s3 --pass p4":                                    "/usr/local/bin/tool --api-key=[redacted] --client-secret [redacted] --secret=[redacted] --pass [redacted]",
 		"/usr/local/bin/vault login --DB_PASSWORD x --token-ttl 24h":                                                   "/usr/local/bin/vault login --DB_PASSWORD [redacted] --token-ttl 24h",
@@ -963,4 +964,334 @@ func FuzzMayHoldSecretName(f *testing.F) {
 			t.Fatalf("secretName(%q) but mayHoldSecretName(%q) = false", name, before+name+after)
 		}
 	})
+}
+
+// redactTable runs RedactText and Redact on an application error over every pair and checks that none of the
+// secrets is left.
+func redactTable(t *testing.T, tests map[string]string, secrets ...string) {
+	t.Helper()
+	for before, after := range tests {
+		got := RedactText(before)
+		if got != after {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", before, got, after)
+		}
+		e := Redact(newEvent(SourceApp, KindAppError, testNow, before))
+		for _, secret := range secrets {
+			if strings.Contains(got, secret) || strings.Contains(e.Message, secret) {
+				t.Errorf("%q leaks %q: %q / %q", before, secret, got, e.Message)
+			}
+		}
+	}
+}
+
+// Laravel's MySQL grammar writes identifiers in backticks, and a QueryException repeats the statement with its
+// bindings in place.
+func TestRedactBacktickKeys(t *testing.T) {
+	redactTable(t, map[string]string{
+		"SQLSTATE[HY000] [2002] Connection refused (Connection: mysql, SQL: select * from `users` where `api_token` = Zk3pQ9xLr7TtVb2N limit 1)": "SQLSTATE[HY000] [2002] Connection refused (Connection: mysql, SQL: select * from `users` where `api_token` = [redacted] limit 1)",
+		"SQL: update `users` set `password` = $2y$12$abcdefghij, `remember_token` = 5hJ3kQzW8LmN where `id` = 42":                                "SQL: update `users` set `password` = [redacted], `remember_token` = [redacted] where `id` = 42",
+		"SELECT * FROM users WHERE `username`='bob' AND `password`='hunter2'":                                                                    "SELECT * FROM users WHERE `username`='bob' AND `password`='[redacted]'",
+		"SQL: update `users` set `users`.`api_token`=Zk3pQ9xLr7TtVb2N where `id` = 1":                                                            "SQL: update `users` set `users`.`api_token`=[redacted] where `id` = 1",
+		"SQL: select * from `sessions` where `id` = 5 and `name` = `password`":                                                                   "SQL: select * from `sessions` where `id` = 5 and `name` = `password`",
+	}, "Zk3p", "$2y$", "5hJ3", "hunter2")
+}
+
+// An INSERT matches its values to the columns by position, so with a secret column all of them go.
+func TestRedactSQLInsertValues(t *testing.T) {
+	redactTable(t, map[string]string{
+		"SQL: insert into `users` (`name`, `email`, `password`, `api_token`) values (John, j@example.com, $2y$12$abcdef, PlainApiTok3n))": "SQL: insert into `users` (`name`, `email`, `password`, `api_token`) values [redacted]",
+		`SQL: insert into "users" ("name", "password") values (John (admin), hunter2)) at /app/A.php:3`:                                   `SQL: insert into "users" ("name", "password") values [redacted]`,
+		"SQL: INSERT INTO personal_access_tokens (name, token) VALUES ('api', 'hunter2')":                                                 "SQL: INSERT INTO personal_access_tokens (name, token) VALUES [redacted]",
+		"SQL: insert into `orders` (`sku`, `total`) values (A-1, 42)":                                                                     "SQL: insert into `orders` (`sku`, `total`) values (A-1, 42)",
+	}, "$2y$", "PlainApiTok3n", "hunter2")
+}
+
+// Symfony's Process quotes every argument of the command an error repeats.
+func TestRedactQuotedArguments(t *testing.T) {
+	redactTable(t, map[string]string{
+		`The command "'mysql' '-uroot' '-pZq9hunter' 'app'" failed.`:                                     `The command "'mysql' '-uroot' '-p[redacted]' 'app'" failed.`,
+		`The command "'mysqldump' '--user=forge' '--password' 'Zq9hunter' 'app'" failed.`:                `The command "'mysqldump' '--user=forge' '--password' [redacted] 'app'" failed.`,
+		`The command "'mysqldump' '--password=Zq9hunter' 'app'" failed.`:                                 `The command "'mysqldump' '--password=[redacted]' 'app'" failed.`,
+		`The command "'curl' '-u' 'admin:Zq9hunter' 'https://a.example/'" failed.`:                       `The command "'curl' '-u' 'admin:[redacted]' 'https://a.example/'" failed.`,
+		`The command "'curl' '-uadmin:Zq9hunter' 'https://a.example/'" failed.`:                          `The command "'curl' '-uadmin:[redacted]' 'https://a.example/'" failed.`,
+		`The command "'sshpass' '-p' 'Zq9hunter' 'ssh' 'root@db'" failed.`:                               `The command "'sshpass' '[redacted]' [redacted] 'ssh' 'root@db'" failed.`,
+		`The command "'redis-cli' '-a' 'Zq9hunter' 'ping'" failed.`:                                      `The command "'redis-cli' '-a' [redacted] 'ping'" failed.`,
+		`The command "'mysql' '-pZq9'\''hunter' 'app'" failed.`:                                          `The command "'mysql' '-p[redacted]' 'app'" failed.`,
+		`/usr/bin/tool "-pZq9hunter" "--token" "Zq9hunter"`:                                              `/usr/bin/tool "-p[redacted]" "--token" [redacted]`,
+		`it's: the command 'mysql' '-pZq9hunter' '--password' 'Zq9hunter' '-u' 'admin:Zq9hunter' failed`: `it's: the command 'mysql' '-p[redacted]' '--password' [redacted] '-u' 'admin:[redacted]' failed`,
+		`a " then 'sh' '-c' '-p Zq9 hunter' and "--token Zq9hunter"`:                                     `a " then 'sh' '-c' '-p[redacted]' and "--token [redacted]"`,
+		`The command "'ls' '-la' '/var/www'" failed.`:                                                    `The command "'ls' '-la' '/var/www'" failed.`,
+	}, "Zq9", "hunter")
+}
+
+// PHP's json_encode escapes every slash, and a JSON string inside another escapes the backslash again.
+func TestRedactURLWithEscapedSlashes(t *testing.T) {
+	redactTable(t, map[string]string{
+		`Gateway failed: {"callback":"https:\/\/merchant:S3cretPw@10.0.0.5:8443\/cb"}`: `Gateway failed: {"callback":"https:\/\/merchant:[redacted]@10.0.0.5:8443\/cb"}`,
+		`{"dsn":"redis:\/\/:S3cretPw@cache:6379\/0"}`:                                  `{"dsn":"redis:\/\/:[redacted]@cache:6379\/0"}`,
+		`{"job":"{\"url\":\"https:\\\/\\\/merchant:S3cretPw@db\\\/x\"}"}`:              `{"job":"{\"url\":\"https:\\\/\\\/merchant:[redacted]@db\\\/x\"}"}`,
+		`{"remote":"https:\/\/ghp_S3cretPwS3cretPwS3cretPw@github.com\/a.git"}`:        `{"remote":"https:\/\/[redacted]@github.com\/a.git"}`,
+		`{"docs":"https:\/\/example.com\/a\/b"}`:                                       `{"docs":"https:\/\/example.com\/a\/b"}`,
+	}, "S3cretPw")
+}
+
+// An Authorization header keeps a scheme the agent knows and loses anything else whole.
+func TestRedactAuthorizationSchemes(t *testing.T) {
+	redactTable(t, map[string]string{
+		`The command "curl -H 'Authorization: SSWS 00aBcD3fGh1j' https://x.okta.com/" failed.`: `The command "curl -H 'Authorization: [redacted]' https://x.okta.com/" failed.`,
+		"Discord request failed: Authorization: Bot MTk4NjIyNDgz.Cl2FMQ.ZnCjm1XV":              "Discord request failed: Authorization: [redacted]",
+		"upstream said Authorization: Bearer\t00aBcD3fGh1j, status 502":                        "upstream said Authorization: Bearer\t[redacted], status 502",
+		"upstream said Proxy-Authorization:Bearer   00aBcD3fGh1j next":                         "upstream said Proxy-Authorization:Bearer   [redacted] next",
+		"upstream said Authorization: Basic 00aBcD3fGh1j":                                      "upstream said Authorization: Basic [redacted]",
+		"upstream said X-Api-Token: Token  00aBcD3fGh1j next":                                  "upstream said X-Api-Token: Token  [redacted] next",
+		"HTTP_AUTHORIZATION=GenieKey 00aBcD3fGh1j":                                             "HTTP_AUTHORIZATION=[redacted]",
+	}, "00aBcD3fGh1j", "MTk4", "ZnCjm1XV")
+}
+
+func TestRedactXMLElements(t *testing.T) {
+	redactTable(t, map[string]string{
+		"soap <password>hunter2</password> <apiKey>AKfoo123</apiKey> <user>bob</user>":                                       "soap <password>[redacted]</password> <apiKey>[redacted]</apiKey> <user>bob</user>",
+		`<wsse:Username>bob</wsse:Username><wsse:Password Type="PasswordText">hunter2</wsse:Password><a>1</a>`:               `<wsse:Username>bob</wsse:Username><wsse:Password Type="PasswordText">[redacted]</wsse:Password><a>1</a>`,
+		"<credentials><login>bob</login><value>hunter2</value></credentials><id>7</id>":                                      "<credentials>[redacted]</credentials><id>7</id>",
+		`{"body":"<token>hunter2<\/token><id>7<\/id>"}`:                                                                      `{"body":"<token>[redacted]<\/token><id>7<\/id>"}`,
+		"cut off <ns:secret attr='1'>hunter2 and the rest":                                                                   "cut off <ns:secret attr='1'>[redacted]",
+		"<password></password> <password>***</password> <password/> <secret /> <b>bold</b> a < b > c <keyboard>x</keyboard>": "<password></password> <password>***</password> <password/> <secret /> <b>bold</b> a < b > c <keyboard>x</keyboard>",
+	}, "hunter2", "AKfoo123")
+}
+
+func TestRedactSerializedValues(t *testing.T) {
+	redactTable(t, map[string]string{
+		`job failed O:16:"App\Jobs\Sync":3:{s:8:"password";s:7:"hunter2";s:5:"token";s:6:"tok123";s:2:"id";i:7;}`: `job failed O:16:"App\Jobs\Sync":3:{s:8:"password";s:7:"[redacted]";s:5:"token";s:6:"[redacted]";s:2:"id";i:7;}`,
+		`a:2:{s:3:"pin";i:4321;s:8:"password";s:9:"a";s:1:"b";}`:                                                  `a:2:{s:3:"pin";i:[redacted];s:8:"password";s:9:"[redacted]";}`,
+		`{"payload":"a:1:{s:8:\"password\";s:7:\"hunter2\";}"}`:                                                   `{"payload":"a:1:{s:8:\"password\";s:7:\"[redacted]\";}"}`,
+		`a:1:{s:6:"secret";a:1:{i:0;s:7:"hunter2";}}`:                                                             `a:1:{s:6:"secret";[redacted]`,
+		`{"payload":"a:1:{s:8:\"password\";s:3:\"a\\\"b\";s:2:\"id\";i:7;}"}`:                                     `{"payload":"a:1:{s:8:\"password\";s:3:\"[redacted]`,
+		`a:2:{s:8:"password";N;s:5:"token";b:0;s:4:"name";s:3:"bob";}`:                                            `a:2:{s:8:"password";N;s:5:"token";b:[redacted];s:4:"name";s:3:"bob";}`,
+	}, "hunter2", "tok123", "4321")
+}
+
+// A value that is itself a secret name is taken as a key too, so the string after it (often the real key) is
+// redacted, and the real key is still read: no value placed before a key can shift which string is its value.
+// Nested arrays, objects, integer keys, strings that hold fake entries and any depth of JSON escaping included.
+func TestRedactSerializedValuesThatLookLikeKeys(t *testing.T) {
+	deepEscape := strings.Repeat(`\`, maxEscapeDepth+1)
+	redactTable(t, map[string]string{
+		`a:2:{s:4:"type";s:8:"password";s:8:"password";s:7:"hunter2";}`:                                                     `a:2:{s:4:"type";s:8:"password";s:8:"[redacted]";s:7:"[redacted]";}`,
+		`{"payload":"a:2:{s:4:\"type\";s:8:\"password\";s:8:\"password\";s:7:\"hunter2\";}"}`:                               `{"payload":"a:2:{s:4:\"type\";s:8:\"password\";s:8:\"[redacted]\";s:7:\"[redacted]\";}"}`,
+		`{"job":"{\"payload\":\"a:2:{s:4:\\\"type\\\";s:8:\\\"password\\\";s:8:\\\"password\\\";s:7:\\\"hunter2\\\";}\"}"}`: `{"job":"{\"payload\":\"a:2:{s:4:\\\"type\\\";s:8:\\\"password\\\";s:8:\\\"[redacted]\\\";s:7:\\\"[redacted]\\\";}\"}"}`,
+		`a:2:{i:0;s:6:"secret";s:8:"password";s:7:"hunter2";}`:                                                              `a:2:{i:0;s:6:"secret";s:8:"[redacted]";s:7:"[redacted]";}`,
+		`a:3:{s:4:"type";s:5:"token";s:4:"type";s:8:"password";s:8:"password";s:7:"hunter2";}`:                              `a:3:{s:4:"type";s:5:"token";s:4:"[redacted]";s:8:"password";s:8:"[redacted]";s:7:"[redacted]";}`,
+		`a:2:{s:4:"type";s:6:"secret";i:5;s:8:"password";s:7:"hunter2";}`:                                                   `a:2:{s:4:"type";s:6:"secret";i:[redacted];s:8:"password";s:7:"[redacted]";}`,
+		`O:8:"stdClass":2:{s:4:"kind";s:6:"apikey";s:5:"token";s:6:"tok123";}`:                                              `O:8:"stdClass":2:{s:4:"kind";s:6:"apikey";s:5:"[redacted]";s:6:"[redacted]";}`,
+		`a:2:{s:4:"list";a:1:{i:0;s:5:"token";}s:8:"password";s:7:"hunter2";}`:                                              `a:2:{s:4:"list";a:1:{i:0;s:5:"token";[redacted]`,
+		`a:2:{s:4:"note";s:12:"";s:3:"pin";";s:8:"password";s:7:"hunter2";}`:                                                `a:2:{s:4:"note";s:12:"";s:3:"pin";[redacted]`,
+		`a:1:{s:8:"password";s:7:` + deepEscape + `"hunter2` + deepEscape + `";}`:                                           `a:1:{s:8:"password";[redacted]`,
+	}, "hunter2", "tok123")
+}
+
+// A value with blanks in it that a semicolon closes is a connection string entry.
+func TestRedactValueUpToSemicolon(t *testing.T) {
+	redactTable(t, map[string]string{
+		"Server=tcp:db;User ID=sa;Password=correct horse battery;Encrypt=yes": "Server=tcp:db;User ID=sa;Password=[redacted];Encrypt=yes",
+		"Server=db;Pwd=correct horse=battery ;Encrypt=yes":                    "Server=db;Pwd=[redacted] ;Encrypt=yes",
+		"login failed: password=correct horse battery":                        "login failed: password=[redacted] horse battery",
+		`{"dsn":"Server=db;Password=correct horse","id":7}`:                   `{"dsn":"Server=db;Password=[redacted] horse","id":7}`,
+	}, "correct horse battery", "horse=battery")
+}
+
+func TestRedactShortSecretNames(t *testing.T) {
+	for name, want := range map[string]bool{
+		"pw": true, "PW": true, "user_pw": true, "userPw": true, "psw": true, "otp": true, "OTPCode": true, "totp": true,
+		"pin": true, "PIN": true, "pin_code": true, "sid": true, "AccountSid": true, "csrf": true, "_csrf": true, "xsrf": true,
+		"X-XSRF": true, "ticket": true, "signature": true, "X-Hub-Signature-256": true, "pw2": true, "data[pw]": true,
+		"shipping": false, "inside": false, "consider": false, "pinned": false, "spin": false, "ticketing": false,
+		"tsid": false, "optional": false, "pwn": false, "designature": false, "pin-length": false, "otp_type": false,
+	} {
+		if got := secretName(name); got != want {
+			t.Errorf("secretName(%q) = %v, want %v", name, got, want)
+		}
+	}
+	redactTable(t, map[string]string{
+		"login failed user=bob pw=hunter2 otp=123456 pin=4321 psw=hunter3":                   "login failed user=bob pw=[redacted] otp=[redacted] pin=[redacted] psw=[redacted]",
+		`Unauthenticated {"pw":"hunter2","otp":"123456","signature":"deadbeef","csrf":"k"}`:  `Unauthenticated {"pw":"[redacted]","otp":"[redacted]","signature":"[redacted]","csrf":"[redacted]"}`,
+		"GET /cgi-bin/login.cgi?username=admin&pw=hunter2&otp=123456&sid=abcdef&ticket=ST-1": "GET /cgi-bin/login.cgi?username=[redacted]&pw=[redacted]&otp=[redacted]&sid=[redacted]&ticket=[redacted]",
+		"shipping=express inside=1 spin=2 tsid=000001":                                       "shipping=express inside=1 spin=2 tsid=000001",
+	}, "hunter2", "hunter3", "123456", "4321", "deadbeef", "abcdef", "ST-1")
+}
+
+// Credentials that carry no name are recognized by their own format, in every string of every event.
+func TestRedactKnownTokens(t *testing.T) {
+	// The examples are put together here so that no secret scanner takes this file for a leak.
+	stripe, hooks := "_live_51H8abcDEFghiJKL", "hooks.slack.com"
+	pem := "-----BEGIN RSA PRIVATE KEY-----\\nMIIEowIBAAKCAQEA7hunter2\\n-----END RSA PRIVATE KEY-----"
+	tests := map[string]string{
+		"Stripe key sk" + stripe + "mnoPQRstu was rejected":                                                                                         "Stripe key [redacted] was rejected",
+		"keys rk" + stripe + " sk_test" + stripe[len("_live"):]:                                                                                     "keys [redacted] [redacted]",
+		"github ghp_16C7e42F292c6912E7710c838347Ae178B4a and github_pat_11ABCDEFG0abcdefghij_klmnop":                                                "github [redacted] and [redacted]",
+		"gho_16C7e42F292c6912E7710c83 ghu_16C7e42F292c6912E7710c83 ghs_16C7e42F292c6912E7710c83 ghr_16C7e42F292c6912E7710c83":                       "[redacted] [redacted] [redacted] [redacted]",
+		"slack xoxb-123456789012-abcdefABCDEF and xoxp-123456789012-abc":                                                                            "slack [redacted] and [redacted]",
+		"cURL error 28 for https://" + hooks + "/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX":                                             "cURL error 28 for https://hooks.slack.com/services/[redacted]",
+		`{"url":"https:\/\/` + hooks + `\/services\/T00000000\/B00000000\/XXXXXXXXXXXX"}`:                                                           `{"url":"https:\/\/hooks.slack.com\/services\/[redacted]"}`,
+		"Client error: `POST https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/sendMessage` resulted in a `400 Bad Request`": "Client error: `POST https://api.telegram.org/bot[redacted]/sendMessage` resulted in a `400 Bad Request`",
+		"aws AKIAIOSFODNN7EXAMPLE and ASIAIOSFODNN7EXAMPLE":                                                                                         "aws [redacted] and [redacted]",
+		"gitlab glpat-abcdefghij0123456789":                                                                                                         "gitlab [redacted]",
+		"key " + pem + " loaded":                                                                                                                    "key [redacted] loaded",
+		"key -----BEGIN PRIVATE KEY-----\\nMIIEowIBAAKCAQEA7hunter2":                                                                                "key [redacted]",
+		"boot 0123456789abcdef0123456789abcdef session 5vJ2mQXo8sKq1ZcLr9TtVb2Nw8YcHd5Mf1Js6Ga0":                                                    "boot 0123456789abcdef0123456789abcdef session 5vJ2mQXo8sKq1ZcLr9TtVb2Nw8YcHd5Mf1Js6Ga0",
+		"MAKIAIOSFODNN7EXAMPLEX task_list ghp_short botany/bot12:ab":                                                                                "MAKIAIOSFODNN7EXAMPLEX task_list ghp_short botany/bot12:ab",
+	}
+	for before, after := range tests {
+		for _, kind := range []string{KindAppError, KindHTTPRequest, KindSSHLoginFailed, KindCommand} {
+			e := newEvent(SourceApp, kind, testNow, before)
+			e.set("user_agent", before)
+			got := Redact(e)
+			if got.Message != after || got.Fields["user_agent"] != after {
+				t.Errorf("%s %q\n got %q / %q\nwant %q", kind, before, got.Message, got.Fields["user_agent"], after)
+			}
+		}
+	}
+}
+
+// A long segment after a secret-named one in the path of a web request is a token. Nothing of that shape is
+// touched in other events, whose fields hold boot and session IDs.
+func TestRedactWebPathTokens(t *testing.T) {
+	const token = "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0"
+	tests := map[string]string{
+		"/reset-password/" + token:                "/reset-password/[redacted]",
+		"/password/reset/" + token + "?page=2":    "/password/reset/[redacted]?page=2",
+		"/reset%2Dpassword/" + token + "/confirm": "/reset%2Dpassword/[redacted]/confirm",
+		"/api/tokens/abc/" + token + "#" + token:  "/api/tokens/abc/[redacted]#" + token,
+		"/password/reset":                         "/password/reset",
+		"/orders/" + token:                        "/orders/" + token,
+	}
+	for path, want := range tests {
+		line := `203.0.113.9 - - [23/Nov/2026:10:00:00 +0000] "GET ` + path + ` HTTP/1.1" 500 153 "https://shop.example` + path + `" "Mozilla/5.0"`
+		e, ok := ParseAccessLog(line, "")
+		if !ok {
+			t.Fatalf("not an access log line: %q", line)
+		}
+		got := Redact(e)
+		wantLine := `203.0.113.9 - - [23/Nov/2026:10:00:00 +0000] "GET ` + want + ` HTTP/1.1" 500 153 "https://shop.example` + want + `" "Mozilla/5.0"`
+		if got.Fields["path"] != want || got.Message != wantLine {
+			t.Errorf("path %q\n got %q / %q\nwant %q", path, got.Fields["path"], got.Message, want)
+		}
+	}
+
+	if got := pathSecretSpans("GET /blog/password-tips HTTP/1.1 /files/" + token + " /auth?next=/files/" + token); got != nil {
+		t.Errorf("a path after a blank or a ? is another path: %v", got)
+	}
+
+	command := newEvent(SourceCommands, KindCommand, testNow, "/usr/bin/id [0 args]")
+	command.set("cwd", "/var/lib/sessions/"+token)
+	command.set("boot_id", "0123456789abcdef0123456789abcdef")
+	app := newEvent(SourceApp, KindAppError, testNow, "failed")
+	app.set("file", "/var/www/auth-service/storage/logs/laravel-2026-11-23.log")
+	for _, e := range []Event{command, app} {
+		got := Redact(e)
+		for k, v := range e.Fields {
+			if got.Fields[k] != v {
+				t.Errorf("%s field %s = %q, want %q", e.Kind, k, got.Fields[k], v)
+			}
+		}
+	}
+}
+
+// afterIdentified reads backwards what this pattern, which it replaced, read over the whole text before a key.
+var identifiedBefore = regexp.MustCompile(`(?i)\bidentified(?:\s+with\s+\S+)?\s+$`)
+
+func TestAfterIdentifiedMatchesThePattern(t *testing.T) {
+	words := []string{"identified", "IDentified", "with", "WITH", "plugin", "'a'", "unidentified", "-identified", "withx", "", " \f\r", "identified\twith\nplugin"}
+	var texts []string
+	for _, a := range words {
+		for _, b := range words {
+			for _, c := range words {
+				for _, gap := range []string{"", " ", "\t\n"} {
+					texts = append(texts, a+gap+b+gap+c, a+" "+b+gap+c+gap, a+gap+b+" "+c+" ")
+				}
+			}
+		}
+	}
+	for _, text := range texts {
+		for at := 0; at <= len(text); at++ {
+			if got, want := afterIdentified(text, at), identifiedBefore.MatchString(text[:at]); got != want {
+				t.Fatalf("afterIdentified(%q, %d) = %v, want %v", text, at, got, want)
+			}
+		}
+	}
+}
+
+func FuzzAfterIdentified(f *testing.F) {
+	f.Add("ALTER USER app IDENTIFIED WITH caching_sha2_password BY 'x'", 53)
+	f.Fuzz(func(t *testing.T, text string, at int) {
+		if at < 0 || at > len(text) {
+			t.Skip()
+		}
+		if got, want := afterIdentified(text, at), identifiedBefore.MatchString(text[:at]); got != want {
+			t.Fatalf("afterIdentified(%q, %d) = %v, want %v", text, at, got, want)
+		}
+	})
+}
+
+// TestRedactLongLinesInLinearTime redacts lines of the longest length the tailer returns (maxLineBytes) that
+// are made of nothing but what one rule looks for. A rule that reads the rest of the line again for every key
+// took up to 38 seconds for one such line (identified by by by ...), and seconds for several others. Each line
+// must be redacted in seconds, also under the race detector, and four times the text must not cost more than
+// twelve times as long: a quadratic scan costs sixteen times.
+func TestRedactLongLinesInLinearTime(t *testing.T) {
+	fill := func(size int, prefix, unit string) string {
+		return (prefix + strings.Repeat(unit, size/len(unit)+1))[:size]
+	}
+	type line struct{ prefix, unit string }
+	lines := map[string]line{
+		"identified by":       {"identified ", "by "},
+		"identified by by":    {"", "identified by "},
+		"identified with by":  {"", "identified with x by 'p' "},
+		"pam service":         {"", "(pass:"},
+		"cookie":              {"", "Cookie:a "},
+		"cookie pairs":        {"", "cookie=a "},
+		"nested keys":         {"", "pass="},
+		"nested keys colon":   {"", "token:"},
+		"authorization":       {"", "Authorization: Bot "},
+		"scheme and blanks":   {"", "token=Bearer     "},
+		"semicolon far away":  {"", "pwd=a b "},
+		"xml open":            {"", "<password>"},
+		"xml unclosed tags":   {"", "<password><"},
+		"xml close escapes":   {"<password>", `<\\\\\\\\`},
+		"serialized":          {"", `s:4:"pass";s:1:"a";`},
+		"serialized long":     {"", `s:4:"pass";s:9:"a";`},
+		"serialized numbers":  {"", `s:4:"pass";i:`},
+		"serialized names":    {"", `s:4:"pass";`},
+		"insert":              {"", "insert into t (pass) values "},
+		"backtick keys":       {"", "`pass`=`pass`="},
+		"quoted options":      {"", `'-pa' '-u' 'a:b' `},
+		"stray quotes":        {`'`, `"-p a '-p b `},
+		"quoted option value": {"", `'-p `},
+		"escaped urls":        {"", `x:\/\/a:b@c `},
+		"path segments":       {"/password", "/a"},
+		"private keys":        {"", "-----BEGIN PRIVATE KEY-----"},
+		"known tokens":        {"", "ghp_aaaaaaaaaaaaaaaaaaa "},
+		"nested query":        {"?a=", "b=%253D%2526"},
+		"nested query params": {"?", "a=b%26c%3Dd%2526e%253Df&"},
+		"quotes":              {"", `pass="a pass='b `},
+		"escaped quotes":      {"", `\"pass\":\"a `},
+		"structures":          {"", `"token":[`},
+		"php arrays":          {"", "token=>array( "},
+		"short names":         {"", "pw=otp=pin="},
+	}
+	redact := func(l line, size int) time.Duration {
+		text := fill(size, l.prefix, l.unit)
+		start := time.Now()
+		Redact(newEvent(SourceApp, KindAppError, testNow, text))
+		pathSecretSpans(text)
+		return time.Since(start)
+	}
+	for name, l := range lines {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			quarter, whole := redact(l, maxLineBytes/4), redact(l, maxLineBytes)
+			if whole > 30*time.Second || whole > time.Second && whole > 12*quarter {
+				t.Fatalf("redacting %d bytes took %v, a quarter of them %v", maxLineBytes, whole, quarter)
+			}
+		})
+	}
 }

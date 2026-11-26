@@ -24,6 +24,7 @@ SERVICE_USER="oka-cyber"
 
 TENANT_URL=""
 ENROLLMENT_TOKEN="${OKA_CYBER_ENROLLMENT_TOKEN:-}"
+TOKEN_FILE=""
 VERSION=""
 INSECURE_DEV=""
 DOWNLOAD_URL="${OKA_CYBER_AGENT_DOWNLOAD_URL:-}"
@@ -46,10 +47,12 @@ fail() {
 usage() {
 	cat <<USAGE
 Usage: install.sh --url <tenant URL> --token <enrollment token> [--version vX.Y.Z] [--no-auto-update]
+       install.sh --url <tenant URL> --token-file <file>
        install.sh --update
 
   --url             your Oka Cyber tenant URL, for example https://acme.oka.example (not needed once enrolled)
   --token           enrollment token from the dashboard (or set OKA_CYBER_ENROLLMENT_TOKEN)
+  --token-file      file that holds the enrollment token, so other users of this server cannot read it in the process list
   --version         release to install (default: the latest release)
   --no-auto-update  turn the daily update off (turn it on again with: systemctl enable --now $UPDATE_TIMER)
   --update          install the latest release if its binary differs from the installed one (the timer runs this)
@@ -65,6 +68,8 @@ parse_args() {
 			--url=*) TENANT_URL="${1#*=}"; shift ;;
 			--token) [ $# -ge 2 ] || fail "--token needs a value"; ENROLLMENT_TOKEN="$2"; shift 2 ;;
 			--token=*) ENROLLMENT_TOKEN="${1#*=}"; shift ;;
+			--token-file) [ $# -ge 2 ] || fail "--token-file needs a value"; TOKEN_FILE="$2"; shift 2 ;;
+			--token-file=*) TOKEN_FILE="${1#*=}"; shift ;;
 			--version) [ $# -ge 2 ] || fail "--version needs a value"; VERSION="$2"; shift 2 ;;
 			--version=*) VERSION="${1#*=}"; shift ;;
 			--insecure-dev) INSECURE_DEV="--insecure-dev"; shift ;;
@@ -286,6 +291,7 @@ RestartPreventExitStatus=77
 UMask=0077
 Nice=10
 IOSchedulingClass=idle
+MemoryMax=1G
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
@@ -431,7 +437,11 @@ enroll() {
 		say "already enrolled, keeping the existing enrollment"
 		return
 	fi
-	[ -n "$ENROLLMENT_TOKEN" ] || fail "--token is required to enroll this server"
+	if [ -n "$TOKEN_FILE" ]; then
+		[ -r "$TOKEN_FILE" ] || fail "cannot read the enrollment token file $TOKEN_FILE"
+		ENROLLMENT_TOKEN=$(tr -d '\r\n' <"$TOKEN_FILE")
+	fi
+	[ -n "$ENROLLMENT_TOKEN" ] || fail "--token or --token-file is required to enroll this server"
 	OKA_CYBER_ENROLLMENT_TOKEN="$ENROLLMENT_TOKEN" "$BINARY_PATH" enroll --url "$TENANT_URL" $INSECURE_DEV
 }
 

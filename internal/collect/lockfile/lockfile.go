@@ -3,10 +3,34 @@
 package lockfile
 
 import (
+	"bytes"
 	"cmp"
+	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 )
+
+// ErrTooLarge means a file holds more entries than a parser builds in memory, however few bytes it has (see
+// maxJSONEntries, maxTOMLEntries, maxYAMLEntries, maxLines and maxDependencies).
+var ErrTooLarge = errors.New("more entries than a lock file is read with")
+
+const (
+	// maxLines bounds the lock files read line by line: requirements.txt, go.mod, gradle.lockfile, Gemfile.lock and
+	// the classic yarn.lock, whose lines are 30 bytes and more.
+	maxLines = 1_000_000
+
+	// maxDependencies is how many resolved entries a lock file is read for: five times what the server accepts
+	// from a whole host.
+	maxDependencies = 100_000
+)
+
+func checkLines(data []byte) error {
+	if lines := bytes.Count(data, []byte{'\n'}); lines > maxLines {
+		return fmt.Errorf("%w: %d lines", ErrTooLarge, lines)
+	}
+	return nil
+}
 
 const (
 	Packagist = "Packagist"
@@ -43,6 +67,9 @@ func (f Format) Parse(data []byte) (Result, error) {
 	r, err := f.parse(data)
 	if err != nil {
 		return r, err
+	}
+	if len(r.Dependencies) > maxDependencies {
+		return Result{}, fmt.Errorf("%w: %d dependencies", ErrTooLarge, len(r.Dependencies))
 	}
 	candidates := make([]candidate, len(r.Dependencies))
 	for i, d := range r.Dependencies {

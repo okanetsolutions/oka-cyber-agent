@@ -1,0 +1,27 @@
+name: Vulnerabilities
+
+# Reports known vulnerabilities in the Go standard library and the dependencies that the agent's code can reach.
+# The Go version comes from go.mod, the same one the release is built with, so a red run means the next release
+# would ship them: raise the go directive in go.mod (or the dependency) to the fixed version. It also runs every
+# day, because an advisory is published without any commit here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./cmd/... ./internal/...

@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -17,10 +16,11 @@ import (
 )
 
 var serviceState = func(ctx context.Context) string {
-	if _, err := exec.LookPath("systemctl"); err != nil {
+	cmd, err := trustedCommand(ctx, "systemctl", "is-active", agent.ServiceName)
+	if err != nil {
 		return "unknown (no systemd)"
 	}
-	out, _ := exec.CommandContext(ctx, "systemctl", "is-active", agent.ServiceName).Output()
+	out, _ := cmd.Output()
 	return strings.TrimSpace(string(out))
 }
 

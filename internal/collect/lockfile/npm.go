@@ -2,7 +2,6 @@ package lockfile
 
 import (
 	"cmp"
-	"encoding/json"
 	"net/url"
 	"slices"
 	"strings"
@@ -34,7 +33,7 @@ func ParseNPMLock(data []byte) (Result, error) {
 		Packages     map[string]npmPackage      `json:"packages"`
 		Dependencies map[string]npmV1Dependency `json:"dependencies"`
 	}
-	if err := json.Unmarshal(data, &lock); err != nil {
+	if err := UnmarshalJSON(data, &lock); err != nil {
 		return Result{}, err
 	}
 	if len(lock.Packages) > 0 {

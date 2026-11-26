@@ -9,9 +9,21 @@ import (
 	"time"
 )
 
-// The combined log format, optionally prefixed by "host:port " (Apache vhost_combined) and followed by extra
-// fields (nginx adds "$http_x_forwarded_for"). Quoted fields may contain escaped quotes.
-var combinedLog = regexp.MustCompile(`^(?:(\S+) )?(\S+) \S+ (\S+) \[([^\]]+)\] "((?:[^"\\]|\\.)*)" (\d{3}) (\d+|-)(?: "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)")?`)
+// The combined log format, followed by extra fields (nginx adds "$http_x_forwarded_for"). Quoted fields may
+// contain escaped quotes. The user is whatever the client sent as the user name of HTTP Basic authentication,
+// which nginx logs for every request and Apache for a protected one, blanks and brackets included
+// (curl -u 'a b:x'), so it runs up to the first " [" that a date and a quoted request follow. Both servers escape
+// a quote in it, so it cannot hold that sequence itself, and it never runs across an unescaped quote: the
+// request, the Referer and the User-Agent cannot lend it their text.
+const combinedFields = `((?:[^"\\]|\\.)*?) \[([^\]]+)\] "((?:[^"\\]|\\.)*)" (\d{3}) (\d+|-)(?: "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)")?`
+
+var (
+	combinedLog = regexp.MustCompile(`^(\S+) (\S+) ` + combinedFields)
+	// Apache vhost_combined puts "host:port " before the combined line. It is read only when the first word is
+	// not an address: an optional prefix in one pattern let a plain line be read with its client as the prefix,
+	// and the user then ran to a date and request planted in the Referer.
+	vhostCombinedLog = regexp.MustCompile(`^(\S+) (\S+) (\S+) ` + combinedFields)
+)
 
 // ParseAccessLog turns one combined format access log line into an http_request event. vhost is the virtual
 // host taken from the file name; a vhost_combined prefix in the line takes precedence.
@@ -20,15 +32,19 @@ func ParseAccessLog(line, vhost string) (Event, bool) {
 	if m == nil {
 		return Event{}, false
 	}
-	prefix, client := m[1], m[2]
-	if prefix != "" {
-		if _, err := netip.ParseAddr(prefix); err == nil {
+	if _, err := netip.ParseAddr(m[1]); err != nil {
+		if m = vhostCombinedLog.FindStringSubmatch(line); m == nil {
 			return Event{}, false
 		}
-		host, _, _ := strings.Cut(prefix, ":")
+		host, _, _ := strings.Cut(m[1], ":")
 		vhost = host
+		m = m[1:]
+	} else if _, err := netip.ParseAddr(m[2]); err == nil {
+		// Two addresses before the user are another log format (a forwarded address first), whose fields this
+		// parser would misread. Both servers log the identity as "-".
+		return Event{}, false
 	}
-	address, err := netip.ParseAddr(client)
+	address, err := netip.ParseAddr(m[1])
 	if err != nil {
 		return Event{}, false
 	}
