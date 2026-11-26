@@ -32,21 +32,15 @@ has_systemd() {
 	[ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
 }
 
-# The service user must reach config.yaml whatever the umask enroll ran under. enroll keeps the token root only
-# and lets systemd pass it with LoadCredential, except on systemd older than 247 (RHEL 8 family), which has no
-# LoadCredential: there the oka-cyber group may read it.
+# The service user must reach config.yaml and its own private token whatever the umask enroll ran under.
 check_enrollment_files() {
 	got=$(stat -c '%a %U %G' /etc/oka-cyber-agent)
 	[ "$got" = "755 root root" ] || fail "/etc/oka-cyber-agent is $got, want 755 root root"
 	got=$(stat -c '%a %U %G' /etc/oka-cyber-agent/config.yaml)
 	[ "$got" = "644 root root" ] || fail "config.yaml is $got, want 644 root root"
-	version=$(systemctl --version 2>/dev/null | awk 'NR == 1 { print $2 }')
-	want="600 root root"
-	if [ -n "$version" ] && [ "$version" -lt 247 ]; then
-		want="640 root oka-cyber"
-	fi
 	got=$(stat -c '%a %U %G' /etc/oka-cyber-agent/token)
-	[ "$got" = "$want" ] || fail "token is $got, want $want (systemd ${version:-not installed})"
+	[ "$got" = "600 oka-cyber oka-cyber" ] || fail "token is $got, want 600 oka-cyber oka-cyber"
+	runuser -u oka-cyber -- test -r /etc/oka-cyber-agent/token || fail "the service user cannot read the token"
 }
 
 # Waits for a heartbeat from the service (it sends one each time it starts) after $1 heartbeats were received,
@@ -59,6 +53,9 @@ check_service_reports() {
 	systemctl is-active --quiet oka-cyber-agent || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "service is not active"; }
 	[ "$(ps -o user= -C oka-cyber-agent | head -n 1)" = "oka-cyber" ] || fail "service does not run as oka-cyber"
 	[ "$(stat_of heartbeats)" -gt "$1" ] || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "no heartbeat from the service"; }
+	if journalctl -u oka-cyber-agent --no-pager | grep -qi 'read agent token.*permission denied'; then
+		fail "the journal contains a token permission error"
+	fi
 }
 
 check_audit_assets() {

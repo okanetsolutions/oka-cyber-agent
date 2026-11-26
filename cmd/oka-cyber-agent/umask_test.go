@@ -37,7 +37,7 @@ func TestEnrollUnderARestrictiveUmask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 && got != 0o640 {
-		t.Fatalf("token mode = %#o, want 0600 or 0640", got)
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("token mode = %#o, want 0600", got)
 	}
 }

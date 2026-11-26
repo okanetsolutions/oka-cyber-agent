@@ -8,8 +8,7 @@ import (
 )
 
 // Watcher tells a running agent that enroll --force or an edit replaced the configuration or the agent token.
-// It only stats the two files: under systemd the service user cannot read the root owned token, and the token
-// it uses is the copy systemd made at start (LoadCredential), so the agent has to be restarted to use a new one.
+// It stats the original files so it also detects changes when the agent reads a copy made by LoadCredential.
 type Watcher struct {
 	dir  string
 	seen [2]fs.FileInfo
