@@ -55,6 +55,15 @@ check_disabled() {
 	! systemctl is-active --quiet oka-cyber-agent || fail "the service runs $1"
 }
 
+check_inventory() {
+	for _ in $(seq 1 15); do
+		[ "$(stat_of inventories)" -gt "$1" ] && break
+		sleep 2
+	done
+	[ "$(stat_of inventories)" -gt "$1" ] || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "no inventory from the service"; }
+	[ "$(stat_of last_inventory_packages)" -gt 0 ] || fail "the service sent an inventory without packages"
+}
+
 uninstall_agent() {
 	/usr/local/bin/oka-cyber-agent uninstall --yes
 	for path in /usr/local/bin/oka-cyber-agent /etc/systemd/system/oka-cyber-agent.service /etc/oka-cyber-agent /var/lib/oka-cyber-agent /etc/systemd/system/oka-cyber-agent-update.timer /etc/systemd/system/oka-cyber-agent-update.service /usr/local/lib/oka-cyber-agent /etc/systemd/system/oka-cyber-audit.service /etc/systemd/system/oka-cyber-audit.path /usr/share/oka-cyber-agent /run/oka-cyber-audit /etc/audit/rules.d/oka-cyber-commands.rules; do
@@ -77,6 +86,7 @@ fi
 echo "== install"
 enrollments_before=$(stat_of enrollments)
 heartbeats_before=$(stat_of heartbeats)
+inventories_before=$(stat_of inventories)
 install_agent "$TOKEN"
 check_audit_assets /etc/systemd/system
 check_version v0.0.0-test "after install"
@@ -96,12 +106,7 @@ if has_systemd; then
 	check_enabled "after install"
 	check_updates_on "after install"
 	check_service_reports "$heartbeats_before"
-	for _ in $(seq 1 15); do
-		[ "$(stat_of inventories)" -ge 1 ] && break
-		sleep 2
-	done
-	[ "$(stat_of inventories)" -ge 1 ] || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "no inventory from the service"; }
-	[ "$(stat_of last_inventory_packages)" -gt 0 ] || fail "the service sent an inventory without packages"
+	check_inventory "$inventories_before"
 	getent group systemd-journal >/dev/null || fail "a systemd host without the systemd-journal group"
 	check_log_groups "after install"
 
@@ -225,6 +230,7 @@ uninstall_agent
 
 echo "== an install under umask 077 (a hardened host) still lets the service read its configuration, with the token from a file"
 heartbeats_before=$(stat_of heartbeats)
+inventories_before=$(stat_of inventories)
 token_file=$(mktemp)
 printf '%s\n' "$TOKEN" >"$token_file"
 (umask 077 && OKA_CYBER_AGENT_DOWNLOAD_URL="$TENANT/files/good" sh "$REPO/install.sh" --url "$TENANT" --token-file "$token_file" --insecure-dev)
@@ -233,6 +239,18 @@ check_enrollment_files
 if has_systemd; then
 	check_enabled "after an install under umask 077"
 	check_service_reports "$heartbeats_before"
+	check_inventory "$inventories_before"
+
+	echo "== the service can report with a replacement token after forced re-enrollment"
+	enrollments_before=$(stat_of enrollments)
+	heartbeats_before=$(stat_of heartbeats)
+	inventories_before=$(stat_of inventories)
+	OKA_CYBER_ENROLLMENT_TOKEN="$TOKEN" /usr/local/bin/oka-cyber-agent enroll --force --url "$TENANT" --insecure-dev
+	check_enrollment_files
+	[ "$(stat_of enrollments)" -eq $((enrollments_before + 1)) ] || fail "forced re-enrollment did not enroll again"
+	systemctl restart oka-cyber-agent
+	check_service_reports "$heartbeats_before"
+	check_inventory "$inventories_before"
 fi
 uninstall_agent
 

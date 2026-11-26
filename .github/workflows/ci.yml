@@ -88,6 +88,9 @@ jobs:
       - name: Install, rerun and uninstall on the runner with systemd
         if: matrix.target == 'systemd-host'
         run: sudo sh test/install/run.sh
+      - name: Install and report under systemd 252 in a container
+        if: matrix.target == 'systemd-host'
+        run: sh test/install/systemd-container.sh registry.access.redhat.com/ubi9/ubi-init run.sh
       - name: Install, rerun and uninstall under systemd 239 (RHEL 8, no LoadCredential)
         if: matrix.target == 'systemd-el8'
         run: sh test/install/systemd-container.sh registry.access.redhat.com/ubi8/ubi-init run.sh

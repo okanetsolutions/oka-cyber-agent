@@ -24,6 +24,10 @@ case "$state" in
 	*) echo "systemd did not start in $image (state: ${state:-none})" >&2; docker logs "$name" >&2 || true; exit 1 ;;
 esac
 
+# systemd creates LoadCredential mounts in a child mount namespace. Share the container's /run so those
+# mounts reach the service. Docker leaves /run private even with --privileged and --cgroupns=host.
+docker exec "$name" sh -ec 'mountpoint -q /run || mount --bind /run /run; mount --make-shared /run'
+
 if ! docker exec -e DIST=/src/dist "$name" sh "/src/test/install/$script"; then
 	docker exec "$name" journalctl -u oka-cyber-agent --no-pager -n 50 >&2 || true
 	exit 1
