@@ -43,16 +43,20 @@ func TestEnrollmentFilesKeepTheirModesUnderARestrictiveUmask(t *testing.T) {
 	}
 	requireMode(t, filepath.Join(dir, FileName), 0o644)
 
-	if err := SaveToken(dir, "agent-secret", nil); err != nil {
+	if err := SaveToken(dir, "agent-secret", TokenAccessFor(os.Geteuid(), 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	requireMode(t, filepath.Join(dir, TokenFileName), 0o600)
+	if err := SaveToken(dir, "agent-secret", TokenAccess{Owner: &Owner{UID: os.Getuid(), GID: os.Getgid()}, Mode: 0o640}); err != nil {
+		t.Fatal(err)
+	}
+	requireMode(t, filepath.Join(dir, TokenFileName), 0o640)
 }
 
 func TestSaveCreatesAMissingConfigDirUnderARestrictiveUmask(t *testing.T) {
 	withUmask(t, 0o027)
 	dir := filepath.Join(t.TempDir(), "oka-cyber-agent")
-	if err := SaveToken(dir, "agent-secret", nil); err != nil {
+	if err := SaveToken(dir, "agent-secret", TokenAccessFor(os.Geteuid(), 0, -1)); err != nil {
 		t.Fatal(err)
 	}
 	requireMode(t, dir, DirMode)

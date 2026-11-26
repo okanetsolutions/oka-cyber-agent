@@ -35,7 +35,7 @@ The main agent is read only. It never installs, updates or removes packages (the
 
 ## Where it sends it
 
-Only to the Oka Cyber tenant URL you enroll it with, over HTTPS, authenticated with a per server token stored in `/etc/oka-cyber-agent/token` (mode 0600, owned by the service user). It talks to these endpoints under `https://<your tenant>/cyber-agent/v1`:
+Only to the Oka Cyber tenant URL you enroll it with, over HTTPS, authenticated with a per server token stored in `/etc/oka-cyber-agent/token` (mode 0600, owned by root). It talks to these endpoints under `https://<your tenant>/cyber-agent/v1`:
 
 | Endpoint | When |
 | --- | --- |
@@ -65,7 +65,9 @@ The [install script](install.sh) is short; read it first if you like. It:
 
 Rerunning it upgrades the agent, keeps the enrollment and restarts the service on the new binary (`--url` and `--token` are only needed to enroll). A service you disabled stays disabled. Pass `--version v1.2.3` to install a specific release, with `--no-auto-update` if it must stay on that release. A release older than the daily update gets no timer, and any timer from a newer install is removed. It refuses to run on a server where the agent was installed from a package: upgrade that one with your package manager.
 
-The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It writes its state directory, `/var/lib/oka-cyber-agent`, and the empty command-source flag in its systemd runtime directory, `/run/oka-cyber-agent`. Enrollment stores the agent token with mode 0600 and gives it to the `oka-cyber` user. The service uses the copy provided by systemd through `LoadCredential` when it is accessible and reads the original file otherwise.
+The service runs as the unprivileged `oka-cyber` user with a read only view of the system (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, `PrivateTmp=yes`, no capabilities). It writes its state directory, `/var/lib/oka-cyber-agent`, and the empty command-source flag in its systemd runtime directory, `/run/oka-cyber-agent`. The agent token stays root only (mode 0600) and systemd hands it to the service with `LoadCredential`. systemd older than 247 (the RHEL 8 family) has no `LoadCredential`, so there `enroll` makes the token readable by the `oka-cyber` group only (mode 0640), for the install script and the packages alike.
+
+When installing in a disposable Docker container with systemd as PID 1, make the container's `/run` mount shared before installing. On Debian 12, a private `/run` prevents systemd from passing the mounted credential to the service. Run `docker exec <container> mount --make-shared /run` after the container boots. If the agent is already enrolled, restart its service after changing the mount.
 
 ### Daily updates
 
@@ -116,7 +118,7 @@ oka-cyber-agent run --once   # one heartbeat and inventory report, then exit (no
 
 `enroll` is idempotent: on an enrolled server it does nothing unless you pass `--force`. When only one of `config.yaml` and `token` loads (an interrupted enrollment, or a deleted or broken file), it stops with an error and enrolls again only with `--force`. A running service notices the new enrollment within about a minute and exits, so systemd restarts it with the new token. It checks that it can write to `/etc/oka-cyber-agent` before it uses the enrollment token, so run it as root. The enrollment token can also be passed in the `OKA_CYBER_ENROLLMENT_TOKEN` environment variable so it does not show up in the process list.
 
-`status` reads the state in `/var/lib/oka-cyber-agent`, which only the service user and root can read, so run it with sudo; it exits with an error rather than show the last reports as never when it cannot read the state. `run --once` needs access to the private agent token, so run it with sudo. A state file it writes as root is given to the owner of `/var/lib/oka-cyber-agent`, so the service can keep using it, and the agent starts from an empty state (with a warning) when its state file is unreadable or corrupt.
+`status` reads the state in `/var/lib/oka-cyber-agent`, which only the service user and root can read, so run it with sudo; it exits with an error rather than show the last reports as never when it cannot read the state. `run --once` reads the root owned agent token, so run it with sudo. A state file it writes as root is given to the owner of `/var/lib/oka-cyber-agent`, so the service can keep using it, and the agent starts from an empty state (with a warning) when its state file is unreadable or corrupt.
 
 ## Configuration
 
@@ -141,7 +143,7 @@ collect_go_binaries: false                     # also read module lists from Go 
 collect_application_details: true              # set to false to stop reporting application names, git details and runtimes
 ```
 
-Unknown keys are rejected, so a typo cannot silently turn an option off. The agent token lives in `/etc/oka-cyber-agent/token` (mode 0600, owned by the service user) and is never written to the configuration file or the logs. The running service checks the file and the token every 30 seconds and, when either changed, exits so systemd restarts it with the new settings. An edit that does not load is ignored with a warning in the journal, and the service keeps its current settings.
+Unknown keys are rejected, so a typo cannot silently turn an option off. The agent token lives in `/etc/oka-cyber-agent/token` (mode 0600, owned by root) and is never written to the configuration file or the logs. The running service checks the file and the token every 30 seconds and, when either changed, exits so systemd restarts it with the new settings. An edit that does not load is ignored with a warning in the journal, and the service keeps its current settings.
 
 ## Dependency files
 

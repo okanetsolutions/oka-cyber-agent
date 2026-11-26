@@ -237,17 +237,14 @@ if has_systemd; then
 	check_enabled "after an install under umask 077"
 	check_service_reports "$heartbeats_before"
 	check_inventory "$inventories_before"
-fi
 
-echo "== forced re-enrollment replaces the token with a private file the service can read"
-enrollments_before=$(stat_of enrollments)
-heartbeats_before=$(stat_of heartbeats)
-inventories_before=$(stat_of inventories)
-chown root:root /etc/oka-cyber-agent/token
-OKA_CYBER_ENROLLMENT_TOKEN="$TOKEN" /usr/local/bin/oka-cyber-agent enroll --force --url "$TENANT" --insecure-dev
-check_enrollment_files
-[ "$(stat_of enrollments)" -eq $((enrollments_before + 1)) ] || fail "forced re-enrollment did not enroll again"
-if has_systemd; then
+	echo "== the service can report with a replacement token after forced re-enrollment"
+	enrollments_before=$(stat_of enrollments)
+	heartbeats_before=$(stat_of heartbeats)
+	inventories_before=$(stat_of inventories)
+	OKA_CYBER_ENROLLMENT_TOKEN="$TOKEN" /usr/local/bin/oka-cyber-agent enroll --force --url "$TENANT" --insecure-dev
+	check_enrollment_files
+	[ "$(stat_of enrollments)" -eq $((enrollments_before + 1)) ] || fail "forced re-enrollment did not enroll again"
 	systemctl restart oka-cyber-agent
 	check_service_reports "$heartbeats_before"
 	check_inventory "$inventories_before"

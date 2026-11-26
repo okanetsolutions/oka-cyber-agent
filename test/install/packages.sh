@@ -219,9 +219,7 @@ install_package
 check_enrollment_files
 check_enabled_and_reporting "$before" "after replacing a script install"
 if has_systemd; then
-	fragment=$(systemctl show -p FragmentPath --value oka-cyber-agent)
-	# Debian 12 systemd can report /lib for the same unit installed under /usr/lib.
-	[ "$(readlink -f "$fragment")" = "$(readlink -f /usr/lib/systemd/system/oka-cyber-agent.service)" ] || fail "the service does not run from the package unit"
+	[ "$(systemctl show -p FragmentPath --value oka-cyber-agent)" = /usr/lib/systemd/system/oka-cyber-agent.service ] || fail "the service does not run from the package unit"
 fi
 erase_package
 check_erased
