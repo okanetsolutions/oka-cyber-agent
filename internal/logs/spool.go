@@ -118,7 +118,8 @@ func (s Spool) Append(b Batch) error {
 		sequence = entries[len(entries)-1].sequence[0] + 1
 	}
 	if low, rest := byPriority(b.Events); len(low) > 0 && len(rest) > 0 {
-		// The checkpoint also covers the events of the second part, so only that one may commit it.
+		// The checkpoint also covers the events of the second part, so only that one may commit it, and Newest
+		// never resumes from it: a stop before the second write must not skip the events left out of the spool.
 		part := Batch{ID: NewBatchID(), Events: low, Checkpoint: b.Checkpoint, Partial: true, CreatedAt: b.CreatedAt}
 		if err := s.writeBatch(dir, fmt.Sprintf("%020d", sequence), part, streamTag(part)); err != nil {
 			return err
@@ -289,7 +290,10 @@ func (s Spool) OldestIn(skip func(Stream) bool) (Batch, string, bool, error) {
 	}
 }
 
-// Newest is the latest batch, whose checkpoint is where collection resumes after a restart.
+// Newest is the latest batch that is not Partial, whose checkpoint is where collection resumes after a restart.
+// A Partial batch is skipped: its checkpoint also covers the events of the part written after it, which a stop
+// between the two writes (see Append) leaves unspooled, so resuming there would never read those events again.
+// The lines of the Partial batch are read again instead and sent twice, rather than lose the others.
 func (s Spool) Newest() (Batch, bool) {
 	dir, err := s.open(false)
 	if err != nil || dir == nil {
@@ -301,7 +305,7 @@ func (s Spool) Newest() (Batch, bool) {
 		return Batch{}, false
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
-		if b, err := readBatch(dir, entries[i].name); err == nil {
+		if b, err := readBatch(dir, entries[i].name); err == nil && !b.Partial {
 			return b, true
 		}
 	}

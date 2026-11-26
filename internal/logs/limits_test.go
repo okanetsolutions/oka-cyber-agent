@@ -486,6 +486,49 @@ func TestSpoolDropsWebAndAppBatchesBeforeLogins(t *testing.T) {
 	}
 }
 
+// A stop between the two writes of a split batch leaves only its web part, whose checkpoint also covers the
+// login that never reached the spool: collection resumes from the batch before, and reads the login again.
+func TestSpoolNeverResumesPastTheMissingPartOfASplitBatch(t *testing.T) {
+	s := Spool{Dir: filepath.Join(t.TempDir(), "spool"), MaxBytes: 1 << 20}
+	if err := s.Append(batchOf(1, "c0")); err != nil {
+		t.Fatal(err)
+	}
+	mixed := webBatch(t, 2)
+	mixed.Checkpoint = Checkpoint{Sources: []string{SourceAuth, SourceWeb}, JournalCursor: "c1"}
+	mixed.Events = append(mixed.Events, newEvent(SourceAuth, KindSSHLoginSucceeded, testNow, "Accepted password for root from 198.51.100.7 port 4242 ssh2"))
+	if err := s.Append(mixed); err != nil {
+		t.Fatal(err)
+	}
+	if newest, ok := s.Newest(); !ok || newest.ID != mixed.ID || newest.Checkpoint.JournalCursor != "c1" {
+		t.Fatalf("newest of the whole split = %+v, %v", newest.Checkpoint, ok)
+	}
+	entries, err := os.ReadDir(s.Dir)
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("spool = %v, %v", entries, err)
+	}
+	if err := os.Remove(filepath.Join(s.Dir, entries[2].Name())); err != nil {
+		t.Fatal(err)
+	}
+	if newest, ok := s.Newest(); !ok || newest.Partial || newest.Checkpoint.JournalCursor != "c0" {
+		t.Fatalf("newest after a stop between the writes = %+v partial %v, %v", newest.Checkpoint, newest.Partial, ok)
+	}
+
+	only := Spool{Dir: filepath.Join(t.TempDir(), "spool"), MaxBytes: 1 << 20}
+	if err := only.Append(mixed); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = os.ReadDir(only.Dir)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("spool = %v, %v", entries, err)
+	}
+	if err := os.Remove(filepath.Join(only.Dir, entries[1].Name())); err != nil {
+		t.Fatal(err)
+	}
+	if newest, ok := only.Newest(); ok {
+		t.Fatalf("newest = %+v, want none so that collection resumes from the committed positions", newest.Checkpoint)
+	}
+}
+
 // One flush holds the events of every source, so the web and application events of a batch are spooled as a
 // part of their own, which cannot commit the checkpoint: it also covers the events of the part after it.
 func TestSpoolWritesWebEventsOfABatchApart(t *testing.T) {
