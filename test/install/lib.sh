@@ -57,8 +57,12 @@ check_service_reports() {
 		sleep 2
 	done
 	systemctl is-active --quiet oka-cyber-agent || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "service is not active"; }
-	[ "$(ps -o user= -C oka-cyber-agent | head -n 1)" = "oka-cyber" ] || fail "service does not run as oka-cyber"
+	pid=$(systemctl show -p MainPID --value oka-cyber-agent)
+	[ "$(awk '/^Uid:/ { print $3 }' "/proc/$pid/status")" = "$(id -u oka-cyber)" ] || fail "service does not run as oka-cyber"
 	[ "$(stat_of heartbeats)" -gt "$1" ] || { journalctl -u oka-cyber-agent --no-pager | tail -n 50; fail "no heartbeat from the service"; }
+	if journalctl -u oka-cyber-agent --no-pager | grep -qi 'read agent token.*permission denied'; then
+		fail "the journal contains a token permission error"
+	fi
 }
 
 check_audit_assets() {
